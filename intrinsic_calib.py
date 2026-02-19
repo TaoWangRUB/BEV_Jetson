@@ -1,23 +1,54 @@
 import cv2
 import numpy as np
+import os
 
+# ======================
 # SETTINGS
-CHECKERBOARD = (12, 8) # For your A3 board (internal corners)
-PORT = 5000            # Change for each camera
-# GStreamer pipeline for TX2
-PIPE = f"udpsrc port={PORT} ! application/x-rtp,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw, format=BGRx ! videoconvert ! video/x-raw, format=BGR ! appsink"
+# ======================
+CHECKERBOARD = (10, 8)  # Internal corners
+SQUARE_SIZE_MM = 30
+PORT = 5005
 
-obj_points = [] 
-img_points = [] 
+# ======================
+# GStreamer PIPELINE
+# ======================
+PIPE_TX2 = (
+    f"udpsrc port={PORT} buffer-size=8388608 "
+    "caps=application/x-rtp,media=video,encoding-name=H264,payload=96 ! "
+    "rtpjitterbuffer latency=5 ! "
+    "rtph264depay ! h264parse ! "
+    "nvv4l2decoder enable-max-performance=1 ! "
+    "nvvidconv flip-method=2 ! video/x-raw,format=BGRx ! "
+    "videoconvert ! video/x-raw,format=BGR ! "
+    "appsink drop=true sync=false max-buffers=1"
+)
+
+# ======================
+# DATA STORAGE
+# ======================
+obj_points = []  # 3d points in real world space
+img_points = []  # 2d points in image plane
+
+# Prepare object points (0,0,0), (30,0,0) ...
 objp = np.zeros((1, CHECKERBOARD[0] * CHECKERBOARD[1], 3), np.float32)
-objp[0,:,:2] = np.mgrid[0:CHECKERBOARD[0], 0:CHECKERBOARD[1]].T.reshape(-1, 2) * 30 # 30mm
+objp[0, :, :2] = np.mgrid[0:CHECKERBOARD[0], 0:CHECKERBOARD[1]].T.reshape(-1, 2)
+objp *= SQUARE_SIZE_MM
 
-cap = cv2.VideoCapture(PIPE, cv2.CAP_GSTREAMER)
+# ======================
+# INITIALIZATION
+# ======================
+cap = cv2.VideoCapture(PIPE_TX2, cv2.CAP_GSTREAMER)
+if not cap.isOpened():
+    print("❌ Error: Could not open GStreamer stream.")
+    exit()
 
-print(f"--- Camera Calibration Tool (Port {PORT}) ---")
-print("1. Move board until corners are green.")
-print("2. Press 'SPACE' to capture (aim for 20 images).")
-print("3. Press 'C' to calculate final score.")
+print("--- Fisheye Calibration ---")
+print("SPACE: Capture Frame | C: Calibrate & Preview | S: Save & Exit | Q: Quit")
+
+calibrated = False
+K = np.zeros((3, 3))
+D = np.zeros((4, 1))
+map1, map2 = None, None
 
 warning_shown = False
 try:
