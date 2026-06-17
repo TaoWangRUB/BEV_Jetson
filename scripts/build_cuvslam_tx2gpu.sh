@@ -20,6 +20,13 @@ sed -i 's/set(CMAKE_CUDA_STANDARD 17)/set(CMAKE_CUDA_STANDARD 14)/' \
 KCM="${SRC}/libs/cuda_modules/cuda_kernels/CMakeLists.txt"
 [[ -f "$KCM" ]] && grep -q '\-arch=all' "$KCM" && sed -i 's|-arch=all|-arch=sm_62|g' "$KCM"
 
+# --- known fix #3: '-march=native' (aarch64 host flag) is added to ALL compile
+#     languages and leaks into nvcc, which misparses it as 'arch=native'.
+#     Guard it to CXX only so the CUDA kernels don't receive it. -----------------
+UTILS="${SRC}/cmake/cuVSLAMUtils.cmake"
+[[ -f "$UTILS" ]] && sed -i \
+    's|INTERFACE -march=native)|INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-march=native>)|' "$UTILS"
+
 echo "Configuring cuVSLAM GPU for CUDA 10.2 / sm_62 / gcc-8 / C++14 ..."
 cmake -S "${SRC}" -B "${BUILD}" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_ARCHITECTURES=62 \
