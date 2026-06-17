@@ -66,7 +66,22 @@ UNIT
 systemctl daemon-reload
 systemctl start docker
 
-echo "== 4. Add ${REAL_USER} to docker group =="
+echo "== 4. Install docker compose v2 plugin (if missing) =="
+if ! docker compose version >/dev/null 2>&1; then
+    PLUGIN_DIR=/usr/local/lib/docker/cli-plugins
+    mkdir -p "$PLUGIN_DIR"
+    if curl -fSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-aarch64" \
+            -o "$PLUGIN_DIR/docker-compose"; then
+        chmod +x "$PLUGIN_DIR/docker-compose"
+        echo "  installed: $(docker compose version 2>/dev/null || echo '(verify failed)')"
+    else
+        echo "  WARNING: could not download compose plugin; use plain 'docker run' instead." >&2
+    fi
+else
+    echo "  docker compose already present"
+fi
+
+echo "== 5. Add ${REAL_USER} to docker group =="
 usermod -aG docker "$REAL_USER"
 
 echo
