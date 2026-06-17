@@ -17,7 +17,11 @@ import pathlib
 
 EXTS = {".h", ".hpp", ".hh", ".cuh", ".cu", ".cpp", ".cc", ".cxx"}
 OPEN_RE = re.compile(r'^(\s*)namespace\s+([A-Za-z_]\w*(?:::[A-Za-z_]\w*)+)\s*\{\s*$')
-CLOSE_RE = re.compile(r'^(\s*)\}\s*//\s*namespace\s+([A-Za-z_]\w*(?:::[A-Za-z_]\w*)+)\s*$')
+# Closes use a comment convention but with variants: '// namespace a::b',
+# '// end namespace a::b', '// end of namespace a::b'. Match any text before
+# 'namespace <nested::path>'. (Already-converted '}}  //' lines won't match the
+# leading single-} pattern, so this stays idempotent.)
+CLOSE_RE = re.compile(r'^(\s*)\}\s*//.*?\bnamespace\s+([A-Za-z_]\w*(?:::[A-Za-z_]\w*)+)')
 INLINE_RE = re.compile(r'\binline\s+constexpr\b')
 
 
