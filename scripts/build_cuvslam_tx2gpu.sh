@@ -55,6 +55,7 @@ cmake -S "${SRC}" -B "${BUILD}" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_ARCHITECTURES=62 \
     -DCMAKE_C_COMPILER=gcc-8 -DCMAKE_CXX_COMPILER=g++-8 \
     -DCMAKE_CUDA_HOST_COMPILER=g++-8 \
+    -DCMAKE_CXX_STANDARD_LIBRARIES=-lstdc++fs \
     -DUSE_RERUN=OFF -DUSE_CERES=OFF -DUSE_NVTX=OFF 2>&1 | tee "${LOG}"
 
 # --- known fix #7: the fetched dense_hash_map dep defines an unconditional
