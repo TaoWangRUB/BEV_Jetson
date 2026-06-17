@@ -1,0 +1,55 @@
+# BEV / cuVSLAM dev stack. Mirrors the ackermann_rover compose approach:
+#   - Ubuntu 24.04 + ROS 2 Jazzy
+#   - host CUDA bind-mounted at /usr/local/cuda (NOT installed in the image)
+#   - GPU via the NVIDIA container runtime (Jetson: nvidia-container-runtime)
+#
+# ARCH is taken from the shell: export ARCH=$(uname -m)  -> aarch64 on Jetson.
+# CUDA_HOST_MOUNT defaults to the host /usr/local/cuda (CUDA 10.2 on a TX2).
+services:
+  bev_cuvslam:
+    image: ${IMAGE_NAME:-bev_cuvslam}_${ARCH:-aarch64}_${ROS_DISTRO:-jazzy}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        UBUNTU_VERSION: ${UBUNTU_VERSION:-24.04}
+        ROS_DISTRO: ${ROS_DISTRO:-jazzy}
+        ROS_UBUNTU_CODENAME: ${ROS_UBUNTU_CODENAME:-noble}
+        USERNAME: ${USERNAME:-nvidia}
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+    container_name: ${CONTAINER_NAME:-bev_cuvslam}_${ARCH:-aarch64}
+
+    environment:
+      - ARCH=${ARCH:-aarch64}
+      - DISPLAY=${DISPLAY:-}
+      - QT_X11_NO_MITSHM=1
+      - XDG_RUNTIME_DIR=/tmp
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - ROS_DISTRO=${ROS_DISTRO:-jazzy}
+      - CUDA_HOME=/usr/local/cuda
+      - CUDA_PATH=/usr/local/cuda
+      - LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/targets/${ARCH:-aarch64}-linux/lib
+
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ..:/workspace
+      - /dev:/dev
+      - /run/udev:/run/udev:ro
+      # Host CUDA toolkit (CUDA 10.2 on a TX2). Override with CUDA_HOST_MOUNT.
+      - ${CUDA_HOST_MOUNT:-/usr/local/cuda}:/usr/local/cuda:ro
+
+    network_mode: host
+    ipc: host
+    pid: host
+    privileged: true
+    shm_size: 2g
+
+    # Jetson: nvidia-container-runtime. Requires "nvidia" runtime registered in
+    # /etc/docker/daemon.json (done in scripts/setup_tx2_docker.sh).
+    runtime: nvidia
+
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
