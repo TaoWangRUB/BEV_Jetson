@@ -32,6 +32,15 @@ UTILS="${SRC}/cmake/cuVSLAMUtils.cmake"
 #     Idempotent; cuVSLAM submodule stays at v15.0.0. ----------------------------
 python3 "${REPO_ROOT}/scripts/port/downgrade_cuvslam_cpp17.py" "${SRC}"
 
+# --- known fix #5: cuSOLVER IRS enum values _INVALID_{PREC,REFINE,MAXITER} were
+#     added in CUDA 11; 10.2 only has the base _INVALID. Guard the 3 newer case
+#     labels (error-string mapping only). Idempotent. -----------------------------
+CULIB="${SRC}/libs/cuda_modules/culib_helper.h"
+if [[ -f "$CULIB" ]] && ! grep -q 'CUDART_VERSION >= 11000' "$CULIB"; then
+    sed -i '/case CUSOLVER_STATUS_IRS_PARAMS_INVALID_PREC:/i #if CUDART_VERSION >= 11000' "$CULIB"
+    sed -i '/return "CUSOLVER_STATUS_IRS_PARAMS_INVALID_MAXITER";/a #endif' "$CULIB"
+fi
+
 echo "Configuring cuVSLAM GPU for CUDA 10.2 / sm_62 / gcc-8 / C++14 ..."
 cmake -S "${SRC}" -B "${BUILD}" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_ARCHITECTURES=62 \
