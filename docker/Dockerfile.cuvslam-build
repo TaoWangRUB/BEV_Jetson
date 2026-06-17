@@ -25,5 +25,14 @@ RUN wget -qO /tmp/cmake.sh \
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=/usr/local/cuda/bin:/usr/local/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/targets/aarch64-linux/lib
+
+# L4T puts the real GPU driver (libcuda.so.1) under tegra/. A plain ubuntu base
+# lacks this ld config (l4t-base has it), so libcuda.so.1 isn't found at runtime
+# and CUDA reports "driver version insufficient". Add the search path; run
+# `ldconfig` at container start (after the nvidia runtime mounts the tegra libs)
+# for GPU runtime use.
+RUN printf '/usr/lib/aarch64-linux-gnu/tegra\n/usr/lib/aarch64-linux-gnu/tegra-egl\n' \
+    > /etc/ld.so.conf.d/nvidia-tegra.conf
+
 WORKDIR /workspace
 CMD ["bash"]
