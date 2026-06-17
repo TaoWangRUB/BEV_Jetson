@@ -45,6 +45,11 @@ if [[ -f "$CULIB" ]] && ! grep -q 'CUDART_VERSION >= 11000' "$CULIB"; then
     sed -i '/return "CUSOLVER_STATUS_INVALID_WORKSPACE";/a #endif' "$CULIB"
 fi
 
+# --- known fix #6: cudaMallocAsync (CUDA 11.2+, needs driver r470+) -> synchronous
+#     cudaMalloc (works on the TX2 r440 driver). Single call. Idempotent. --------
+sed -i 's/cudaMallocAsync(\([^,]*\), \([^,]*\), [^)]*)/cudaMalloc(\1, \2)/g' \
+    "${SRC}/libs/cuda_modules/selection_v2.cpp"
+
 echo "Configuring cuVSLAM GPU for CUDA 10.2 / sm_62 / gcc-8 / C++14 ..."
 cmake -S "${SRC}" -B "${BUILD}" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_ARCHITECTURES=62 \
