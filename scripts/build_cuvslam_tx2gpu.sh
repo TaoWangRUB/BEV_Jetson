@@ -37,8 +37,12 @@ python3 "${REPO_ROOT}/scripts/port/downgrade_cuvslam_cpp17.py" "${SRC}"
 #     labels (error-string mapping only). Idempotent. -----------------------------
 CULIB="${SRC}/libs/cuda_modules/culib_helper.h"
 if [[ -f "$CULIB" ]] && ! grep -q 'CUDART_VERSION >= 11000' "$CULIB"; then
+    # block 1: PARAMS_INVALID_{PREC,REFINE,MAXITER}
     sed -i '/case CUSOLVER_STATUS_IRS_PARAMS_INVALID_PREC:/i #if CUDART_VERSION >= 11000' "$CULIB"
     sed -i '/return "CUSOLVER_STATUS_IRS_PARAMS_INVALID_MAXITER";/a #endif' "$CULIB"
+    # block 2: IRS_INFOS_NOT_DESTROYED, IRS_MATRIX_SINGULAR, INVALID_WORKSPACE
+    sed -i '/case CUSOLVER_STATUS_IRS_INFOS_NOT_DESTROYED:/i #if CUDART_VERSION >= 11000' "$CULIB"
+    sed -i '/return "CUSOLVER_STATUS_INVALID_WORKSPACE";/a #endif' "$CULIB"
 fi
 
 echo "Configuring cuVSLAM GPU for CUDA 10.2 / sm_62 / gcc-8 / C++14 ..."
