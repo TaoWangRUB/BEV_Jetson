@@ -14,12 +14,15 @@ mkdir -p "${REPO_ROOT}/build"
 sed -i 's/set(CMAKE_CUDA_STANDARD 17)/set(CMAKE_CUDA_STANDARD 14)/' \
     "${SRC}/cmake/cuVSLAMUtils.cmake"
 
-# --- known fix #2: TX2 SoC = sm_62 (replace -arch=all if present) --------------
+# --- known fix #2: TX2 SoC = sm_62. nvcc 10.2 rejects both '-arch=all' (manual,
+#     CUDA 11.5+) and '-arch=native' (CMake 3.27 default when CUDA_ARCHITECTURES
+#     is unset). Rewrite the manual flag AND pin CMAKE_CUDA_ARCHITECTURES=62. -----
 KCM="${SRC}/libs/cuda_modules/cuda_kernels/CMakeLists.txt"
 [[ -f "$KCM" ]] && grep -q '\-arch=all' "$KCM" && sed -i 's|-arch=all|-arch=sm_62|g' "$KCM"
 
 echo "Configuring cuVSLAM GPU for CUDA 10.2 / sm_62 / gcc-8 / C++14 ..."
 cmake -S "${SRC}" -B "${BUILD}" -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CUDA_ARCHITECTURES=62 \
     -DCMAKE_C_COMPILER=gcc-8 -DCMAKE_CXX_COMPILER=g++-8 \
     -DCMAKE_CUDA_HOST_COMPILER=g++-8 \
     -DUSE_RERUN=OFF -DUSE_CERES=OFF -DUSE_NVTX=OFF 2>&1 | tee "${LOG}"
