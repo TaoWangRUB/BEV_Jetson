@@ -1,0 +1,15 @@
+# Build / colcon artifacts
+build/
+install/
+log/
+third_party/cuVSLAM/build/
+
+# Calibration outputs
+calib_port_*.npz
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor
+*.swp
