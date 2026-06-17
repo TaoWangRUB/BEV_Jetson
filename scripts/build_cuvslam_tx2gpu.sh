@@ -27,6 +27,11 @@ UTILS="${SRC}/cmake/cuVSLAMUtils.cmake"
 [[ -f "$UTILS" ]] && sed -i \
     's|INTERFACE -march=native)|INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-march=native>)|' "$UTILS"
 
+# --- known fix #4: downgrade C++17 device syntax (nested namespaces + inline
+#     variables) to C++14 so nvcc 10.2 can parse the device-reachable headers.
+#     Idempotent; cuVSLAM submodule stays at v15.0.0. ----------------------------
+python3 "${REPO_ROOT}/scripts/port/downgrade_cuvslam_cpp17.py" "${SRC}"
+
 echo "Configuring cuVSLAM GPU for CUDA 10.2 / sm_62 / gcc-8 / C++14 ..."
 cmake -S "${SRC}" -B "${BUILD}" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_ARCHITECTURES=62 \
