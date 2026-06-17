@@ -56,6 +56,17 @@ cmake -S "${SRC}" -B "${BUILD}" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER=gcc-8 -DCMAKE_CXX_COMPILER=g++-8 \
     -DCMAKE_CUDA_HOST_COMPILER=g++-8 \
     -DUSE_RERUN=OFF -DUSE_CERES=OFF -DUSE_NVTX=OFF 2>&1 | tee "${LOG}"
+
+# --- known fix #7: the fetched dense_hash_map dep defines an unconditional
+#     std::pmr alias; gcc-8's libstdc++ has no std::pmr (added in gcc-9). cuVSLAM
+#     doesn't use the pmr variant, so guard that block with a feature test. -------
+DHM="${BUILD}/_deps/dense_hash_map-src/include/jg/dense_hash_map.hpp"
+if [[ -f "$DHM" ]] && ! grep -q '__cpp_lib_memory_resource' "$DHM"; then
+    sed -i '/^namespace pmr$/i #if defined(__cpp_lib_memory_resource)' "$DHM"
+    sed -i '\|^} // namespace pmr$|a #endif' "$DHM"
+    echo "patched dense_hash_map std::pmr guard"
+fi
+
 cmake --build "${BUILD}" -j2 --target cuvslam 2>&1 | tee -a "${LOG}"
 RC=${PIPESTATUS[0]}
 echo "cuVSLAM GPU (CUDA 10.2) build exit: ${RC}   (log: ${LOG})"
