@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Empirical port: build cuVSLAM's GPU path on CUDA 10.2 (TX2) with gcc-8 + C++14.
-# Run inside the gcc-8 build container (docker/Dockerfile.cuvslam-build) with the
-# host CUDA mounted at /usr/local/cuda. Iterative: applies the known fixes, then
-# surfaces whatever CUDA-12 API still remains. Log: build/cuvslam_tx2gpu.log
+# Run inside the Foxy container (docker/Dockerfile.cuvslam-foxy, which ships gcc-8
+# for nvcc) with the host CUDA mounted at /usr/local/cuda. Pins g++-8 as the CUDA
+# host compiler regardless of the container default. Idempotent: applies the known
+# fixes, then surfaces whatever CUDA-12 API still remains. Log: build/cuvslam_tx2gpu.log
 set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${REPO_ROOT}/third_party/cuVSLAM"

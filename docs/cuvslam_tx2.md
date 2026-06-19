@@ -38,22 +38,23 @@ Driver: `scripts/build_cuvslam_tx2gpu.sh` + `scripts/port/downgrade_cuvslam_cpp1
 7. Guard the fetched `dense_hash_map` `std::pmr` alias (gcc-8 libstdc++ has no pmr).
 8. Link `-lstdc++fs` (gcc-8 keeps `std::filesystem` in a separate library).
 - Runtime: add `/etc/ld.so.conf.d/nvidia-tegra.conf` + `ldconfig` so `libcuda.so.1`
-  (under `tegra/`) resolves in-container (baked into `Dockerfile.cuvslam-build`).
+  (under `tegra/`) resolves in-container (baked into `Dockerfile.cuvslam-foxy`).
 
 ## Reproduce
 ```bash
-# On the TX2, in /media/nvidia/workspace/BEV:
-docker build -f docker/Dockerfile.cuvslam-build -t cuvslam-build:tx2 docker/
+# On the TX2, in /media/nvidia/workspace/BEV_Jetson — one image builds everything:
+docker build -f docker/Dockerfile.cuvslam-foxy -t cuvslam-foxy:tx2 .
 docker run --rm --runtime nvidia \
   -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all \
   -v /usr/local/cuda:/usr/local/cuda:ro -v "$PWD":/workspace -w /workspace \
-  cuvslam-build:tx2 bash -lc './scripts/build_cuvslam_tx2gpu.sh'
+  cuvslam-foxy:tx2 bash -lc './scripts/build_cuvslam_tx2gpu.sh'
 # -> third_party/cuVSLAM/build_tx2gpu/bin/libcuvslam.so
 ```
 
 ## Next
-Wire `libcuvslam.so` into a ROS 2 Jazzy wrapper (gcc-8 `.so` → gcc-13 via
-libstdc++ forward-compat; same tegra-ld fix in the Jazzy image) extending the
-rover's single-pair `cuvslam_odom_node` to N cameras via
-`cuvslam::Odometry::Track(vector<Image>...)`, fed by 4× IMX219 (160° fisheye)
-capture + calibration.
+Done: `libcuvslam.so` is wired into a ROS 2 **Foxy (20.04)** wrapper (gcc-8 `.so`
+→ gcc-9 via libstdc++ forward-compat; same tegra-ld fix in the Foxy image) —
+`bev_cuvslam` runs N cameras via `cuvslam::Odometry::Track(vector<Image>)`, fed by
+4× IMX219 (160° fisheye) capture (`bev_camera`) + fisheye calibration. See
+[build_and_run.md](build_and_run.md). (Foxy, not Jazzy: the r440 driver only
+initializes up to glibc 2.31 / Ubuntu 20.04.)

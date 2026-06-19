@@ -1,9 +1,11 @@
-# Ubuntu 20.04 + ROS 2 Foxy runtime for the ported cuVSLAM (CUDA 10.2 / r440).
+# Ubuntu 20.04 + ROS 2 Foxy: the single container that BUILDS and RUNS everything
+# (the ported cuVSLAM lib + the ROS 2 nodes) for the TX2 (CUDA 10.2 / r440).
 #
 # 20.04 (glibc 2.31) is the NEWEST base where the r440 libcuda still initializes
 # (22.04/2.35 and 24.04/2.39 fail — driver init is glibc-gated, not file-sharing).
-# This gives native ROS 2 (Foxy) + cuVSLAM GPU in one container. The gcc-8-built
-# libcuvslam.so links fine here via libstdc++ forward-compat.
+# nvcc 10.2 needs gcc <= 8 as its host compiler, so gcc-8 is installed alongside
+# 20.04's default gcc-9; the build script points nvcc at g++-8 while the ROS 2
+# nodes build with gcc-9. One container, no separate 18.04 build image.
 FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-c"]
@@ -35,6 +37,23 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 RUN rosdep init || true && rosdep update || true
 
+# Build tooling for the cuVSLAM CUDA-10.2 port (gcc-8 = nvcc 10.2 host compiler)
+# + the EGL stack the bev_camera Argus node needs (GLVND dispatch/dev libs; the
+# NVIDIA vendor itself is mounted by the runtime). Kept as separate layers so the
+# ROS base layer above stays cached across rebuilds.
+RUN apt-get update && apt-get install -y \
+    gcc-8 g++-8 wget libgtest-dev zlib1g-dev \
+    libglvnd0 libegl1 libgles2 libegl-dev libgles-dev libx11-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# cuVSLAM needs cmake >= 3.19; focal ships 3.16. Install the official aarch64
+# binary into /usr/local (shadows /usr/bin/cmake; used for both the cuVSLAM lib
+# build and colcon).
+RUN wget -qO /tmp/cmake.sh \
+      https://github.com/Kitware/CMake/releases/download/v3.27.9/cmake-3.27.9-linux-aarch64.sh && \
+    sh /tmp/cmake.sh --skip-license --prefix=/usr/local && rm /tmp/cmake.sh && \
+    cmake --version
+
 ENV CUDA_HOME=/usr/local/cuda
 ENV CUDA_PATH=/usr/local/cuda
 ENV PATH=/usr/local/cuda/bin:${PATH}
@@ -44,7 +63,14 @@ ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/targets/aarch64-linux/
 # libcuda.so.1 SONAME that CUDA loads. Bake the (runtime-resolving) symlink + ld
 # search path; entrypoint runs ldconfig once the tegra libs are mounted.
 RUN ln -sf /usr/lib/aarch64-linux-gnu/tegra/libcuda.so.1.1 /usr/lib/aarch64-linux-gnu/libcuda.so.1 && \
-    printf '/usr/lib/aarch64-linux-gnu/tegra\n' > /etc/ld.so.conf.d/nvidia-tegra.conf
+    printf '/usr/lib/aarch64-linux-gnu/tegra\n' > /etc/ld.so.conf.d/nvidia-tegra.conf && \
+    printf '/usr/lib/aarch64-linux-gnu/tegra-egl\n' > /etc/ld.so.conf.d/nvidia-tegra-egl.conf
+
+# bev_camera (libargus) needs the NVIDIA EGL vendor (EGLStream + headless device
+# display), not the Mesa fallback. The runtime mounts libEGL_nvidia.so.0 + the
+# 10_nvidia.json GLVND config; force GLVND to pick it (tegra-egl is on ld path
+# above so the vendor lib resolves).
+ENV __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 
 COPY docker/entrypoint_foxy.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
