@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bev_cuvslam</name>
+  <version>0.1.0</version>
+  <description>cuVSLAM 4-camera (surround fisheye) multicamera visual odometry node for the
+  TX2/J106 BEV rig. Runs the CUDA-10.2-ported libcuvslam in ROS 2 Foxy.</description>
+  <maintainer email="archerwang.gyaw@gmail.com">User</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>image_transport</depend>
+  <depend>message_filters</depend>
+  <depend>yaml-cpp</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
