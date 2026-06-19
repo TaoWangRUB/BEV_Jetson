@@ -1,128 +1,179 @@
 #!/usr/bin/env python3
-"""Offline fisheye (Kannala-Brandt) intrinsic calibration from a directory of
-checkerboard frames (captured with scripts/calib/capture_frames.sh).
-
-The capture is "blind" (no live feedback), so this tool does the work afterward:
-  - auto-detects the checkerboard grid (so you don't have to get inner-corner
-    counts exactly right),
-  - reports detection rate AND a 3x3 coverage map (edge/corner coverage is what
-    matters for a 160 deg fisheye),
-  - calibrates with the fisheye model cuVSLAM / VINS use and writes the
-    KANNALA_BRANDT yaml + annotated previews.
-
-File-based — needs only OpenCV + numpy (no GStreamer):
-    pip install opencv-python-headless numpy
-    ./fisheye_calib.py <frames-dir> --id N [--board 11x9] [--square 30]
-
---board is the number of SQUARES (e.g. 11x9); inner corners = squares-1. If the
-guess fails, nearby grids are tried automatically.
 """
+Online interactive fisheye (Kannala-Brandt) intrinsic calibration for Jetson TX2.
+Captures live frames from nvarguscamerasrc, displays checkerboard detections in real-time,
+tracks coverage over a 3x3 grid, and calibrates immediately when prompted.
+
+Usage:
+    python3 online_calib.py --id 0 --board 11x9 --square 30
+"""
+
 import argparse
-import glob
 import os
 import sys
-
 import cv2
 import numpy as np
 
-ap = argparse.ArgumentParser()
-ap.add_argument("frames", help="directory of *.jpg/*.png checkerboard frames")
-ap.add_argument("--id", type=int, default=0, help="camera id (output naming)")
-ap.add_argument("--board", default="11x9", help="checkerboard SQUARES, e.g. 11x9")
-ap.add_argument("--square", type=float, default=30.0, help="square size (mm)")
-ap.add_argument("--min-views", type=int, default=10)
-ap.add_argument("--out", default="config/calib")
-args = ap.parse_args()
+def parse_args():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--id", type=int, default=0, help="Camera sensor ID")
+    ap.add_argument("--board", default="11x9", help="Checkerboard SQUARES (e.g., 11x9)")
+    ap.add_argument("--square", type=float, default=30.0, help="Square size in mm")
+    ap.add_argument("--width", type=int, default=1280, help="Image width")
+    ap.add_argument("--height", type=int, default=720, help="Image height")
+    ap.add_argument("--fps", type=int, default=15, help="Preview framerate")
+    ap.add_argument("--min-views", type=int, default=15, help="Minimum views required to calibrate")
+    ap.add_argument("--out", default="config/calib", help="Output directory")
+    return ap.parse_args()
 
-sx, sy = (int(v) for v in args.board.lower().split("x"))
-# inner corners = squares - 1; build candidate grids around the guess (and swap)
-guess = (sx - 1, sy - 1)
-CANDIDATES = []
-for c in [guess, (guess[1], guess[0]), (sx, sy), (sx - 2, sy - 2)]:
-    if c[0] > 2 and c[1] > 2 and c not in CANDIDATES:
-        CANDIDATES.append(c)
+def get_gstreamer_pipeline(sensor_id, w, h, fps):
+    """TX2-optimized GStreamer pipeline for stable OpenCV video ingestion."""
+    return (
+        f"nvarguscamerasrc sensor-id={sensor_id} ! "
+        f"video/x-raw(memory:NVMM), width={w}, height={h}, framerate={fps}/1 ! "
+        f"nvvidconv ! video/x-raw, format=BGRx ! "
+        f"videoconvert ! video/x-raw, format=BGR ! appsink drop=true sync=false"
+    )
 
-FIND = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
-SUBPIX = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.1)
+def main():
+    args = parse_args()
+    
+    # Calculate inner corners (Squares - 1)
+    sx, sy = (int(v) for v in args.board.lower().split("x"))
+    board_corners = (sx - 1, sy - 1)
+    
+    # Configure OpenCV grid extraction settings
+    find_flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
+    subpix_criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.1)
+    
+    # 3D Object Point Setup
+    objp = np.zeros((1, board_corners[0] * board_corners[1], 3), np.float32)
+    objp[0, :, :2] = np.mgrid[0:board_corners[0], 0:board_corners[1]].T.reshape(-1, 2)
+    objp *= args.square
 
-files = sorted(glob.glob(os.path.join(args.frames, "*.jpg")) +
-               glob.glob(os.path.join(args.frames, "*.png")))
-if not files:
-    sys.exit(f"no frames in {args.frames}")
-grays = [(f, cv2.cvtColor(cv2.imread(f), cv2.COLOR_BGR2GRAY)) for f in files
-         if cv2.imread(f) is not None]
-size = grays[0][1].shape[::-1]
+    # Data lists
+    objpoints = []
+    imgpoints = []
+    captured_frames = [] # To save preview capabilities for verification
+    cov = np.zeros((3, 3), int)  # 3x3 grid coverage map
+    
+    # Open Jetson camera pipeline
+    pipeline = get_gstreamer_pipeline(args.id, args.width, args.height, args.fps)
+    cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+    
+    if not cap.isOpened():
+        sys.exit("Error: Failed to open nvarguscamerasrc pipeline.")
+        
+    print("\n--- Live Calibration Script Started ---")
+    print(" [SPACE] -> Lock-in current frame (if board detected)")
+    print(" [C]     -> Process collected data and run Calibration")
+    print(" [Q]     -> Quit/Abort script")
+    print("---------------------------------------\n")
 
-# --- auto-detect the grid on a sample ---------------------------------------
-sample = grays[:max(8, len(grays) // 4)]
-best, best_n = None, 0
-for cand in CANDIDATES:
-    n = sum(cv2.findChessboardCorners(g, cand, FIND)[0] for _, g in sample)
-    print(f"  grid {cand[0]}x{cand[1]} inner corners -> {n}/{len(sample)} sample hits")
-    if n > best_n:
-        best, best_n = cand, n
-if best is None or best_n == 0:
-    sys.exit("No checkerboard found with any candidate grid. Check --board and "
-             "that the board is fully visible / in focus, then recapture.")
-BOARD = best
-print(f"using grid {BOARD[0]}x{BOARD[1]} inner corners ({BOARD[0]+1}x{BOARD[1]+1} squares)")
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Dropped frame from sensor...")
+            continue
+            
+        display_frame = frame.copy()
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Real-time search for checkerboard corners
+        found, corners = cv2.findChessboardCorners(gray, board_corners, find_flags)
+        
+        if found:
+            # Draw green indicator when a board is successfully detected and ready to be locked
+            cv2.drawChessboardCorners(display_frame, board_corners, corners, found)
+            cv2.putText(display_frame, "READY (Press SPACE to capture)", (20, 40), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        else:
+            cv2.putText(display_frame, "Searching for board...", (20, 40), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        
+        # Render current coverage matrix statistics onto the display
+        cv2.putText(display_frame, f"Collected Views: {len(imgpoints)}", (20, 80), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # UI rendering for interactive feedback
+        cv2.imshow(f"TX2 Live Cam {args.id} Calibration", display_frame)
+        key = cv2.waitKey(1) & 0xFF
+        
+        if key == ord(' '):  # SPACE BAR pressed
+            if found:
+                # Sub-pixel refinement
+                corners_refined = cv2.cornerSubPix(gray, corners, (3, 3), (-1, -1), subpix_criteria)
+                
+                objpoints.append(objp.copy())
+                imgpoints.append(corners_refined)
+                captured_frames.append(frame.copy())
+                
+                # Calculate coordinates for coverage update
+                cx, cy = corners_refined[:, 0, 0].mean(), corners_refined[:, 0, 1].mean()
+                col_idx = min(2, int(cx / args.width * 3))
+                row_idx = min(2, int(cy / args.height * 3))
+                cov[row_idx, col_idx] += 1
+                
+                print(f"\n[+] Frame added! Total targets locked: {len(imgpoints)}")
+                print("Current 3x3 Spatial Coverage Matrix Map:")
+                for r in cov:
+                    print(f"   {' '.join(f'{v:3d}' for v in r)}")
+            else:
+                print("[!] Warning: No checkerboard found in frame. Skipping capture.")
+                
+        elif key == ord('c') or key == ord('C'):  # Process Calibration
+            if len(imgpoints) < args.min_views:
+                print(f"[!] Target count insufficient. Got {len(imgpoints)}, need >= {args.min_views}")
+                continue
+            print("\nComputing Kannala-Brandt calibration matrices... Please wait...")
+            break
+            
+        elif key == ord('q') or key == ord('Q'):   # Abort
+            cap.release()
+            cv2.destroyAllWindows()
+            sys.exit("Calibration cancelled by user.")
 
-objp = np.zeros((1, BOARD[0] * BOARD[1], 3), np.float32)
-objp[0, :, :2] = np.mgrid[0:BOARD[0], 0:BOARD[1]].T.reshape(-1, 2)
-objp *= args.square
+    # Cleanup live video stream window 
+    cap.release()
+    cv2.destroyAllWindows()
+    
+    # --- Matrix Math Calculations ---
+    size = (args.width, args.height)
+    K = np.zeros((3, 3))
+    D = np.zeros((4, 1))
+    flags = cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC + cv2.fisheye.CALIB_FIX_SKEW
+    
+    rms, _, _, _, _ = cv2.fisheye.calibrate(
+        objpoints, imgpoints, size, K, D, flags=flags,
+        criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-6)
+    )
+    
+    print(f"\n==========================================")
+    print(f"RMS Reprojection Error: {rms:.4f} pixels (Target < ~0.5)")
+    print(f"==========================================")
+    print("K matrix:\n", K)
+    print("D array: ", D.ravel())
+    
+    # Save outputs
+    os.makedirs(args.out, exist_ok=True)
+    prevdir = os.path.join(args.out, f"cam{args.id}_preview")
+    os.makedirs(prevdir, exist_ok=True)
+    
+    # Export system verification sample frames
+    for idx, sample_img in enumerate(captured_frames[:3]):
+        m1, m2 = cv2.fisheye.initUndistortRectifyMap(K, D, np.eye(3), K, size, cv2.CV_16SC2)
+        undistorted = cv2.remap(sample_img, m1, m2, cv2.INTER_LINEAR)
+        cv2.imwrite(os.path.join(prevdir, f"undist_sample_{idx}.jpg"), undistorted)
 
-os.makedirs(args.out, exist_ok=True)
-prevdir = os.path.join(args.out, f"cam{args.id}_preview")
-os.makedirs(prevdir, exist_ok=True)
-
-objpoints, imgpoints, used = [], [], []
-cov = np.zeros((3, 3), int)  # 3x3 coverage map of board centers
-for f, gray in grays:
-    ok, corners = cv2.findChessboardCorners(gray, BOARD, FIND)
-    if not ok:
-        continue
-    corners = cv2.cornerSubPix(gray, corners, (3, 3), (-1, -1), SUBPIX)
-    objpoints.append(objp.copy())
-    imgpoints.append(corners)
-    used.append(f)
-    cx, cy = corners[:, 0, 0].mean(), corners[:, 0, 1].mean()
-    cov[min(2, int(cy / size[1] * 3)), min(2, int(cx / size[0] * 3))] += 1
-    vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-    cv2.drawChessboardCorners(vis, BOARD, corners, ok)
-    cv2.imwrite(os.path.join(prevdir, "det_" + os.path.basename(f)), vis)
-
-print(f"\ndetected board in {len(used)}/{len(grays)} frames")
-print("coverage (3x3 image regions, board-center counts):")
-for row in cov:
-    print("   " + " ".join(f"{v:3d}" for v in row))
-empty = int((cov == 0).sum())
-if empty:
-    print(f"WARNING: {empty}/9 image regions have NO views — for a 160 deg fisheye, "
-          "recapture hitting the empty regions (esp. edges/corners).")
-if len(used) < args.min_views:
-    sys.exit(f"only {len(used)} good views (< {args.min_views}). Recapture with more "
-             "coverage; capture more frames and move the board slowly.")
-
-K = np.zeros((3, 3))
-D = np.zeros((4, 1))
-flags = cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC + cv2.fisheye.CALIB_FIX_SKEW
-rms, _, _, _, _ = cv2.fisheye.calibrate(
-    objpoints, imgpoints, size, K, D, flags=flags,
-    criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-6))
-print(f"\nRMS reprojection error = {rms:.4f} px   (good < ~0.5)")
-print("K =\n", K, "\nD =", D.ravel())
-
-for f in used[:3]:
-    img = cv2.imread(f)
-    m1, m2 = cv2.fisheye.initUndistortRectifyMap(K, D, np.eye(3), K, size, cv2.CV_16SC2)
-    cv2.imwrite(os.path.join(prevdir, "undist_" + os.path.basename(f)),
-                cv2.remap(img, m1, m2, cv2.INTER_LINEAR))
-
-np.savez(os.path.join(args.out, f"cam{args.id}.npz"), K=K, D=D, size=size, rms=rms)
-fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-k = D.ravel()
-with open(os.path.join(args.out, f"cam{args.id}.yaml"), "w") as fp:
-    fp.write(f"""%YAML:1.0
+    # Save configs (.npz + .yaml)
+    np.savez(os.path.join(args.out, f"cam{args.id}.npz"), K=K, D=D, size=size, rms=rms)
+    
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+    k = D.ravel()
+    
+    yaml_path = os.path.join(args.out, f"cam{args.id}.yaml")
+    with open(yaml_path, "w") as fp:
+        fp.write(f"""%YAML:1.0
 ---
 model_type: KANNALA_BRANDT
 camera_name: cam{args.id}
@@ -139,4 +190,7 @@ projection_parameters:
    u0: {cx:.10f}
    v0: {cy:.10f}
 """)
-print(f"\nsaved {args.out}/cam{args.id}.yaml + cam{args.id}.npz + previews in {prevdir}/")
+    print(f"\nOutputs written to:\n -> {yaml_path}\n -> {prevdir}/\n")
+
+if __name__ == "__main__":
+    main()
