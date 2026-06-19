@@ -2,15 +2,15 @@
 ---
 model_type: KANNALA_BRANDT
 camera_name: cam3
-image_width: 1280
-image_height: 720
+image_width: 1640
+image_height: 1232
 distortion_parameters:
-   k2: -0.0418422148
-   k3: 0.0172718950
-   k4: -0.0111390883
-   k5: -0.0019226429
+   k2: -0.0273875823
+   k3: -0.0164744256
+   k4: 0.0133402792
+   k5: -0.0058988896
 projection_parameters:
-   mu: 777.4338989258
-   mv: 778.5531616211
-   u0: 690.9074096680
-   v0: 355.3115234375
+   mu: 783.0183255095
+   mv: 784.8940291299
+   u0: 874.3884632316
+   v0: 619.4138132816
