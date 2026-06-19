@@ -6,6 +6,7 @@ third_party/cuVSLAM/build/
 
 # Calibration outputs
 calib_port_*.npz
+scripts/config
 
 # Python
 __pycache__/
