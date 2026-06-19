@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# One command: build the gcc-8 image (if missing), build libcuvslam.so for
-# CUDA 10.2 / sm_62, then run the WarmUpGPU runtime smoke test on the GPU.
-# Run on the TX2 from the BEV repo root (needs the nvidia docker runtime).
+# One command: build the Foxy image (gcc-8 + ROS 2 Foxy, if missing), build
+# libcuvslam.so for CUDA 10.2 / sm_62, then run the WarmUpGPU runtime smoke test
+# on the GPU. Run on the TX2 from the BEV repo root (needs the nvidia docker runtime).
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
-IMG="${IMG:-cuvslam-build:tx2}"
+IMG="${IMG:-cuvslam-foxy:tx2}"
 
 GPU_RUN=(docker run --rm --runtime nvidia
   -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all
@@ -13,7 +13,7 @@ GPU_RUN=(docker run --rm --runtime nvidia
 
 if ! docker image inspect "$IMG" >/dev/null 2>&1; then
   echo "== building image $IMG =="
-  docker build -f docker/Dockerfile.cuvslam-build -t "$IMG" docker/
+  docker build -f docker/Dockerfile.cuvslam-foxy -t "$IMG" .
 fi
 
 echo "== building libcuvslam.so (CUDA 10.2 / sm_62) =="

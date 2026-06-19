@@ -79,20 +79,35 @@ C++17→C++14 source converter (nested namespaces / inline vars), arch pin to sm
 CUDA-11 cuSOLVER enum guards, `cudaMallocAsync`→`cudaMalloc`, an `std::pmr` guard,
 and `-lstdc++fs`.
 
-### Two-container design (why)
-nvcc 10.2 requires host **gcc ≤ 8** (so cuVSLAM is built on Ubuntu 18.04), but
-ROS 2 needs a modern Ubuntu. So:
+### Why Docker at all (the board is already 18.04)?
+The TX2 rootfs *is* Ubuntu 18.04 + CUDA 10.2, so cuVSLAM **could** be built
+natively. Docker is used for **the ROS 2 runtime**: native 18.04 only reaches ROS 2
+Eloquent/Dashing (both EOL), and modern ROS 2 (Foxy) needs Ubuntu 20.04. The
+container provides 20.04 + Foxy on top of the 18.04 kernel/r440 driver, plus
+isolation/reproducibility matching the rover workflow — without touching the board
+rootfs.
+
+### One container does everything
+The **r440 driver only initializes up to glibc 2.31 (Ubuntu 20.04)** — 22.04/24.04
+fail driver init (glibc-gated). And nvcc 10.2 needs host **gcc ≤ 8**. 20.04 carries
+both ROS 2 Foxy *and* an installable `gcc-8`, so a **single image** builds and runs
+the whole stack:
 
 | Image | Base | Purpose |
 |-------|------|---------|
-| `cuvslam-build:tx2` | Ubuntu 18.04 + gcc-8 | Build `libcuvslam.so` for CUDA 10.2 ([Dockerfile.cuvslam-build](docker/Dockerfile.cuvslam-build)) |
-| `bev_cuvslam_*_jazzy` | Ubuntu 24.04 + ROS 2 Jazzy | Runtime / ROS 2 dev ([Dockerfile](docker/Dockerfile), [docker-compose.yml](docker/docker-compose.yml)) |
+| `cuvslam-foxy:tx2` | Ubuntu 20.04 + ROS 2 Foxy + gcc-8 | Build `libcuvslam.so` (nvcc→g++-8), build **and** run the ROS 2 nodes + cuVSLAM GPU ([Dockerfile.cuvslam-foxy](docker/Dockerfile.cuvslam-foxy)) |
 
-Both **bind-mount the host CUDA 10.2** at `/usr/local/cuda` and use the **nvidia
-container runtime** (rover-style). The gcc-8-built `.so` links into the gcc-13
-Jazzy container via libstdc++ forward-compatibility. GPU access in a non-`l4t-base`
-container needs `/etc/ld.so.conf.d/nvidia-tegra.conf` + `ldconfig` so `libcuda.so.1`
-resolves (baked into the build image).
+It **bind-mounts the host CUDA 10.2** at `/usr/local/cuda` and uses the **nvidia
+container runtime** (rover-style). nvcc compiles the `.cu` files with `g++-8`; the
+ROS 2 nodes build with gcc-9 and link the `.so` via libstdc++ forward-compatibility.
+GPU + EGL access in a non-`l4t-base` container needs the `tegra`/`tegra-egl` ld
+paths + `ldconfig` so `libcuda.so.1` / `libEGL_nvidia` resolve (baked into the image).
+See [docs/build_and_run.md](docs/build_and_run.md) for the full build/run guide.
+
+> **Future: fused capture + VO.** This same container already carries Argus, EGL,
+> CUDA and cuVSLAM, so the planned single-process node that feeds Argus NVMM
+> straight to cuVSLAM as GPU memory (`is_gpu_mem=true`, avoiding the GPU→CPU→DDS→GPU
+> copies) builds here too — no new image needed. See [§ data path](docs/build_and_run.md#5-data-path--a-performance-note).
 
 ---
 
@@ -100,37 +115,50 @@ resolves (baked into the build image).
 
 | Path | What |
 |------|------|
-| [docker/](docker/) | Build + runtime container definitions and compose |
-| [scripts/setup_tx2_docker.sh](scripts/setup_tx2_docker.sh) | One-time board Docker/runtime prep |
-| [scripts/build_cuvslam_tx2gpu.sh](scripts/build_cuvslam_tx2gpu.sh) | cuVSLAM CUDA-10.2 port build (applies all fixes) |
-| [scripts/port/downgrade_cuvslam_cpp17.py](scripts/port/downgrade_cuvslam_cpp17.py) | Idempotent C++17→C++14 source converter |
-| [scripts/port/build_and_validate.sh](scripts/port/build_and_validate.sh) | One command: build image + lib + runtime smoke test |
-| [scripts/port/smoke_test.cpp](scripts/port/smoke_test.cpp) | `WarmUpGPU()` runtime validation |
+| [docker/](docker/) | Single 20.04/Foxy build+run container ([Dockerfile.cuvslam-foxy](docker/Dockerfile.cuvslam-foxy)) + entrypoint |
+| [docs/build_and_run.md](docs/build_and_run.md) | Docker setup, build & run guide |
+| [ros2/bev_camera/](ros2/bev_camera/) | 4-camera libargus capture node → `/camN/image_raw` |
+| [ros2/bev_cuvslam/](ros2/bev_cuvslam/) | 4-camera cuVSLAM multicam VO node → `/odom` |
+| [scripts/](scripts/) | Build/port/setup/calib shell + python helpers (traced below) |
 | [intrinsic_calib.py](intrinsic_calib.py) | Fisheye intrinsic calibration (KANNALA_BRANDT) |
 | [docs/cuvslam_tx2.md](docs/cuvslam_tx2.md) | cuVSLAM port: rationale, fixes, reproduce |
 | [third_party/cuVSLAM/](third_party/cuVSLAM/) | Upstream cuVSLAM (submodule, v15.0.0) |
 | `OmniNxt.pdf` | Reference paper (omnidirectional aerial perception) |
+
+### Scripts (what runs what)
+
+| Script | Run where | Purpose / called by |
+|--------|-----------|---------------------|
+| [scripts/setup_tx2_docker.sh](scripts/setup_tx2_docker.sh) | TX2 host (sudo) | One-time: Docker + nvidia runtime on the SD card |
+| [scripts/port/build_and_validate.sh](scripts/port/build_and_validate.sh) | TX2 host | One command: builds the Foxy image → `libcuvslam.so` → WarmUpGPU smoke test |
+| [scripts/build_cuvslam_tx2gpu.sh](scripts/build_cuvslam_tx2gpu.sh) | **inside** Foxy container | The CUDA-10.2 port build (applies all fixes); called by `build_and_validate.sh` |
+| [scripts/port/downgrade_cuvslam_cpp17.py](scripts/port/downgrade_cuvslam_cpp17.py) | inside container | Idempotent C++17→C++14 source converter; called by `build_cuvslam_tx2gpu.sh` |
+| [scripts/port/smoke_test.cpp](scripts/port/smoke_test.cpp) | inside container | `WarmUpGPU()` runtime validation; compiled by `build_and_validate.sh` |
+| [scripts/calib/grid_view_tx2.sh](scripts/calib/grid_view_tx2.sh) | TX2 host | Live 4-camera grid preview (calibration framing aid) |
+| [docker/entrypoint_foxy.sh](docker/entrypoint_foxy.sh) | container entry | `ldconfig` (tegra libcuda/EGL) + source ROS 2 / workspace |
 
 ---
 
 ## 4. Build & run
 
 ```bash
-# On the TX2, repo at /media/nvidia/workspace/BEV:
+# On the TX2, repo at /media/nvidia/workspace/BEV_Jetson:
 
 # 1. One-time board prep (root)
 sudo ./scripts/setup_tx2_docker.sh      # log out/in afterwards for the docker group
 
-# 2. Build + runtime-validate cuVSLAM for CUDA 10.2 (one command)
+# 2. Build the single Foxy image (ROS 2 + gcc-8 + EGL), then build +
+#    runtime-validate cuVSLAM for CUDA 10.2 — one command does both:
 ./scripts/port/build_and_validate.sh
+#    -> builds cuvslam-foxy:tx2 if missing
 #    -> third_party/cuVSLAM/build_tx2gpu/bin/libcuvslam.so
 #    -> "WarmUpGPU() completed ... on the r440 driver"
 
-# 3. ROS 2 Jazzy dev container (host CUDA + GPU)
-export ARCH=$(uname -m)
-docker compose -f docker/docker-compose.yml up -d bev_cuvslam
-docker compose -f docker/docker-compose.yml exec bev_cuvslam bash
+# 3. Build the ROS 2 workspace + run the nodes — see docs/build_and_run.md
 ```
+
+See **[docs/build_and_run.md](docs/build_and_run.md)** for the full workspace
+build and how to run the capture + VO nodes.
 
 ---
 
@@ -138,8 +166,9 @@ docker compose -f docker/docker-compose.yml exec bev_cuvslam bash
 
 - [x] TX2 board prep, Docker on SD, GPU passthrough into containers
 - [x] **Port cuVSLAM to CUDA 10.2** — build + runtime-validated on the r440 driver
-- [ ] Confirm the gcc-8 `.so` loads + runs in the ROS 2 Jazzy (24.04) container
-- [ ] ROS 2 multicam wrapper — extend a single-pair node to N cameras via `Odometry::Track(vector<Image>...)`
-- [ ] 4× IMX219 (160° fisheye) capture → ROS 2 topics + fisheye/extrinsic calibration
-- [ ] Fix the 6th camera (i2c bus 1 @ `0x12`); add an IMU for inertial mode
+- [x] gcc-8 `.so` loads + links in the ROS 2 **Foxy (20.04)** container
+- [x] ROS 2 multicam VO node (`bev_cuvslam`) — N cameras via `Odometry::Track(vector<Image>)`
+- [x] 4× IMX219 (160° fisheye) capture (`bev_camera`, libargus) → ROS 2 topics + fisheye/extrinsic calibration
+- [ ] Run capture → VO end-to-end; verify tracking
+- [ ] Fix the 6th camera (i2c bus 1 @ `0x12`); add IMU node + EKF fusion (cuVSLAM multicam can't fuse IMU directly)
 - [ ] Depth / occupancy grid; IPM surround BEV

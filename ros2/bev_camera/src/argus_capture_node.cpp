@@ -21,6 +21,8 @@
 #include <EGLStream/FrameConsumer.h>
 #include <EGLStream/NV/ImageNativeBuffer.h>
 #include <nvbuf_utils.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 
 using namespace Argus;
 
@@ -51,10 +53,45 @@ class ArgusCaptureNode : public rclcpp::Node {
     running_ = false;
     if (worker_.joinable()) worker_.join();
     for (auto fd : dmabufs_) if (fd != -1) NvBufferDestroy(fd);
+    if (egl_display_ != EGL_NO_DISPLAY) eglTerminate(egl_display_);
   }
 
  private:
+  // Headless EGLDisplay: in a container there is no window system, so Argus's
+  // fallback eglGetDisplay(EGL_DEFAULT_DISPLAY) fails. Get a display straight
+  // from the GPU device via EGL_EXT_platform_device (no X needed) and hand it to
+  // each Argus output stream so the EGLStream consumer uses it.
+  bool init_egl() {
+    auto query_devices =
+        (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
+    auto get_platform_display =
+        (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+    if (query_devices && get_platform_display) {
+      EGLDeviceEXT devs[8];
+      EGLint n = 0;
+      if (query_devices(8, devs, &n) && n > 0) {
+        for (EGLint d = 0; d < n; ++d) {
+          EGLDisplay dpy = get_platform_display(EGL_PLATFORM_DEVICE_EXT, devs[d], nullptr);
+          if (dpy != EGL_NO_DISPLAY && eglInitialize(dpy, nullptr, nullptr)) {
+            egl_display_ = dpy;
+            RCLCPP_INFO(get_logger(), "EGL headless display via device %d of %d", d, n);
+            return true;
+          }
+        }
+      }
+    }
+    EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (dpy != EGL_NO_DISPLAY && eglInitialize(dpy, nullptr, nullptr)) {
+      egl_display_ = dpy;
+      RCLCPP_WARN(get_logger(), "EGL using default display (needs window system)");
+      return true;
+    }
+    RCLCPP_ERROR(get_logger(), "no usable EGLDisplay");
+    return false;
+  }
+
   bool setup_argus() {
+    if (!init_egl()) return false;
     provider_ = UniqueObj<CameraProvider>(CameraProvider::create());
     auto* ip = interface_cast<ICameraProvider>(provider_.get());
     if (!ip) { RCLCPP_ERROR(get_logger(), "no ICameraProvider"); return false; }
@@ -78,6 +115,7 @@ class ArgusCaptureNode : public rclcpp::Node {
 
       UniqueObj<OutputStreamSettings> ss(isession->createOutputStreamSettings(STREAM_TYPE_EGL));
       auto* iss = interface_cast<IEGLOutputStreamSettings>(ss.get());
+      iss->setEGLDisplay(egl_display_);
       iss->setPixelFormat(PIXEL_FMT_YCbCr_420_888);
       iss->setResolution(Size2D<uint32_t>(width_, height_));
       iss->setMetadataEnable(true);
@@ -160,6 +198,7 @@ class ArgusCaptureNode : public rclcpp::Node {
   std::vector<UniqueObj<Request>> requests_;
   std::vector<UniqueObj<EGLStream::FrameConsumer>> consumers_;
   std::vector<int> dmabufs_;
+  EGLDisplay egl_display_ = EGL_NO_DISPLAY;
   std::atomic<bool> running_{false};
   std::thread worker_;
 };
