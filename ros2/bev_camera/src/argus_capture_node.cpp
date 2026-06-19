@@ -24,11 +24,6 @@
 
 using namespace Argus;
 
-namespace {
-template <typename T>
-T* iface(const Argus::InterfaceProvider* p) { return Argus::interface_cast<T>(p); }
-}  // namespace
-
 class ArgusCaptureNode : public rclcpp::Node {
  public:
   ArgusCaptureNode() : Node("argus_capture") {
@@ -61,7 +56,7 @@ class ArgusCaptureNode : public rclcpp::Node {
  private:
   bool setup_argus() {
     provider_ = UniqueObj<CameraProvider>(CameraProvider::create());
-    auto* ip = iface<ICameraProvider>(provider_.get());
+    auto* ip = interface_cast<ICameraProvider>(provider_.get());
     if (!ip) { RCLCPP_ERROR(get_logger(), "no ICameraProvider"); return false; }
     std::vector<CameraDevice*> devs;
     ip->getCameraDevices(&devs);
@@ -78,11 +73,11 @@ class ArgusCaptureNode : public rclcpp::Node {
       int id = sensor_ids_[i];
       if (id < 0 || id >= (int)devs.size()) { RCLCPP_ERROR(get_logger(), "sensor-id %d absent", id); return false; }
       sessions_[i].reset(ip->createCaptureSession(devs[id]));
-      auto* isession = iface<ICaptureSession>(sessions_[i].get());
+      auto* isession = interface_cast<ICaptureSession>(sessions_[i].get());
       if (!isession) { RCLCPP_ERROR(get_logger(), "no session for %d", id); return false; }
 
       UniqueObj<OutputStreamSettings> ss(isession->createOutputStreamSettings(STREAM_TYPE_EGL));
-      auto* iss = iface<IEGLOutputStreamSettings>(ss.get());
+      auto* iss = interface_cast<IEGLOutputStreamSettings>(ss.get());
       iss->setPixelFormat(PIXEL_FMT_YCbCr_420_888);
       iss->setResolution(Size2D<uint32_t>(width_, height_));
       iss->setMetadataEnable(true);
@@ -90,18 +85,18 @@ class ArgusCaptureNode : public rclcpp::Node {
       consumers_[i].reset(EGLStream::FrameConsumer::create(streams_[i].get()));
 
       requests_[i].reset(isession->createRequest());
-      auto* ireq = iface<IRequest>(requests_[i].get());
+      auto* ireq = interface_cast<IRequest>(requests_[i].get());
       ireq->enableOutputStream(streams_[i].get());
       // pick the sensor mode matching width/height
-      auto* iprops = iface<ICameraProperties>(devs[id]);
+      auto* iprops = interface_cast<ICameraProperties>(devs[id]);
       std::vector<SensorMode*> modes; iprops->getAllSensorModes(&modes);
       for (auto* m : modes) {
-        auto* im = iface<ISensorMode>(m);
+        auto* im = interface_cast<ISensorMode>(m);
         if ((int)im->getResolution().width() == width_ && (int)im->getResolution().height() == height_) {
-          iface<ISourceSettings>(ireq)->setSensorMode(m); break;
+          interface_cast<ISourceSettings>(requests_[i].get())->setSensorMode(m); break;
         }
       }
-      iface<ISourceSettings>(ireq)->setFrameDurationRange(Range<uint64_t>(1e9 / fps_));
+      interface_cast<ISourceSettings>(requests_[i].get())->setFrameDurationRange(Range<uint64_t>(1e9 / fps_));
       isession->repeat(requests_[i].get());
     }
     return true;
@@ -110,14 +105,14 @@ class ArgusCaptureNode : public rclcpp::Node {
   void capture_loop() {
     std::vector<EGLStream::IFrameConsumer*> ifc(n_);
     for (size_t i = 0; i < n_; ++i)
-      ifc[i] = iface<EGLStream::IFrameConsumer>(consumers_[i].get());
+      ifc[i] = interface_cast<EGLStream::IFrameConsumer>(consumers_[i].get());
 
     while (running_ && rclcpp::ok()) {
       for (size_t i = 0; i < n_; ++i) {
         UniqueObj<EGLStream::Frame> frame(ifc[i]->acquireFrame(1000000000));  // 1s timeout
-        auto* iframe = iface<EGLStream::IFrame>(frame.get());
+        auto* iframe = interface_cast<EGLStream::IFrame>(frame.get());
         if (!iframe) continue;
-        auto* inb = iface<EGLStream::NV::IImageNativeBuffer>(iframe->getImage());
+        auto* inb = interface_cast<EGLStream::NV::IImageNativeBuffer>(iframe->getImage());
         if (!inb) continue;
         if (dmabufs_[i] == -1)
           dmabufs_[i] = inb->createNvBuffer(Size2D<uint32_t>(width_, height_),
