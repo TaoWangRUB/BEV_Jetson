@@ -51,10 +51,10 @@ cuvslam::Camera load_intrinsics(const std::string& path) {
   YAML::Node y = load_yaml(path);
   cuvslam::Camera c;
   c.size = {y["image_width"].as<int>(), y["image_height"].as<int>()};
-  auto& pp = y["projection_parameters"];
+  YAML::Node pp = y["projection_parameters"];
   c.focal = {pp["mu"].as<float>(), pp["mv"].as<float>()};
   c.principal = {pp["u0"].as<float>(), pp["v0"].as<float>()};
-  auto& dp = y["distortion_parameters"];
+  YAML::Node dp = y["distortion_parameters"];
   c.distortion.model = cuvslam::Distortion::Model::Fisheye;  // 4-coeff equidistant = OpenCV fisheye
   c.distortion.parameters = {dp["k2"].as<float>(), dp["k3"].as<float>(),
                              dp["k4"].as<float>(), dp["k5"].as<float>()};
