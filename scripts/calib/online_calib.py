@@ -4,7 +4,7 @@ Thread-Safe Online interactive fisheye (Kannala-Brandt) intrinsic calibration fo
 Fixes the shared memory buffer mutation bug and automatically captures raw images to disk.
 
 Usage:
-    python3 online_calib.py --id 0 --board 11x9 --square 30 --flip 180 --width 1920 --height 1080
+    python3 online_calib.py --id 0 --board 11x9 --square 30 --flip 180 --width 1640 --height 1232
 """
 
 import argparse
@@ -19,9 +19,9 @@ def parse_args():
     ap.add_argument("--id", type=int, default=0, help="Camera sensor ID")
     ap.add_argument("--board", default="11x9", help="Checkerboard SQUARES (e.g., 11x9)")
     ap.add_argument("--square", type=float, default=30.0, help="Square size in mm")
-    ap.add_argument("--width", type=int, default=1280, help="Image width")
-    ap.add_argument("--height", type=int, default=720, help="Image height")
-    ap.add_argument("--fps", type=int, default=30, help="Preview framerate")
+    ap.add_argument("--width", type=int, default=1640, help="Image width")
+    ap.add_argument("--height", type=int, default=1232, help="Image height")
+    ap.add_argument("--fps", type=int, default=20, help="Preview framerate")
     ap.add_argument("--flip", type=int, default=0, help="nvvidconv flip-method (0..7) or degrees (0,90,180,270)")
     ap.add_argument("--min-views", type=int, default=15, help="Minimum views required to calibrate")
     ap.add_argument("--out", default="config/calib", help="Output directory")
