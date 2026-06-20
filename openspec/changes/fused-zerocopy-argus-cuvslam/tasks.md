@@ -31,18 +31,20 @@
 
 - [ ] 6.1 Decouple **sensor mode** from **output resolution** in the fused node (params `sensor_width/sensor_height` vs `width/height`); Argus ISP downscales in NVMM (stays zero-copy)
 - [ ] 6.2 Calib per output res: `1640x1232/` and `1280x720/` (done, on board); generate ½-scaled `820x616` (= 1640÷2) and `640x360` (= 1280÷2) — KB intrinsics scale linearly (mu,mv,u0,v0,w,h ×0.5; k2..k5 unchanged)
-- [x] 6.3 Measured (4 cams, fused zero-copy, stationary bench, ~20 s fresh each):
+- [x] 6.3 Measured — **controlled back-to-back sweep, same scene** (B re-done at 32-aligned 832×624):
 
   | Cfg | sensor | →output | FOV | Track | VIO | CPU |
   |---|---|---|---|---|---|---|
-  | A | 1640×1232 | 1640×1232 | full | ~30 ms | **17.9 Hz** | 19.5% |
-  | B | 1640×1232 | 820×616 | full | — | **FAILED** | — |
-  | C | 1280×720 | 1280×720 | crop | ~24 ms | **19.9 Hz** | 21.2% |
-  | D | 1280×720 | 640×360 | crop | ~23 ms | **19.9 Hz** | 19.7% |
+  | A | 1640×1232 | 1640×1232 | full | 27 ms | 18.0 Hz | 21.6% |
+  | **B** | 1640×1232 | **832×624** | **full** | **11 ms** | **24.4 Hz** | **15.6%** |
+  | C | 1280×720 | 1280×720 | crop | 24 ms | 20.8 Hz | 20.6% |
+  | D | 1280×720 | 640×360 | crop | 19 ms | 16.6 Hz† | 20.6% |
+
+  †D's loop hit a transient acquire spike (42 ms) → not representative. (First sweep had B fail at 820×616 — width not 32-aligned — which led to a wrong "downscaling doesn't help" read.)
 
 - [x] 6.4 Findings + recommendation:
-  - **Rate is loop-bound, not input-fps-bound.** All working cfgs ≈18–20 Hz: loop ≈ acquire+GPUcopy (~26 ms, ~constant) + Track (~25 ms). 720p's 44 fps input gives no rate edge over 1640's 22 fps (both loop-capped ~50 ms). So **pushing fps does not raise VIO here.**
-  - **Downscaling barely helps** (Track already ~25 ms; the ~26 ms acquire is a co-floor). 720p (cropped FOV) buys only ~2 Hz over full-FOV 1640 — not worth losing the surround overlap.
-  - **Track is scene/map-dependent** (~30 ms here vs ~90 ms in an earlier longer-run session) → VIO floats ~10–20 Hz with scene; the ~26 ms acquire is the hard floor.
-  - **B failed**: Argus delivered no frames at 820×616 (got past calib+sensor-mode, no "first GPU frame"). Likely **output width not 32-aligned** (820 ✗, 640 ✓). An aligned downscale (e.g. 832×624) would work.
-  - **Recommendation: keep 1640×1232 full FOV** (~18 Hz, full overlap). The rate lever is fewer/lighter cuVSLAM features or HW sync — not resolution/fps.
+  - **B (full-FOV 1640 sensor → 832×624 output) is the winner: 24.4 Hz, full FOV, lowest CPU (15.6%).** Downscaling the full-FOV mode cuts Track 27→11 ms; the ISP scale stays in NVMM (zero-copy) so it's nearly free.
+  - **Higher input fps still doesn't help**: C (720p @44 fps) = 20.8 Hz < B (832 from 22 fps) = 24.4 Hz. Rate tracks **output pixel count → Track time**, not input fps. And 720p/640 are **cropped FOV** (lose surround overlap).
+  - **Floor**: acquire+GPU-copy ~24–30 ms (serial 4-cam round-robin) is the next bottleneck once Track is small — parallelizing acquire could push past 24 Hz.
+  - **Track is scene-dependent** (this session 1640=27 ms; an earlier heavier scene =90 ms→8.6 Hz) — rate floats with scene, but the A/B/C/D ranking holds within a session.
+  - **Recommendation: default to 1640×1232 sensor → 832×624 output** (full FOV, ~24 Hz, least CPU). Keep full 1640 only if max detail is needed.
