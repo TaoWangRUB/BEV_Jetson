@@ -115,6 +115,7 @@ See [docs/build_and_run.md](docs/build_and_run.md) for the full build/run guide.
 
 | Path | What |
 |------|------|
+| [docker-compose.yml](docker-compose.yml) | All container params + per-purpose services (`build-cuvslam`, `build-ws`, `fused`, `modular`, `capture`, `shell`) |
 | [docker/](docker/) | Single 20.04/Foxy build+run container ([Dockerfile.cuvslam-foxy](docker/Dockerfile.cuvslam-foxy)) + entrypoint |
 | [docs/build_and_run.md](docs/build_and_run.md) | Docker setup, build & run guide |
 | [ros2/bev_camera/](ros2/bev_camera/) | 4-camera libargus capture node → `/camN/image_raw` |
@@ -141,24 +142,23 @@ See [docs/build_and_run.md](docs/build_and_run.md) for the full build/run guide.
 
 ## 4. Build & run
 
+All container parameters live in [`docker-compose.yml`](docker-compose.yml), so the build/run
+steps are short `docker compose` commands (run from the repo root on the TX2):
+
 ```bash
 # On the TX2, repo at /media/nvidia/workspace/BEV_Jetson:
 
-# 1. One-time board prep (root)
-sudo ./scripts/setup_tx2_docker.sh      # log out/in afterwards for the docker group
+sudo ./scripts/setup_tx2_docker.sh        # 0. one-time board prep (log out/in for the docker group)
 
-# 2. Build the single Foxy image (ROS 2 + gcc-8 + EGL), then build +
-#    runtime-validate cuVSLAM for CUDA 10.2 — one command does both:
-./scripts/port/build_and_validate.sh
-#    -> builds cuvslam-foxy:tx2 if missing
-#    -> third_party/cuVSLAM/build_tx2gpu/bin/libcuvslam.so
-#    -> "WarmUpGPU() completed ... on the r440 driver"
-
-# 3. Build the ROS 2 workspace + run the nodes — see docs/build_and_run.md
+docker compose build                      # 1. build the cuvslam-foxy:tx2 image
+docker compose run --rm build-cuvslam     # 2. build libcuvslam.so (CUDA-10.2 port)
+docker compose run --rm build-ws          # 3. colcon build the ROS 2 workspace
+docker compose run --rm fused             # 4. run the fused zero-copy VO (recommended)
 ```
 
-See **[docs/build_and_run.md](docs/build_and_run.md)** for the full workspace
-build and how to run the capture + VO nodes.
+(`./scripts/port/build_and_validate.sh` still does image build → `libcuvslam.so` →
+WarmUpGPU smoke test in one shot.) See **[docs/build_and_run.md](docs/build_and_run.md)** for
+the full guide, the modular pipeline, and the **fused vs modular** performance comparison.
 
 ---
 

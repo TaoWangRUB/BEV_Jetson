@@ -1,31 +1,10 @@
 #!/usr/bin/env bash
-# Run the FUSED zero-copy Argus->cuVSLAM VO node on the TX2 — one process captures and
-# tracks, feeding NVMM frames to cuVSLAM as GPU memory (no CPU round-trip, no DDS images).
-# ~3x less CPU than the modular capture+VO pipeline (see scripts/run_vo_tx2.sh).
+# Thin wrapper around docker compose: run the fused zero-copy Argus -> cuVSLAM VO.
+# All container parameters live in docker-compose.yml (service `fused`); node params in
+# ros2/bev_cuvslam/config/fused_vo_params.yaml. Stop with Ctrl-C (clean Argus release).
 #
-#   ./scripts/run_vo_fused_tx2.sh            # run fused VO
-#   RECORD=1 ./scripts/run_vo_fused_tx2.sh  # also rosbag /cuvslam/odometry + /tf into bags/
-#
-# Publishes /cuvslam/odometry + odom->base_link TF. Stop with Ctrl-C (SIGINT) or
-# `docker stop` (SIGTERM) — both shut the node down cleanly so Argus isn't left wedged.
+#   ./scripts/run_vo_fused_tx2.sh            # run fused VO (default 1640->832x624, full FOV)
+#   RECORD=1 ./scripts/run_vo_fused_tx2.sh   # also bag /cuvslam/odometry + /tf into bags/
 set -euo pipefail
-BEV="${BEV:-/media/nvidia/workspace/BEV_Jetson}"
-IMG="${IMG:-cuvslam-foxy:tx2}"
-
-exec docker run --rm -it --runtime nvidia --network host --stop-signal=SIGTERM \
-  -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all \
-  -e RECORD="${RECORD:-0}" \
-  -v /usr/local/cuda:/usr/local/cuda:ro \
-  -v /usr/src/jetson_multimedia_api:/usr/src/jetson_multimedia_api:ro \
-  -v /tmp/argus_socket:/tmp/argus_socket -v /dev:/dev \
-  -v "$BEV":/workspace -w /workspace "$IMG" bash -lc '
-    set -e
-    source /opt/ros/foxy/setup.bash && source install/setup.bash
-    export LD_LIBRARY_PATH=/workspace/third_party/cuVSLAM/build_tx2gpu/bin:/usr/local/cuda/lib64:/usr/local/cuda/targets/aarch64-linux/lib:$LD_LIBRARY_PATH
-    if [ "${RECORD:-0}" = 1 ]; then
-      mkdir -p /workspace/bags
-      ros2 bag record -o /workspace/bags/fused_$(date +%Y%m%d_%H%M%S) /cuvslam/odometry /tf &
-    fi
-    # params come from bev_cuvslam/config/fused_vo_params.yaml (default = 1640->832x624 full FOV)
-    exec ros2 launch bev_cuvslam bev_cuvslam_fused.launch.py
-  '
+cd "$(dirname "${BASH_SOURCE[0]}")/.."       # repo root = compose file location
+exec docker compose run --rm fused

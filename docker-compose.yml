@@ -1,0 +1,77 @@
+# BEV cuVSLAM on the TX2 — one place for all the container parameters (nvidia runtime,
+# host CUDA + Jetson MMAPI mounts, Argus socket, /dev, host networking, env). Run from the
+# repo root on the board. Build once, then use the per-purpose services:
+#
+#   docker compose build                       # build the cuvslam-foxy:tx2 image (once)
+#   docker compose run --rm build-cuvslam      # build libcuvslam.so (CUDA 10.2 port)
+#   docker compose run --rm build-ws           # colcon build the ROS 2 workspace
+#   docker compose run --rm fused              # fused zero-copy VO (recommended); RECORD=1 to bag
+#   docker compose run --rm modular            # modular capture + VO in one container
+#   docker compose run --rm capture            # just the capture node (e.g. for topic inspection)
+#   docker compose run --rm shell              # interactive shell
+#
+# Note: stop with Ctrl-C. If a run is SIGKILL'd it can leak an Argus session — then
+# `sudo systemctl restart nvargus-daemon` on the host before the next run.
+
+x-bev: &bev
+  image: cuvslam-foxy:tx2
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.cuvslam-foxy
+  runtime: nvidia
+  network_mode: host          # ROS 2 DDS discovery (and a single container avoids cross-container DDS)
+  working_dir: /workspace
+  stop_signal: SIGINT         # let nodes shut down cleanly (release Argus/EGL/CUDA)
+  environment:
+    NVIDIA_VISIBLE_DEVICES: all
+    NVIDIA_DRIVER_CAPABILITIES: all
+    # libcuvslam.so lives in the build tree (not on the ldconfig path); CUDA libs for the EGL/CUDA bridge
+    LD_LIBRARY_PATH: /workspace/third_party/cuVSLAM/build_tx2gpu/bin:/usr/local/cuda/lib64:/usr/local/cuda/targets/aarch64-linux/lib
+    RECORD: ${RECORD:-0}
+  volumes:
+    - /usr/local/cuda:/usr/local/cuda:ro
+    - /usr/src/jetson_multimedia_api:/usr/src/jetson_multimedia_api:ro
+    - /tmp/argus_socket:/tmp/argus_socket
+    - /dev:/dev
+    - ./:/workspace
+
+services:
+  shell:
+    <<: *bev
+    stdin_open: true
+    tty: true
+    command: bash
+
+  build-cuvslam:
+    <<: *bev
+    command: bash scripts/build_cuvslam_tx2gpu.sh
+
+  build-ws:
+    <<: *bev
+    command: bash -lc "colcon build --packages-select bev_camera bev_cuvslam --cmake-args -DCMAKE_BUILD_TYPE=Release"
+
+  # Recommended runtime: fused zero-copy Argus -> cuVSLAM (params in bev_cuvslam/config/fused_vo_params.yaml)
+  fused:
+    <<: *bev
+    command:
+      - bash
+      - -lc
+      - |
+        if [ "${RECORD:-0}" = 1 ]; then mkdir -p bags; ros2 bag record -o bags/fused_$(date +%Y%m%d_%H%M%S) /cuvslam/odometry /tf & fi
+        exec ros2 launch bev_cuvslam bev_cuvslam_fused.launch.py
+
+  # Modular pipeline (capture + VO) in ONE container (cross-container DDS discovery fails)
+  modular:
+    <<: *bev
+    command:
+      - bash
+      - -lc
+      - |
+        ros2 run bev_camera argus_capture_node --ros-args -p sensor_ids:=[0,1,2,3] -p width:=1640 -p height:=1232 -p fps:=60 &
+        trap "kill %1 2>/dev/null" EXIT
+        sleep 8
+        exec ros2 launch bev_cuvslam bev_cuvslam.launch.py
+
+  capture:
+    <<: *bev
+    command: ros2 run bev_camera argus_capture_node --ros-args -p sensor_ids:=[0,1,2,3] -p width:=1640 -p height:=1232 -p fps:=20

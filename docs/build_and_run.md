@@ -39,11 +39,14 @@ installable `gcc-8`, so there's no need for a separate 18.04 build container:
 |-------|------|---------|
 | `cuvslam-foxy:tx2` | Ubuntu 20.04 + ROS 2 Foxy + gcc-8 + cmake 3.27 | Build `libcuvslam.so` **and** the ROS 2 nodes, and run them |
 
-Build it (from the repo root, on the TX2):
+All container parameters (nvidia runtime, host-CUDA + Jetson-MMAPI mounts, Argus socket,
+`/dev`, host networking, env) live in [`docker-compose.yml`](../docker-compose.yml) at the
+repo root — so every command below is a short `docker compose` invocation instead of a long
+`docker run`. Build the image once (from the repo root, on the TX2):
 
 ```bash
 cd $BEV
-docker build -t cuvslam-foxy:tx2 -f docker/Dockerfile.cuvslam-foxy .
+docker compose build
 ```
 
 The image bakes everything the build + GPU + camera need:
@@ -61,16 +64,10 @@ runtime mounts them).
 
 ## 2. Build the cuVSLAM library (CUDA-10.2 port)
 
-Run the image with the host CUDA mounted and apply the port. nvcc compiles the
-`.cu` files with `g++-8` (pinned by the script) regardless of the 20.04 default gcc-9:
+Apply the port + build (nvcc compiles the `.cu` files with `g++-8`, pinned by the script):
 
 ```bash
-cd $BEV
-docker run --rm --runtime nvidia \
-  -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all \
-  -v /usr/local/cuda:/usr/local/cuda:ro \
-  -v $BEV:/workspace -w /workspace \
-  cuvslam-foxy:tx2 bash scripts/build_cuvslam_tx2gpu.sh
+docker compose run --rm build-cuvslam
 # -> third_party/cuVSLAM/build_tx2gpu/bin/libcuvslam.so
 ```
 
@@ -84,82 +81,47 @@ build + this + a WarmUpGPU smoke test in one shot.)
 
 ## 3. Build the ROS 2 workspace (Foxy)
 
-Same image; `bev_cuvslam` links the `.so` from step 2, `bev_camera` needs the
-Jetson Multimedia API headers (Argus/EGLStream) bind-mounted:
+`bev_cuvslam` links the `.so` from step 2; `bev_camera` needs the Jetson Multimedia API
+headers (mounted by the compose file):
 
 ```bash
-cd $BEV
-docker run --rm --runtime nvidia \
-  -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all \
-  -v /usr/local/cuda:/usr/local/cuda:ro \
-  -v /usr/src/jetson_multimedia_api:/usr/src/jetson_multimedia_api:ro \
-  -v $BEV:/workspace -w /workspace \
-  cuvslam-foxy:tx2 bash -lc '
-    source /opt/ros/foxy/setup.bash &&
-    colcon build --packages-select bev_camera bev_cuvslam \
-                 --cmake-args -DCMAKE_BUILD_TYPE=Release'
+docker compose run --rm build-ws
 # -> install/{bev_camera,bev_cuvslam}
 ```
 
-> If you change `docker/Dockerfile.cuvslam-foxy`, rebuild the image (step 1)
-> before rebuilding the workspace.
+> If you change `docker/Dockerfile.cuvslam-foxy`, rerun `docker compose build` before
+> rebuilding the workspace.
 
 ---
 
 ## 4. Run
 
-A helper to avoid repeating the long `docker run` line. The camera node needs the
-**Argus socket** and **`/dev`**; both nodes need `--network host` so ROS 2 DDS
-discovery works across containers (or run both in one container):
+> The **fused zero-copy node (§5) is the recommended runtime** (~3× less CPU, ~2× rate).
+> The modular two-node pipeline here is kept for bring-up / bag inspection.
+
+Restart the Argus daemon on the host first (clears any leaked session), then run capture + VO
+together in **one** container (cross-container DDS discovery fails on this setup, so both
+nodes share a container via the `modular` service):
 
 ```bash
-runfoxy() {        # usage: runfoxy <ros2-command...>
-  docker run --rm -it --runtime nvidia --network host \
-    -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all \
-    -v /usr/local/cuda:/usr/local/cuda:ro \
-    -v /usr/src/jetson_multimedia_api:/usr/src/jetson_multimedia_api:ro \
-    -v /tmp/argus_socket:/tmp/argus_socket -v /dev:/dev \
-    -v $BEV:/workspace -w /workspace \
-    cuvslam-foxy:tx2 "$@"
-}
+sudo systemctl restart nvargus-daemon        # on the HOST
+docker compose run --rm modular
 ```
 
-### 4a. Camera capture node
-
-```bash
-sudo systemctl restart nvargus-daemon        # on the HOST, first
-
-runfoxy ros2 run bev_camera argus_capture_node \
-  --ros-args -p sensor_ids:='[0,1,2,3]' -p width:=1640 -p height:=1232 -p fps:=20
+The `modular` service backgrounds `argus_capture_node` — publishing mono8
+`/cam1/image_raw` … `/cam4/image_raw` (the luma plane cuVSLAM wants) via a headless
+`EGLDisplay` (`EGL_PLATFORM_DEVICE_EXT`, **no X server**) — then launches
+`cuvslam_multicam_node` → `/cuvslam/odometry` + `odom→base_link` TF. Expected:
 ```
-
-Expected:
-```
-[argus_capture]: EGL headless display via device 0 of 1
-[argus_capture]: Argus 0.98.3 (multi-process), 5 cameras present
 [argus_capture]: Argus capture up: 4 cameras @ 1640x1232
-```
-Publishes mono8 `/cam1/image_raw` … `/cam4/image_raw` (the luma plane — exactly
-what cuVSLAM wants). The node gets a headless `EGLDisplay` via
-`EGL_PLATFORM_DEVICE_EXT` — **no X server needed**.
-
-Verify from another shell:
-```bash
-runfoxy ros2 topic hz /cam1/image_raw
+[cuvslam_multicam]: cuVSLAM multicam VO up: 4 cameras, mode=Multicamera
 ```
 
-### 4b. cuVSLAM multicam VO node
-
-Intrinsics (`camN.yaml`, KANNALA_BRANDT, 1640×1232) live under `scripts/config/calib/`;
-extrinsics under `config/rig/rig_extrinsics.yaml`. That folder is also the node's
-default `calib_dir`, so the override below is only needed if you move the files:
-
-```bash
-runfoxy ros2 run bev_cuvslam cuvslam_multicam_node --ros-args \
-  -p calib_dir:=scripts/config/calib \
-  -p rig_extrinsics:=config/rig/rig_extrinsics.yaml \
-  -p cameras:='[cam1,cam2,cam3,cam4]'
-```
+Inspect from another shell with `docker compose run --rm shell` (then `ros2 topic hz
+/cam1/image_raw`, `ros2 topic echo /cuvslam/odometry`, …), or run only the camera node with
+`docker compose run --rm capture`. Intrinsics (`camN.yaml`, KANNALA_BRANDT) live under
+`scripts/config/<WxH>/`; the VO node defaults to `scripts/config/calib` + extrinsics in
+`config/rig/rig_extrinsics.yaml`.
 
 Builds a 4-camera cuVSLAM `Rig` (overlapping fisheye views auto-form stereo pairs),
 runs `Odometry::Track()` on each synchronized 4-image set, and publishes
@@ -194,13 +156,15 @@ via the EGL→CUDA bridge (`NvEGLImageFromFd` → `cuGraphicsEGLRegisterImage`),
 ### Run it (params from a yaml, via launch)
 
 ```bash
-runfoxy ros2 launch bev_cuvslam bev_cuvslam_fused.launch.py
+sudo systemctl restart nvargus-daemon        # on the HOST, first
+docker compose run --rm fused                # RECORD=1 docker compose run --rm fused  → also bags odom+tf
 ```
 
-Params live in [`ros2/bev_cuvslam/config/fused_vo_params.yaml`](../ros2/bev_cuvslam/config/fused_vo_params.yaml)
-(default = the best full-FOV config below). Override the whole file with
-`params:=/abs/path.yaml`, or use the helper `scripts/run_vo_fused_tx2.sh` (adds `RECORD=1` to
-bag `/cuvslam/odometry`+`/tf`). The node decouples **sensor mode** (`sensor_width/height`) from
+Node params live in [`ros2/bev_cuvslam/config/fused_vo_params.yaml`](../ros2/bev_cuvslam/config/fused_vo_params.yaml)
+(default = the best full-FOV config below); the `fused` service in
+[`docker-compose.yml`](../docker-compose.yml) holds the container params. Override the param
+file with `... bev_cuvslam_fused.launch.py params:=/abs/path.yaml`. The node decouples
+**sensor mode** (`sensor_width/height`) from
 **output** (`width/height`): set the sensor to a full-FOV mode and the ISP downscales the output
 in NVMM (still zero-copy).
 
