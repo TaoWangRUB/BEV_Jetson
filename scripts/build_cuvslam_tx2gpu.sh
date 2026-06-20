@@ -11,45 +11,32 @@ BUILD="${SRC}/build_tx2gpu"
 LOG="${REPO_ROOT}/build/cuvslam_tx2gpu.log"
 mkdir -p "${REPO_ROOT}/build"
 
-# --- known fix #1: nvcc 10.2 has no -std=c++17; the kernels use no C++17 -------
-sed -i 's/set(CMAKE_CUDA_STANDARD 17)/set(CMAKE_CUDA_STANDARD 14)/' \
-    "${SRC}/cmake/cuVSLAMUtils.cmake"
-
-# --- known fix #2: TX2 SoC = sm_62. nvcc 10.2 rejects both '-arch=all' (manual,
-#     CUDA 11.5+) and '-arch=native' (CMake 3.27 default when CUDA_ARCHITECTURES
-#     is unset). Rewrite the manual flag AND pin CMAKE_CUDA_ARCHITECTURES=62. -----
-KCM="${SRC}/libs/cuda_modules/cuda_kernels/CMakeLists.txt"
-[[ -f "$KCM" ]] && grep -q '\-arch=all' "$KCM" && sed -i 's|-arch=all|-arch=sm_62|g' "$KCM"
-
-# --- known fix #3: '-march=native' (aarch64 host flag) is added to ALL compile
-#     languages and leaks into nvcc, which misparses it as 'arch=native'.
-#     Guard it to CXX only so the CUDA kernels don't receive it. -----------------
-UTILS="${SRC}/cmake/cuVSLAMUtils.cmake"
-[[ -f "$UTILS" ]] && sed -i \
-    's|INTERFACE -march=native)|INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-march=native>)|' "$UTILS"
-
-# --- known fix #4: downgrade C++17 device syntax (nested namespaces + inline
-#     variables) to C++14 so nvcc 10.2 can parse the device-reachable headers.
-#     Idempotent; cuVSLAM submodule stays at v15.0.0. ----------------------------
-python3 "${REPO_ROOT}/scripts/port/downgrade_cuvslam_cpp17.py" "${SRC}"
-
-# --- known fix #5: cuSOLVER IRS enum values _INVALID_{PREC,REFINE,MAXITER} were
-#     added in CUDA 11; 10.2 only has the base _INVALID. Guard the 3 newer case
-#     labels (error-string mapping only). Idempotent. -----------------------------
-CULIB="${SRC}/libs/cuda_modules/culib_helper.h"
-if [[ -f "$CULIB" ]] && ! grep -q 'CUDART_VERSION >= 11000' "$CULIB"; then
-    # block 1: PARAMS_INVALID_{PREC,REFINE,MAXITER}
-    sed -i '/case CUSOLVER_STATUS_IRS_PARAMS_INVALID_PREC:/i #if CUDART_VERSION >= 11000' "$CULIB"
-    sed -i '/return "CUSOLVER_STATUS_IRS_PARAMS_INVALID_MAXITER";/a #endif' "$CULIB"
-    # block 2: IRS_INFOS_NOT_DESTROYED, IRS_MATRIX_SINGULAR, INVALID_WORKSPACE
-    sed -i '/case CUSOLVER_STATUS_IRS_INFOS_NOT_DESTROYED:/i #if CUDART_VERSION >= 11000' "$CULIB"
-    sed -i '/return "CUSOLVER_STATUS_INVALID_WORKSPACE";/a #endif' "$CULIB"
+# --- CUDA-10.2 / sm_62 source port: applied as one patch ----------------------
+# All in-place source changes cuVSLAM needs for nvcc 10.2 / gcc-8 / C++14 live in
+# patch/cuvslam/0001-cuda102-tx2-port.patch (generated from the pinned submodule;
+# see patch/cuvslam/README.md). Applied with `patch` rather than `git apply` so it
+# works even when the submodule has no git metadata on the board — the submodule
+# tree stays a plain checkout, so a top-level `git pull` on the TX2 never trips on
+# a dirty/!git submodule. Idempotent (skips if already applied). Covered fixes:
+#   1. CMAKE_CUDA_STANDARD 17 -> 14             (cmake/cuVSLAMUtils.cmake)
+#   2. -arch=all -> -arch=sm_62                 (cuda_kernels/CMakeLists.txt)
+#   3. -march=native guarded to CXX only        (cmake/cuVSLAMUtils.cmake)
+#   4. C++17 -> C++14 device-syntax downgrade    (~394 files)
+#   5. cuSOLVER-11 IRS enum guards               (culib_helper.h)
+#   6. cudaMallocAsync -> cudaMalloc             (selection_v2.cpp)
+# Regenerate after a submodule bump: see patch/cuvslam/README.md (uses
+# scripts/port/downgrade_cuvslam_cpp17.py + the documented sed edits).
+PATCH="${REPO_ROOT}/patch/cuvslam/0001-cuda102-tx2-port.patch"
+if patch -p1 -d "${SRC}" --dry-run --reverse --force <"${PATCH}" >/dev/null 2>&1; then
+    echo "cuVSLAM CUDA-10.2 port patch already applied."
+elif patch -p1 -d "${SRC}" --dry-run --force <"${PATCH}" >/dev/null 2>&1; then
+    patch -p1 -d "${SRC}" --force <"${PATCH}"
+    echo "Applied cuVSLAM CUDA-10.2 port patch."
+else
+    echo "ERROR: cuVSLAM port patch neither applies cleanly nor is already applied" >&2
+    echo "       — submodule may be out of sync with the pin it was generated from." >&2
+    exit 1
 fi
-
-# --- known fix #6: cudaMallocAsync (CUDA 11.2+, needs driver r470+) -> synchronous
-#     cudaMalloc (works on the TX2 r440 driver). Single call. Idempotent. --------
-sed -i 's/cudaMallocAsync(\([^,]*\), \([^,]*\), [^)]*)/cudaMalloc(\1, \2)/g' \
-    "${SRC}/libs/cuda_modules/selection_v2.cpp"
 
 echo "Configuring cuVSLAM GPU for CUDA 10.2 / sm_62 / gcc-8 / C++14 ..."
 cmake -S "${SRC}" -B "${BUILD}" -DCMAKE_BUILD_TYPE=Release \
