@@ -5,7 +5,7 @@
   ros__parameters:
     calib_dir: scripts/config/1280x720       # KB intrinsics for the capture resolution
     rig_extrinsics: config/rig/rig_extrinsics.yaml
-    cameras: [cam1, cam2, cam3, cam4]
+    cameras: [cam3, cam4, cam1, cam2]
     sensor_ids: [0, 1, 2, 3]
     width: 1280                              # capture/output res (must match calib_dir)
     height: 720

@@ -97,7 +97,7 @@ class FusedNode : public rclcpp::Node {
     // ceiling), full surround FOV, lowest CPU. Override params for other configs.
     calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/832x624");
     rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics.yaml");
-    cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
+    cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam3", "cam4", "cam1", "cam2"});
     sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {0, 1, 2, 3});
     width_ = declare_parameter<int>("width", 832);     // OUTPUT resolution (-> cuVSLAM + calib)
     height_ = declare_parameter<int>("height", 624);

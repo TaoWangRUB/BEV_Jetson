@@ -1,6 +1,13 @@
 # cuVSLAM rig extrinsics — rig_from_<frame>, generated from physical layout.
 # rig frame: TX2 board center; X=right(lateral) Y=forward(longitudinal) Z=up. units: metres.
 # camera image-up = [0, 0, 1] (rig frame). translations in m, quaternions wxyz.
+#
+# camN <-> port:  cam1=c  cam2=d  cam3=e  cam4=f  (calib camN.yaml is keyed to the PORT).
+# IMPORTANT — Argus enumerates the sensors in port order **e, f, c, d**, so:
+#   sensor_id 0 -> port e -> cam3,  1 -> f -> cam4,  2 -> c -> cam1,  3 -> d -> cam2.
+# Hence every node's `cameras` param (which pairs sensor_id i with camN's calib+extrinsics)
+# is [cam3, cam4, cam1, cam2] for sensor_ids [0,1,2,3]. Get this wrong and the stitch/VO is
+# cyclically rotated with mis-paired per-camera intrinsics.
 rig_frame: board_center
 cameras:
   cam1:

@@ -10,7 +10,7 @@
   ros__parameters:
     calib_dir: scripts/config/832x624        # intrinsics for the OUTPUT resolution
     rig_extrinsics: config/rig/rig_extrinsics.yaml
-    cameras: [cam1, cam2, cam3, cam4]
+    cameras: [cam3, cam4, cam1, cam2]
     sensor_ids: [0, 1, 2, 3]
     width: 832                               # output (-> cuVSLAM + calib)
     height: 624
