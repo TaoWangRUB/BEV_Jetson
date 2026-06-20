@@ -98,7 +98,7 @@ class FusedNode : public rclcpp::Node {
     calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/832x624");
     rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics.yaml");
     cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
-    sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {4, 2, 3, 1});
+    sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {1, 2, 3, 4});
     width_ = declare_parameter<int>("width", 832);     // OUTPUT resolution (-> cuVSLAM + calib)
     height_ = declare_parameter<int>("height", 624);
     // Sensor mode to capture; larger than output → Argus ISP downscales in NVMM (stays zero-copy).
