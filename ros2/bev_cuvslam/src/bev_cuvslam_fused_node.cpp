@@ -255,6 +255,9 @@ class FusedNode : public rclcpp::Node {
     std::array<EGLStream::IFrameConsumer*, 4> ifc;
     for (size_t i = 0; i < 4; ++i) ifc[i] = interface_cast<EGLStream::IFrameConsumer>(consumers_[i].get());
     std::array<bool, 4> first; first.fill(true);
+    using ms = std::chrono::duration<double, std::milli>;
+    double acc_acq = 0, acc_trk = 0; int acc_n = 0;          // windowed timing accumulators
+    auto win0 = std::chrono::steady_clock::now();            // -> avg over the window, not a noisy single sample
 
     while (running_ && rclcpp::ok()) {
       const auto t_loop = std::chrono::steady_clock::now();
@@ -294,11 +297,18 @@ class FusedNode : public rclcpp::Node {
         continue;
       }
       const auto t_trk = std::chrono::steady_clock::now();  // after Track()
-      using ms = std::chrono::duration<double, std::milli>;
-      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
-          "loop=%.0f ms (%.1f Hz): acquire+gpucopy=%.0f ms, Track=%.0f ms",
-          ms(t_trk - t_loop).count(), 1000.0 / ms(t_trk - t_loop).count(),
-          ms(t_acq - t_loop).count(), ms(t_trk - t_acq).count());
+      // Accumulate and report WINDOWED AVERAGES (publishing one pose per loop, so this rate
+      // == sustained odom rate; it cannot exceed the camera fps). Single-iteration prints
+      // were misleading (a queue-drain burst can momentarily exceed input fps).
+      acc_acq += ms(t_acq - t_loop).count();
+      acc_trk += ms(t_trk - t_acq).count();
+      ++acc_n;
+      const double win = ms(t_trk - win0).count();
+      if (win >= 2000.0) {
+        RCLCPP_INFO(get_logger(), "avg/%.1fs: %.1f Hz (n=%d)  acquire+gpucopy=%.1f ms  Track=%.1f ms",
+                    win / 1000.0, acc_n * 1000.0 / win, acc_n, acc_acq / acc_n, acc_trk / acc_n);
+        acc_acq = acc_trk = 0; acc_n = 0; win0 = t_trk;
+      }
       if (!est.world_from_rig) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "tracking lost (no pose)");
         continue;
