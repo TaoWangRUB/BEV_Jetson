@@ -24,6 +24,10 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <yaml-cpp/yaml.h>
 
+// cuVSLAM header FIRST: the EGL/X11 headers below #define Success/None/Status/Bool as
+// macros, which would clobber cuVSLAM's Result<T>::Success() (cuvslam2.h:627).
+#include "cuvslam/cuvslam2.h"
+
 #include <Argus/Argus.h>
 #include <EGLStream/EGLStream.h>
 #include <EGLStream/FrameConsumer.h>
@@ -34,8 +38,19 @@
 #include <cuda.h>
 #include <cudaEGL.h>
 #include <cuda_runtime.h>
-
-#include "cuvslam/cuvslam2.h"
+// Undo X11 macro pollution so it can't bite later TUs/identifiers.
+#ifdef Success
+#undef Success
+#endif
+#ifdef Status
+#undef Status
+#endif
+#ifdef None
+#undef None
+#endif
+#ifdef Bool
+#undef Bool
+#endif
 
 using namespace Argus;
 
