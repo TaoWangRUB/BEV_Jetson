@@ -11,7 +11,7 @@
     calib_dir: scripts/config/832x624        # intrinsics for the OUTPUT resolution
     rig_extrinsics: config/rig/rig_extrinsics.yaml
     cameras: [cam1, cam2, cam3, cam4]
-    sensor_ids: [1, 2, 3, 4]
+    sensor_ids: [4, 2, 3, 1]
     width: 832                               # output (-> cuVSLAM + calib)
     height: 624
     sensor_width: 1640                       # capture full-FOV mode; ISP downscales in NVMM

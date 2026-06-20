@@ -6,7 +6,7 @@
     calib_dir: scripts/config/1280x720       # KB intrinsics for the capture resolution
     rig_extrinsics: config/rig/rig_extrinsics.yaml
     cameras: [cam1, cam2, cam3, cam4]
-    sensor_ids: [1, 2, 3, 4]
+    sensor_ids: [4, 2, 3, 1]
     width: 1280                              # capture/output res (must match calib_dir)
     height: 720
     sensor_width: 1280                       # sensor mode (= width for native, or larger to ISP-downscale)
