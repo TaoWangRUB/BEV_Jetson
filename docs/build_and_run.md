@@ -150,13 +150,13 @@ runfoxy ros2 topic hz /cam1/image_raw
 
 ### 4b. cuVSLAM multicam VO node
 
-Intrinsics (`camN.yaml`, KANNALA_BRANDT) live under `scripts/config/1640x1232/`;
-extrinsics under `config/rig/rig_extrinsics.yaml`. Point `calib_dir` at the
-intrinsics folder:
+Intrinsics (`camN.yaml`, KANNALA_BRANDT, 1640×1232) live under `scripts/config/calib/`;
+extrinsics under `config/rig/rig_extrinsics.yaml`. That folder is also the node's
+default `calib_dir`, so the override below is only needed if you move the files:
 
 ```bash
 runfoxy ros2 run bev_cuvslam cuvslam_multicam_node --ros-args \
-  -p calib_dir:=scripts/config/1640x1232 \
+  -p calib_dir:=scripts/config/calib \
   -p rig_extrinsics:=config/rig/rig_extrinsics.yaml \
   -p cameras:='[cam1,cam2,cam3,cam4]'
 ```

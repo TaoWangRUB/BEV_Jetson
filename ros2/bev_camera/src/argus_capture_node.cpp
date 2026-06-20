@@ -145,28 +145,50 @@ class ArgusCaptureNode : public rclcpp::Node {
     for (size_t i = 0; i < n_; ++i)
       ifc[i] = interface_cast<EGLStream::IFrameConsumer>(consumers_[i].get());
 
-    while (running_ && rclcpp::ok()) {
-      for (size_t i = 0; i < n_; ++i) {
-        UniqueObj<EGLStream::Frame> frame(ifc[i]->acquireFrame(1000000000));  // 1s timeout
-        auto* iframe = interface_cast<EGLStream::IFrame>(frame.get());
-        if (!iframe) continue;
-        auto* inb = interface_cast<EGLStream::NV::IImageNativeBuffer>(iframe->getImage());
-        if (!inb) continue;
-        if (dmabufs_[i] == -1)
-          dmabufs_[i] = inb->createNvBuffer(Size2D<uint32_t>(width_, height_),
-                                            NvBufferColorFormat_YUV420, NvBufferLayout_Pitch);
-        else
-          inb->copyToNvBuffer(dmabufs_[i]);
-        publish_y(i, iframe->getTime());
+    std::vector<bool> first(n_, true);
+    std::vector<int> timeouts(n_, 0);
+    try {
+      while (running_ && rclcpp::ok()) {
+        for (size_t i = 0; i < n_; ++i) {
+          UniqueObj<EGLStream::Frame> frame(ifc[i]->acquireFrame(1000000000));  // 1s timeout
+          auto* iframe = interface_cast<EGLStream::IFrame>(frame.get());
+          if (!iframe) {
+            if (++timeouts[i] % 5 == 1)
+              RCLCPP_WARN(get_logger(), "cam idx %zu: acquireFrame timeout (#%d)", i, timeouts[i]);
+            continue;
+          }
+          auto* inb = interface_cast<EGLStream::NV::IImageNativeBuffer>(iframe->getImage());
+          if (!inb) { RCLCPP_WARN(get_logger(), "cam idx %zu: no IImageNativeBuffer", i); continue; }
+          if (dmabufs_[i] == -1) {
+            dmabufs_[i] = inb->createNvBuffer(Size2D<uint32_t>(width_, height_),
+                                              NvBufferColorFormat_YUV420, NvBufferLayout_Pitch);
+          } else {
+            int rc = inb->copyToNvBuffer(dmabufs_[i]);
+            if (rc != 0 && timeouts[i]++ % 30 == 0)
+              RCLCPP_WARN(get_logger(), "cam idx %zu: copyToNvBuffer rc=%d", i, rc);
+          }
+          publish_y(i, iframe->getTime());
+          if (first[i]) { RCLCPP_INFO(get_logger(), "cam idx %zu: first frame published", i); first[i] = false; }
+        }
       }
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(get_logger(), "capture_loop threw: %s", e.what());
+    } catch (...) {
+      RCLCPP_ERROR(get_logger(), "capture_loop threw unknown exception");
     }
   }
 
   void publish_y(size_t i, uint64_t t_ns) {
     NvBufferParams params;
-    if (NvBufferGetParams(dmabufs_[i], &params) != 0) return;
+    if (NvBufferGetParams(dmabufs_[i], &params) != 0) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "cam idx %zu: NvBufferGetParams failed", i);
+      return;
+    }
     void* mapped = nullptr;
-    if (NvBufferMemMap(dmabufs_[i], 0, NvBufferMem_Read, &mapped) != 0 || !mapped) return;
+    if (NvBufferMemMap(dmabufs_[i], 0, NvBufferMem_Read, &mapped) != 0 || !mapped) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "cam idx %zu: NvBufferMemMap failed", i);
+      return;
+    }
     NvBufferMemSyncForCpu(dmabufs_[i], 0, &mapped);
 
     auto msg = std::make_unique<sensor_msgs::msg::Image>();

@@ -76,7 +76,7 @@ cuvslam::Pose load_pose(const YAML::Node& n) {
 class CuvslamMulticamNode : public rclcpp::Node {
  public:
   CuvslamMulticamNode() : Node("cuvslam_multicam") {
-    calib_dir_ = declare_parameter<std::string>("calib_dir", "config/calib/1640x1232");
+    calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/calib");
     rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics.yaml");
     cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
     topics_ = declare_parameter<std::vector<std::string>>(

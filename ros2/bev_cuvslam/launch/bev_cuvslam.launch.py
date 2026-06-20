@@ -11,7 +11,7 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 # absolute paths recommended at runtime (these are repo-relative defaults)
-                'calib_dir': 'config/calib/1640x1232',
+                'calib_dir': 'scripts/config/calib',
                 'rig_extrinsics': 'config/rig/rig_extrinsics.yaml',
                 'cameras': ['cam1', 'cam2', 'cam3', 'cam4'],
                 'image_topics': [
