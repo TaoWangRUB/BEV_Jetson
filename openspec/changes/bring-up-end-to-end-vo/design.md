@@ -44,6 +44,29 @@ complexity:
    only ([cuvslam2.h:221](../../../third_party/cuVSLAM/libs/cuvslam/cuvslam2.h#L221)), so
    the 4–6 cam + IMU north star is multicam VO + external IMU fusion, not cuVSLAM-internal VIO.
 
+## Empirical findings (bring-up run, 2026-06-20)
+
+What the actual board run flushed out (the unknowns this change existed to test):
+
+- **Capture QoS**: the publisher must be **best-effort `SensorDataQoS`**. With default
+  (reliable) QoS, a slow reliable subscriber (the VO node's GPU warmup + per-frame
+  `Track()`) back-pressures and **blocks the Argus capture thread** — capture runs alone
+  but freezes once VO attaches. Fixed.
+- **Cross-container DDS discovery failed** (topics invisible from a 2nd container even
+  with `--network host`) → confirmed the **single-container** topology for bring-up.
+- **⛔ Hard blocker — camera sync.** cuVSLAM `Multicamera` rejects sets with per-camera
+  timestamps >1 ms apart. The IMX219 rig has **no hardware trigger**; measured 4-cam
+  spread is **~30–66 ms** and the cameras drift at *different* rates. A unified per-set
+  timestamp clears cuVSLAM's 1 ms check, but ApproximateTime still can't reliably form
+  4-way sets from unsynchronized, drifting, best-effort streams → `Track()` rarely fires
+  → **no odometry**. This is the decision point: **hardware frame sync** (FSIN common
+  trigger, if the modules support it) vs. **an async-multi-camera VIO like OpenVINS**
+  (explicitly handles asynchronous cameras — cuVSLAM does not). This directly validates
+  the VIO-options research: cuVSLAM is the wrong tool for an unsynchronized rig.
+- **Calibration gap**: `cam2.yaml`/`cam4.yaml` load with default-looking intrinsics
+  (f=(522,522), principal point ≈ image center) vs the real values in cam1/cam3 — those
+  two cameras appear **uncalibrated**; redo their intrinsics before judging tracking.
+
 ## Decisions
 
 - **Topology**: prefer running both nodes in **one container** for bring-up to sidestep
