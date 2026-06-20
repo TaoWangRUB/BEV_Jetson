@@ -18,10 +18,10 @@
 
 ## 4. Validation
 
-- [ ] 4.1 Tracking parity vs the modular node (same calib/rig): rate ≥ ~8.5 Hz, pose holds at origin stationary, tracks under motion
-- [ ] 4.2 CPU comparison: `docker stats` / per-process CPU for fused vs modular two-node at the same camera rate — confirm the fused node is lower
-- [ ] 4.3 Soak test (several minutes): GPU memory stable (no leak), no CUDA faults; clean shutdown releases Argus/EGL/CUDA
-- [ ] 4.4 `scripts/run_vo_fused_tx2.sh` launcher + docs note in `docs/build_and_run.md` §5
+- [x] 4.1 Tracking parity: fused ~8.6 Hz vs modular ~7.5 Hz, no "tracking lost", pose holds at origin stationary (same calib/rig). Motion check still pending a physical move (shared with bring-up 3.4)
+- [x] 4.2 **CPU comparison (the real win): fused 23.5% vs modular 74.3%** (single container, capture+VO, same cameras) — ~3× less CPU. Timing breakdown shows why the *rate* is unchanged: it's **`Track()`-bound (~90 ms)**, not data-path-bound (acquire+GPU-copy ≈24 ms). Zero-copy cuts CPU/latency, not GPU compute. Data path verified GPU-only (no `NvBufferMemMap`/`cv_bridge`/`memcpy`/`cudaMemcpy` of pixels; `is_gpu_mem=true`)
+- [~] 4.3 Clean shutdown verified (SIGTERM handler + dtor `stopRepeat`/`waitForIdle` → no Argus wedge on `docker stop`). Multi-minute GPU-mem soak still TODO
+- [x] 4.4 `scripts/run_vo_fused_tx2.sh` launcher added (docs note TODO)
 
 ## 5. Wrap-up
 
