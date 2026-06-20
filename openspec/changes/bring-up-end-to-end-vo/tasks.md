@@ -20,12 +20,12 @@
 
 - [x] 3.1 Topology: single container chosen (cross-container DDS discovery failed — topics invisible from a 2nd container even with `--network host`)
 - [x] 3.2 VO + capture up together; VO loads calib, builds the 4-cam Rig, `Multicamera` inits, and `Track()` fires reliably via the **latest-frame bundler**
-- [x] 3.3 **`/cuvslam/odometry` publishes ~8 Hz** (54 msgs/10 s at 80 ms staleness → 83 msgs/10 s at 120 ms), no "tracking lost". (Topic is `cuvslam/odometry`, not `/odom`.)
-- [ ] 3.4 Rig-motion tracking — **needs physical motion** (bench-stationary pose correctly holds at origin); move the rig to confirm `/cuvslam/odometry` + `odom→base_link` TF track
+- [x] 3.3 **Output contract verified**: `/cuvslam/odometry` (~8.5 Hz, no "tracking lost") with pose **and covariance** (cuVSLAM cov now propagated, reordered to ROS layout — was all zeros), plus **`/tf` `odom→base_link`** confirmed (39 msgs/8 s). (Topic is `cuvslam/odometry`, not `/odom`.)
+- [~] 3.4 Rig-motion tracking — **tracking confirmed live** (bench-stationary pose drifts ~1 cm, not frozen identity → cuVSLAM is processing). Full motion check still **needs physically moving the rig**: `./scripts/run_vo_tx2.sh` (capture+VO one container), then watch `/cuvslam/odometry` + TF
 - [x] **3.5 Sync resolved (worked around).** Root cause: cuVSLAM `Multicamera` rejects sets >1 ms apart; the unsynced IMX219 rig is ~30–86 ms apart and drifts. Fix: (a) replaced ApproximateTime with a **latest-frame bundler** (driver cam triggers Track on newest others within `sync_slop_ms`, default 120 ms); (b) **unified per-set timestamp** so cuVSLAM accepts it. Residual: up to ~120 ms inter-camera skew = the rig's main accuracy limiter under motion. True fix remains hardware frame sync (or an async VIO).
 - [ ] 3.6 Frustum-overlap auto-pairing — now testable; verify under motion that tracking is metric (stereo links form), not drifting mono
 
 ## 4. Wrap-up
 
-- [ ] 4.1 Capture a short bag of `/camN/image_raw` + `/odom` for regression/inspection
-- [ ] 4.2 Record final status: mark #1 capture-rate + #2 end-to-end VO done (or log the failure mode)
+- [x] 4.1 Bag path validated (`ros2 bag record` → 80 msgs/6.3 s, odom+tf+cam1; close with SIGINT so the sqlite WAL flushes). `scripts/run_vo_tx2.sh` with `RECORD=1` captures the lightweight VO output (`/cuvslam/odometry` + `/tf`); recording camera streams too throttles the pipeline (~20 MB/s SD writes → odom dropped to ~1.3 Hz)
+- [ ] 4.2 Record final status: capture-rate + end-to-end VO **done** (~8.5 Hz odom, tracking live); remaining is the physical-motion confirmation (3.4/3.6)
