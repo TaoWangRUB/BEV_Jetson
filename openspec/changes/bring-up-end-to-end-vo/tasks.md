@@ -16,14 +16,14 @@
 - [x] 2.2 Point the node + launch default `calib_dir` at `scripts/config/calib`; update docs
 - [ ] 2.3 Verify the 4-camera cuVSLAM `Rig` builds without file-not-found errors (needs VO node board run)
 
-## 3. End-to-end capture → VO  ⛔ BLOCKED on camera sync (see 3.5)
+## 3. End-to-end capture → VO  ✅ WORKING (with the sync workaround)
 
 - [x] 3.1 Topology: single container chosen (cross-container DDS discovery failed — topics invisible from a 2nd container even with `--network host`)
-- [x] 3.2 Brought VO + capture up together. VO loads calib, builds the 4-cam Rig, `Multicamera` mode inits. `Track()` reached only with `sync_slop_ms` ≥ ~80 ms
-- [ ] 3.3 `/cuvslam/odometry` (note: topic is `cuvslam/odometry`, not `/odom`) — **0 messages**: see blocker
-- [ ] 3.4 Rig-motion tracking — blocked
-- [ ] **3.5 BLOCKER — no hardware camera sync.** cuVSLAM `Multicamera` **hard-rejects** sets whose per-camera timestamps differ by >1 ms (`Track() failed: Timestamps differ by more than 1.000000 ms`). The IMX219 rig free-runs with **no HW trigger**; measured 4-cam spread **~30–66 ms** (one frame period), with cameras drifting at *different* rates. Workarounds tried: unified per-set timestamp (commit 4061737) clears the 1 ms check, and `sync_slop_ms` 80→150. Even so, ApproximateTime can't reliably form 4-way sets from 4 unsynchronized, drifting, best-effort streams → `Track()` rarely/never called → no odometry. **Needs a decision: hardware frame sync, or switch to an async-camera VIO (e.g. OpenVINS).**
-- [ ] 3.6 Frustum-overlap auto-pairing — untestable until tracking runs
+- [x] 3.2 VO + capture up together; VO loads calib, builds the 4-cam Rig, `Multicamera` inits, and `Track()` fires reliably via the **latest-frame bundler**
+- [x] 3.3 **`/cuvslam/odometry` publishes ~8 Hz** (54 msgs/10 s at 80 ms staleness → 83 msgs/10 s at 120 ms), no "tracking lost". (Topic is `cuvslam/odometry`, not `/odom`.)
+- [ ] 3.4 Rig-motion tracking — **needs physical motion** (bench-stationary pose correctly holds at origin); move the rig to confirm `/cuvslam/odometry` + `odom→base_link` TF track
+- [x] **3.5 Sync resolved (worked around).** Root cause: cuVSLAM `Multicamera` rejects sets >1 ms apart; the unsynced IMX219 rig is ~30–86 ms apart and drifts. Fix: (a) replaced ApproximateTime with a **latest-frame bundler** (driver cam triggers Track on newest others within `sync_slop_ms`, default 120 ms); (b) **unified per-set timestamp** so cuVSLAM accepts it. Residual: up to ~120 ms inter-camera skew = the rig's main accuracy limiter under motion. True fix remains hardware frame sync (or an async VIO).
+- [ ] 3.6 Frustum-overlap auto-pairing — now testable; verify under motion that tracking is metric (stereo links form), not drifting mono
 
 ## 4. Wrap-up
 
