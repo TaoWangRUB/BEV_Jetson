@@ -57,6 +57,12 @@ target_link_libraries(bev_cuvslam_fused_node
 ament_target_dependencies(bev_cuvslam_fused_node
   rclcpp nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
 
+# --- CUDA spike (surround-panorama task 1): nvcc .cu (g++-8/sm_62) + colcon gcc-9 ---
+enable_language(CUDA)
+add_executable(cuda_spike src/cuda_spike.cu)
+set_target_properties(cuda_spike PROPERTIES CUDA_ARCHITECTURES 62)
+install(TARGETS cuda_spike DESTINATION lib/${PROJECT_NAME})
+
 install(TARGETS cuvslam_multicam_node bev_cuvslam_fused_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 
