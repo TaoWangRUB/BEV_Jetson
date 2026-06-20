@@ -71,9 +71,11 @@ What the actual board run flushed out (the unknowns this change existed to test)
   VIO-options research but unblocks bring-up on the current hardware.
   (If real per-camera timestamps are ever wanted instead of unifying, raise
   `frame_sync_threshold_ns` via the patch mechanism — `patch/cuvslam/`.)
-- **Calibration gap**: `cam2.yaml`/`cam4.yaml` load with default-looking intrinsics
-  (f=(522,522), principal point ≈ image center) vs the real values in cam1/cam3 — those
-  two cameras appear **uncalibrated**; redo their intrinsics before judging tracking.
+- **Calibration**: the `camN.yaml` (KANNALA_BRANDT) in `scripts/config/calib` are the
+  authoritative source — all four (cam1–4) are loaded and used as-is (node parses them
+  faithfully). FYI: cam2/cam4 currently carry values equal to the calibrator's seed
+  (f = W/π ≈ 522, D = 0, principal point = image center) vs cam1/cam3's fitted values —
+  worth a glance only if VO accuracy looks off under motion.
 
 ## Decisions
 
