@@ -6,9 +6,9 @@
 
 ## 1. Capture frame-flow validation
 
-- [x] 1.1 Run `argus_capture_node` with `sensor_ids:=[0,1,2,3]` @ 1640×1232 / 20 fps (nvargus-daemon already active; no host restart needed) → "Argus capture up: 4 cameras", first frame published on all 4 cams
-- [~] 1.2 Measure `ros2 topic hz /cam1..4/image_raw` over a sustained (≥30 s) window; confirm ≈20 Hz, no stalls — **in progress**: `ros2 topic hz` stdout buffering defeated naive measurement; re-measuring with a fixed-window subscriber. Diagnostics show no error path firing (no acquireFrame timeout / NvBuffer-map failure), so frames likely flow — needs a clean count
-- [ ] 1.3 Record the actual sustained rate (and any drops) in this change / change log
+- [x] 1.1 Run `argus_capture_node` @ 1640×1232 / 20 fps → "Argus capture up: 4 cameras", all 4 publish
+- [x] 1.2 Measured sustained rate (fixed-window `topic_rate.py`): ~20 Hz right after launch (238 msgs/12 s), but found a **stall** under a reliable subscriber → fixed with best-effort `SensorDataQoS` (commit a66cc81). Post-fix: sustains, ~12–20 Hz (uneven per camera, CPU-bound single-thread)
+- [x] 1.3 Recorded: capture is healthy; per-camera rates drift (cam1 ~12.6 vs cam4 ~15.2 Hz), which matters for sync (below)
 
 ## 2. Calibration path fix
 
@@ -16,14 +16,14 @@
 - [x] 2.2 Point the node + launch default `calib_dir` at `scripts/config/calib`; update docs
 - [ ] 2.3 Verify the 4-camera cuVSLAM `Rig` builds without file-not-found errors (needs VO node board run)
 
-## 3. End-to-end capture → VO
+## 3. End-to-end capture → VO  ⛔ BLOCKED on camera sync (see 3.5)
 
-- [ ] 3.1 Choose topology: run both nodes in one container (capture backgrounded, VO foreground) — single-container chosen for bring-up (cross-container DDS discovery failed: topics invisible from a 2nd container even with `--network host`)
-- [ ] 3.2 Launch capture + `cuvslam_multicam_node` together; confirm `Track()` receives synchronized 4-image sets
-- [ ] 3.3 `ros2 topic echo /odom --no-arr` — confirm a continuously updating pose
-- [ ] 3.4 Move the rig; confirm `/odom` tracks consistently with motion and `odom→base_link` TF is broadcast
-- [ ] 3.5 Inspect cross-camera timestamp sync; tighten the sync tolerance if frame sets are mismatched
-- [ ] 3.6 Confirm the frustum-overlap auto-pairing connects the ring — verify cuVSLAM forms stereo links across each adjacent fisheye pair (not just isolated monos) so tracking has scale
+- [x] 3.1 Topology: single container chosen (cross-container DDS discovery failed — topics invisible from a 2nd container even with `--network host`)
+- [x] 3.2 Brought VO + capture up together. VO loads calib, builds the 4-cam Rig, `Multicamera` mode inits. `Track()` reached only with `sync_slop_ms` ≥ ~80 ms
+- [ ] 3.3 `/cuvslam/odometry` (note: topic is `cuvslam/odometry`, not `/odom`) — **0 messages**: see blocker
+- [ ] 3.4 Rig-motion tracking — blocked
+- [ ] **3.5 BLOCKER — no hardware camera sync.** cuVSLAM `Multicamera` **hard-rejects** sets whose per-camera timestamps differ by >1 ms (`Track() failed: Timestamps differ by more than 1.000000 ms`). The IMX219 rig free-runs with **no HW trigger**; measured 4-cam spread **~30–66 ms** (one frame period), with cameras drifting at *different* rates. Workarounds tried: unified per-set timestamp (commit 4061737) clears the 1 ms check, and `sync_slop_ms` 80→150. Even so, ApproximateTime can't reliably form 4-way sets from 4 unsynchronized, drifting, best-effort streams → `Track()` rarely/never called → no odometry. **Needs a decision: hardware frame sync, or switch to an async-camera VIO (e.g. OpenVINS).**
+- [ ] 3.6 Frustum-overlap auto-pairing — untestable until tracking runs
 
 ## 4. Wrap-up
 
