@@ -54,15 +54,23 @@ What the actual board run flushed out (the unknowns this change existed to test)
   but freezes once VO attaches. Fixed.
 - **Cross-container DDS discovery failed** (topics invisible from a 2nd container even
   with `--network host`) → confirmed the **single-container** topology for bring-up.
-- **⛔ Hard blocker — camera sync.** cuVSLAM `Multicamera` rejects sets with per-camera
-  timestamps >1 ms apart. The IMX219 rig has **no hardware trigger**; measured 4-cam
-  spread is **~30–66 ms** and the cameras drift at *different* rates. A unified per-set
-  timestamp clears cuVSLAM's 1 ms check, but ApproximateTime still can't reliably form
-  4-way sets from unsynchronized, drifting, best-effort streams → `Track()` rarely fires
-  → **no odometry**. This is the decision point: **hardware frame sync** (FSIN common
-  trigger, if the modules support it) vs. **an async-multi-camera VIO like OpenVINS**
-  (explicitly handles asynchronous cameras — cuVSLAM does not). This directly validates
-  the VIO-options research: cuVSLAM is the wrong tool for an unsynchronized rig.
+- **Camera sync — resolved with a workaround; VO now publishes.** cuVSLAM `Multicamera`
+  rejects sets with per-camera timestamps >1 ms apart
+  ([cuvslam2.cpp:304](../../../third_party/cuVSLAM/libs/cuvslam/cuvslam2.cpp#L304),
+  `frame_sync_threshold_ns{1'000'000}` — hardcoded, not in the public Config). The IMX219
+  rig has **no hardware trigger**; measured 4-cam spread **~30–86 ms**, cameras drift at
+  *different* rates. Two fixes shipped: **(1)** replaced `message_filters` ApproximateTime
+  (which couldn't assemble 4-way sets from drifting, best-effort, different-rate streams)
+  with a **latest-frame bundler** — the driver camera triggers `Track()` on the newest
+  frame from each other camera within `sync_slop_ms` (staleness bound, default 120 ms);
+  **(2)** feed the set a **unified per-set timestamp** (cam0's), which satisfies the 1 ms
+  check without a cuVSLAM rebuild (cuVSLAM uses cam0's timestamp internally anyway).
+  Result: `/cuvslam/odometry` at ~8 Hz, no tracking loss. **Residual limit:** up to
+  ~120 ms inter-camera skew → the rig's main accuracy limiter under motion. The real fix
+  stays hardware frame sync, or an async-multi-camera VIO (OpenVINS); this validates the
+  VIO-options research but unblocks bring-up on the current hardware.
+  (If real per-camera timestamps are ever wanted instead of unifying, raise
+  `frame_sync_threshold_ns` via the patch mechanism — `patch/cuvslam/`.)
 - **Calibration gap**: `cam2.yaml`/`cam4.yaml` load with default-looking intrinsics
   (f=(522,522), principal point ≈ image center) vs the real values in cam1/cam3 — those
   two cameras appear **uncalibrated**; redo their intrinsics before judging tracking.
