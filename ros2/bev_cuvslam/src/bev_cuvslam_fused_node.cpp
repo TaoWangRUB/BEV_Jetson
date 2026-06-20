@@ -96,8 +96,13 @@ class FusedNode : public rclcpp::Node {
     rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics.yaml");
     cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
     sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {0, 1, 2, 3});
-    width_ = declare_parameter<int>("width", 1640);
+    width_ = declare_parameter<int>("width", 1640);    // OUTPUT resolution (-> cuVSLAM + calib)
     height_ = declare_parameter<int>("height", 1232);
+    // Sensor mode to capture (default = output res). Set larger than width/height to capture
+    // at a full-FOV mode and let the Argus ISP downscale the output in NVMM (stays zero-copy):
+    // e.g. sensor 1640x1232 + output 820x616. fps is set by the sensor mode.
+    sensor_width_ = declare_parameter<int>("sensor_width", width_);
+    sensor_height_ = declare_parameter<int>("sensor_height", height_);
     fps_ = declare_parameter<int>("fps", 20);
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
@@ -201,12 +206,18 @@ class FusedNode : public rclcpp::Node {
       interface_cast<IRequest>(requests_[i].get())->enableOutputStream(streams_[i].get());
       auto* iprops = interface_cast<ICameraProperties>(devs[id]);
       std::vector<SensorMode*> modes; iprops->getAllSensorModes(&modes);
+      bool matched = false;
       for (auto* m : modes) {
         auto* im = interface_cast<ISensorMode>(m);
-        if ((int)im->getResolution().width() == width_ && (int)im->getResolution().height() == height_) {
-          interface_cast<ISourceSettings>(requests_[i].get())->setSensorMode(m); break;
+        if ((int)im->getResolution().width() == sensor_width_ && (int)im->getResolution().height() == sensor_height_) {
+          interface_cast<ISourceSettings>(requests_[i].get())->setSensorMode(m); matched = true; break;
         }
       }
+      if (!matched)
+        RCLCPP_WARN(get_logger(), "no sensor mode %dx%d for cam %zu; using default (ISP scales to %dx%d output)",
+                    sensor_width_, sensor_height_, i, width_, height_);
+      else if (i == 0)
+        RCLCPP_INFO(get_logger(), "sensor mode %dx%d -> output %dx%d", sensor_width_, sensor_height_, width_, height_);
       interface_cast<ISourceSettings>(requests_[i].get())->setFrameDurationRange(Range<uint64_t>(1e9 / fps_));
       is->repeat(requests_[i].get());
     }
@@ -329,7 +340,7 @@ class FusedNode : public rclcpp::Node {
   std::string calib_dir_, rig_path_, odom_frame_, base_frame_;
   std::vector<std::string> cams_;
   std::vector<int64_t> sensor_ids_;
-  int width_, height_, fps_;
+  int width_, height_, sensor_width_, sensor_height_, fps_;
   std::unique_ptr<cuvslam::Odometry> tracker_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_bc_;
