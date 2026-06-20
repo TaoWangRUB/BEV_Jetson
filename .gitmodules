@@ -6,3 +6,9 @@
 	# checkout. `ignore = all` keeps git status/pull from recursing into it — which
 	# otherwise fails on boards where the submodule has no .git/modules metadata.
 	ignore = all
+[submodule "third_party/OpenMAVIS"]
+	path = third_party/OpenMAVIS
+	url = https://github.com/MAVIS-SLAM/OpenMAVIS.git
+[submodule "third_party/okvis2"]
+	path = third_party/okvis2
+	url = https://github.com/smartroboticslab/okvis2.git
