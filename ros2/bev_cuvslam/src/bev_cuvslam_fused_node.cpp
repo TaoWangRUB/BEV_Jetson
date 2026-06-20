@@ -92,18 +92,19 @@ cuvslam::Pose load_pose(const YAML::Node& n) {
 class FusedNode : public rclcpp::Node {
  public:
   FusedNode() : Node("bev_cuvslam_fused") {
-    calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/calib");
+    // Default = the measured best full-FOV config (see openspec fused-zerocopy §6): capture the
+    // full-FOV 1640x1232 mode and ISP-downscale to 832x624 output → ~22 Hz (the sensor's fps
+    // ceiling), full surround FOV, lowest CPU. Override params for other configs.
+    calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/832x624");
     rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics.yaml");
     cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
     sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {0, 1, 2, 3});
-    width_ = declare_parameter<int>("width", 1640);    // OUTPUT resolution (-> cuVSLAM + calib)
-    height_ = declare_parameter<int>("height", 1232);
-    // Sensor mode to capture (default = output res). Set larger than width/height to capture
-    // at a full-FOV mode and let the Argus ISP downscale the output in NVMM (stays zero-copy):
-    // e.g. sensor 1640x1232 + output 820x616. fps is set by the sensor mode.
-    sensor_width_ = declare_parameter<int>("sensor_width", width_);
-    sensor_height_ = declare_parameter<int>("sensor_height", height_);
-    fps_ = declare_parameter<int>("fps", 20);
+    width_ = declare_parameter<int>("width", 832);     // OUTPUT resolution (-> cuVSLAM + calib)
+    height_ = declare_parameter<int>("height", 624);
+    // Sensor mode to capture; larger than output → Argus ISP downscales in NVMM (stays zero-copy).
+    sensor_width_ = declare_parameter<int>("sensor_width", 1640);
+    sensor_height_ = declare_parameter<int>("sensor_height", 1232);
+    fps_ = declare_parameter<int>("fps", 60);          // request high; the sensor mode caps it (1640x1232 → 22 fps)
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
     if (cams_.size() != 4 || sensor_ids_.size() != 4)

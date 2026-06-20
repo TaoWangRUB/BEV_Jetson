@@ -27,6 +27,12 @@
 
 - [ ] 5.1 Record results (rate, CPU delta, latency if measured) in the change; update README/roadmap
 
+## 7. Fused (zero-copy) vs modular (ROS2 GPU→CPU→GPU) head-to-head
+
+- [ ] 7.1 Measure the original integration — `argus_capture_node` (NvBufferMemMap→DDS) + `cuvslam_multicam_node` (DDS→cv_bridge→cuVSLAM CPU upload) — at 1640×1232, native fps, same methodology (sustained odom + total CPU)
+- [ ] 7.2 Compare against fused at the same 1640×1232 (config A) → isolate the zero-copy delta (CPU, latency) at equal resolution/rate
+- [ ] 7.3 Record the table + the GPU→CPU→GPU cost
+
 ## 6. Resolution / fps sweep (find the rate sweet spot; Track is the bottleneck)
 
 - [ ] 6.1 Decouple **sensor mode** from **output resolution** in the fused node (params `sensor_width/sensor_height` vs `width/height`); Argus ISP downscales in NVMM (stays zero-copy)
@@ -43,6 +49,6 @@
 - [x] 6.4 Findings + recommendation (physically consistent now — no rate exceeds its sensor fps):
   - **Within a mode, downscaling raises rate up to the input-fps cap + cuts Track & CPU, same FOV.** A→B: 17.9→**22.3 Hz** (B hits the 22 fps ceiling; A's 29 ms Track is too slow to), CPU 22→15%. Best **full-FOV** config = **B (1640→832×624): 22.3 Hz, 15% CPU**.
   - **>22 Hz requires the 720p mode (44 fps), which CROPS the FOV** (loses surround overlap) and costs more CPU (more frames/s → more Track/s): C 26.7 Hz/29%, D 34.8 Hz/31%.
-  - **Track is feature-count-driven, not pixel-count.** D(640, 230k px)=20 ms > B(832, 519k px)=12 ms because the cropped 720/640 views are more textured (more features) than the full-fisheye views (low-texture periphery). Explains the "smaller image, more Track" oddity.
+  - **Per-call Track rises with the processing rate, not just pixels.** D(640, 230k px)=20 ms > B(832, 519k px)=12 ms even though 640 is smaller — because D runs at **34.8 Hz vs B's 22.3 Hz**: more Track calls/s keeps the GPU busier and overlaps cuVSLAM's **async SBA** across frames → contention → longer measured per-call Track. (At the *same* rate/FOV, Track does scale with pixels: A 1640→29 ms vs B 832→12 ms.)
   - **acquire time = mostly *waiting* for frames** when input-capped (B 32 ms idle wait at 22 fps; D 9 ms at 44 fps) — not real work.
   - **Recommendation: default to 1640×1232 → 832×624 (full FOV, 22 Hz @ sensor ceiling, lowest CPU).** Use 1280×720→640×360 only if ~35 Hz is needed AND the cropped FOV (reduced surround overlap) is acceptable.

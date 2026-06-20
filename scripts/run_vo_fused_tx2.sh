@@ -27,7 +27,8 @@ exec docker run --rm -it --runtime nvidia --network host --stop-signal=SIGTERM \
       ros2 bag record -o /workspace/bags/fused_$(date +%Y%m%d_%H%M%S) /cuvslam/odometry /tf &
     fi
     exec ros2 run bev_cuvslam bev_cuvslam_fused_node --ros-args \
-      -p calib_dir:=scripts/config/calib \
+      -p calib_dir:=scripts/config/832x624 \
+      -p width:=832 -p height:=624 -p sensor_width:=1640 -p sensor_height:=1232 -p fps:=60 \
       -p rig_extrinsics:=config/rig/rig_extrinsics.yaml \
       -p cameras:=[cam1,cam2,cam3,cam4]
   '
