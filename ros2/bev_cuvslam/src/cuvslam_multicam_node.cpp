@@ -84,10 +84,11 @@ class CuvslamMulticamNode : public rclcpp::Node {
         "image_topics", {"/cam1/image_raw", "/cam2/image_raw", "/cam3/image_raw", "/cam4/image_raw"});
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
-    // Default 80 ms: the IMX219 rig free-runs with no HW trigger, so measured 4-cam
-    // timestamp spread is ~30–66 ms (one frame period). ApproximateTime needs the slop
-    // >= that spread to ever match a set. Lower it once frames are hardware-synced.
-    int slop_ms = declare_parameter<int>("sync_slop_ms", 80);
+    // Staleness bound for the latest-frame bundler. The IMX219 rig free-runs with no HW
+    // trigger; measured 4-cam spread is ~30–86 ms (slowest cam ~14 Hz). 120 ms accepts
+    // most sets (~8 Hz odom; 80 ms gave ~5 Hz). Higher = more rate but more inter-camera
+    // skew (accuracy cost under motion). Lower it once frames are hardware-synced.
+    int slop_ms = declare_parameter<int>("sync_slop_ms", 120);
 
     if (cams_.size() != 4 || topics_.size() != 4)
       throw std::runtime_error("this node is wired for exactly 4 cameras");
