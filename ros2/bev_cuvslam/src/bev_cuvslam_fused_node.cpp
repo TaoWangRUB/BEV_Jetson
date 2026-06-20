@@ -10,6 +10,7 @@
 // Build/run inside cuvslam-foxy:tx2 (Argus socket + /dev + jetson_multimedia_api + CUDA).
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <fstream>
@@ -345,10 +346,14 @@ class FusedNode : public rclcpp::Node {
 
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
-  // docker stop sends SIGTERM (rclcpp only catches SIGINT by default) — handle it so the
-  // node destructs and releases Argus/EGL/CUDA instead of being SIGKILL'd (which leaks).
+  // This node has no ROS callbacks (the worker thread captures, tracks, and publishes), so
+  // there's nothing to spin — just wait until shutdown. SIGINT is handled by rclcpp; handle
+  // SIGTERM too (docker stop) so the node destructs and releases Argus/EGL/CUDA promptly
+  // instead of being SIGKILL'd after the grace period (a leaked session wedges nvargus).
   std::signal(SIGTERM, [](int) { rclcpp::shutdown(); });
-  rclcpp::spin(std::make_shared<FusedNode>());
+  auto node = std::make_shared<FusedNode>();
+  while (rclcpp::ok()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  node.reset();  // run the destructor (clean Argus/EGL/CUDA release) before context shutdown
   rclcpp::shutdown();
   return 0;
 }
