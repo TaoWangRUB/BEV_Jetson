@@ -58,6 +58,6 @@ ament_target_dependencies(bev_cuvslam_fused_node
   rclcpp nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
 
 install(TARGETS cuvslam_multicam_node bev_cuvslam_fused_node DESTINATION lib/${PROJECT_NAME})
-install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 
 ament_package()
