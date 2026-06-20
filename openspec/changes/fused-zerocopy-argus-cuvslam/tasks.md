@@ -31,5 +31,18 @@
 
 - [ ] 6.1 Decouple **sensor mode** from **output resolution** in the fused node (params `sensor_width/sensor_height` vs `width/height`); Argus ISP downscales in NVMM (stays zero-copy)
 - [ ] 6.2 Calib per output res: `1640x1232/` and `1280x720/` (done, on board); generate ½-scaled `820x616` (= 1640÷2) and `640x360` (= 1280÷2) — KB intrinsics scale linearly (mu,mv,u0,v0,w,h ×0.5; k2..k5 unchanged)
-- [ ] 6.3 Measure Track ms + VIO Hz + CPU for: A) 1640×1232 full, B) 1640×1232→820×616, C) 1280×720 full, D) 1280×720→640×360
-- [ ] 6.4 Record the table + recommend a default (full-FOV 1640×1232 caps at 22 fps input; 1280×720 is a cropped FOV @44 fps — note the overlap-ring trade-off)
+- [x] 6.3 Measured (4 cams, fused zero-copy, stationary bench, ~20 s fresh each):
+
+  | Cfg | sensor | →output | FOV | Track | VIO | CPU |
+  |---|---|---|---|---|---|---|
+  | A | 1640×1232 | 1640×1232 | full | ~30 ms | **17.9 Hz** | 19.5% |
+  | B | 1640×1232 | 820×616 | full | — | **FAILED** | — |
+  | C | 1280×720 | 1280×720 | crop | ~24 ms | **19.9 Hz** | 21.2% |
+  | D | 1280×720 | 640×360 | crop | ~23 ms | **19.9 Hz** | 19.7% |
+
+- [x] 6.4 Findings + recommendation:
+  - **Rate is loop-bound, not input-fps-bound.** All working cfgs ≈18–20 Hz: loop ≈ acquire+GPUcopy (~26 ms, ~constant) + Track (~25 ms). 720p's 44 fps input gives no rate edge over 1640's 22 fps (both loop-capped ~50 ms). So **pushing fps does not raise VIO here.**
+  - **Downscaling barely helps** (Track already ~25 ms; the ~26 ms acquire is a co-floor). 720p (cropped FOV) buys only ~2 Hz over full-FOV 1640 — not worth losing the surround overlap.
+  - **Track is scene/map-dependent** (~30 ms here vs ~90 ms in an earlier longer-run session) → VIO floats ~10–20 Hz with scene; the ~26 ms acquire is the hard floor.
+  - **B failed**: Argus delivered no frames at 820×616 (got past calib+sensor-mode, no "first GPU frame"). Likely **output width not 32-aligned** (820 ✗, 640 ✓). An aligned downscale (e.g. 832×624) would work.
+  - **Recommendation: keep 1640×1232 full FOV** (~18 Hz, full overlap). The rate lever is fewer/lighter cuVSLAM features or HW sync — not resolution/fps.
