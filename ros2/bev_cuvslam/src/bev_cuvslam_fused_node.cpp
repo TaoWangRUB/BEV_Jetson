@@ -215,8 +215,10 @@ class FusedNode : public rclcpp::Node {
     if (dmabuf_[i] < 0) { RCLCPP_ERROR(get_logger(), "createNvBuffer cam %zu failed", i); return false; }
     egl_img_[i] = NvEGLImageFromFd(egl_display_, dmabuf_[i]);
     if (egl_img_[i] == EGL_NO_IMAGE_KHR) { RCLCPP_ERROR(get_logger(), "NvEGLImageFromFd cam %zu failed", i); return false; }
-    if (cuGraphicsEGLRegisterImage(&cu_res_[i], egl_img_[i], CU_GRAPHICS_REGISTER_FLAGS_NONE) != CUDA_SUCCESS) {
-      RCLCPP_ERROR(get_logger(), "cuGraphicsEGLRegisterImage cam %zu failed", i); return false;
+    CUresult rr = cuGraphicsEGLRegisterImage(&cu_res_[i], egl_img_[i], CU_GRAPHICS_REGISTER_FLAGS_NONE);
+    if (rr != CUDA_SUCCESS) {
+      const char* s = nullptr; cuGetErrorString(rr, &s);
+      RCLCPP_ERROR(get_logger(), "cuGraphicsEGLRegisterImage cam %zu failed: %s", i, s ? s : "?"); return false;
     }
     CUeglFrame ef;
     if (cuGraphicsResourceGetMappedEglFrame(&ef, cu_res_[i], 0, 0) != CUDA_SUCCESS) return false;
@@ -227,6 +229,11 @@ class FusedNode : public rclcpp::Node {
   }
 
   void capture_loop() {
+    // CUDA context currency is per-thread: bind the runtime primary context to THIS worker
+    // thread before any driver-API EGL/CUDA interop (the constructor's cudaFree(0) only bound
+    // the main thread). Shares cuVSLAM's runtime context, so our device ptrs are valid in Track.
+    cudaSetDevice(0);
+    cudaFree(0);
     std::array<EGLStream::IFrameConsumer*, 4> ifc;
     for (size_t i = 0; i < 4; ++i) ifc[i] = interface_cast<EGLStream::IFrameConsumer>(consumers_[i].get());
     std::array<bool, 4> first; first.fill(true);
