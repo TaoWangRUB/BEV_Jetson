@@ -205,10 +205,11 @@ class CuvslamMulticamNode : public rclcpp::Node {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "tracking lost (no pose)");
       return;
     }
-    publish(est.world_from_rig->pose, msgs[0]->header.stamp);
+    publish(*est.world_from_rig, msgs[0]->header.stamp);
   }
 
-  void publish(const cuvslam::Pose& p, const builtin_interfaces::msg::Time& stamp) {
+  void publish(const cuvslam::PoseWithCovariance& pwc, const builtin_interfaces::msg::Time& stamp) {
+    const cuvslam::Pose& p = pwc.pose;
     nav_msgs::msg::Odometry od;
     od.header.stamp = stamp;
     od.header.frame_id = odom_frame_;
@@ -220,6 +221,12 @@ class CuvslamMulticamNode : public rclcpp::Node {
     od.pose.pose.orientation.y = p.rotation[1];
     od.pose.pose.orientation.z = p.rotation[2];
     od.pose.pose.orientation.w = p.rotation[3];
+    // cuVSLAM 6x6 covariance is row-major in order [Rx,Ry,Rz,x,y,z]; ROS Odometry wants
+    // [x,y,z,Rx,Ry,Rz]. Remap with perm[ros]=cuvslam index = {3,4,5,0,1,2}.
+    static constexpr int perm[6] = {3, 4, 5, 0, 1, 2};
+    for (int r = 0; r < 6; ++r)
+      for (int c = 0; c < 6; ++c)
+        od.pose.covariance[r * 6 + c] = pwc.covariance[perm[r] * 6 + perm[c]];
     odom_pub_->publish(od);
 
     geometry_msgs::msg::TransformStamped tf;
@@ -239,7 +246,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
   std::array<rclcpp::Subscription<Img>::SharedPtr, 4> subs_;
   std::array<Img::ConstSharedPtr, 4> latest_;
   std::mutex mtx_;
-  int64_t max_stale_ns_{80000000};
+  int64_t max_stale_ns_{120000000};
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_bc_;
 };
