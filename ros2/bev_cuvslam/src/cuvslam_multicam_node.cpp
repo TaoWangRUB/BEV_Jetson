@@ -103,7 +103,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
     auto qos = rclcpp::SensorDataQoS();
     for (size_t i = 0; i < 4; ++i)
       subs_[i] = create_subscription<Img>(topics_[i], qos,
-          [this, i](const Img::ConstSharedPtr& m) { on_frame(i, m); });
+          [this, i](const Img::ConstSharedPtr msg) { on_frame(i, msg); });
 
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("cuvslam/odometry", 10);
     tf_bc_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
