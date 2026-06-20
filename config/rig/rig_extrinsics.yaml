@@ -4,10 +4,11 @@
 #
 # Wiring: port b empty (6th cam not probing). /dev/video <-> port: a=video0 (unused),
 # c=video1, d=video2, e=video3, f=video4. Only ports c,d,e,f are used = cam1,cam2,cam3,cam4.
-# Argus sensor index == /dev/video index (confirmed by the panorama), so capture with:
-#   sensor_ids = [1, 2, 3, 4]   paired with   cameras = [cam1, cam2, cam3, cam4]
-#   (sensor1=video1=port c=cam1, s2=d=cam2, s3=e=cam3, s4=f=cam4).
-# NOTE: sensor_ids=[0,1,2,3] is WRONG — sensor 0 = video0 = port a (uncalibrated, unused).
+# Argus sensor index does NOT equal /dev/video index — empirically the Argus order is
+# [a, f, d, e, c] for sensor_id 0..4 (sensors 1 and 4 are swapped vs video). So:
+#   port c=cam1=sensor4, d=cam2=sensor2, e=cam3=sensor3, f=cam4=sensor1.
+# Capture with:  sensor_ids = [4, 2, 3, 1]   paired with   cameras = [cam1, cam2, cam3, cam4].
+# (Verified: a human on port f appears at cam4's azimuth only with this mapping.)
 rig_frame: board_center
 cameras:
   cam1:
