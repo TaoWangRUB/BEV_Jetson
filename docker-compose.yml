@@ -75,3 +75,8 @@ services:
   capture:
     <<: *bev
     command: ros2 run bev_camera argus_capture_node --ros-args -p sensor_ids:=[0,1,2,3] -p width:=1640 -p height:=1232 -p fps:=20
+
+  # GPU equirectangular surround stitch of the 4 fisheye -> /bev/panorama (view in rviz)
+  panorama:
+    <<: *bev
+    command: ros2 launch bev_cuvslam bev_panorama.launch.py

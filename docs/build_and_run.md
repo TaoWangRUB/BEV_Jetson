@@ -201,7 +201,26 @@ for the full data. Calibration per output resolution lives in `scripts/config/<W
 
 ---
 
-## 6. Troubleshooting
+## 6. Surround panorama (rviz)
+
+`bev_panorama_node` stitches the 4 fisheye into one **equirectangular panorama on the GPU** —
+same Argus→NVMM→CUDA bridge as the fused node, plus a custom CUDA kernel that bilinear-samples +
+feather-blends each camera using a remap table precomputed from the KB intrinsics + rig
+extrinsics. No CUDA stitch lib needed (VPI absent, OpenCV-4.2 has no CUDA). Publishes
+`/bev/panorama` (mono8) — measured **1920×540 @ ~29 Hz**.
+
+```bash
+docker compose run --rm panorama        # params: ros2/bev_cuvslam/config/panorama_params.yaml
+# then in rviz add an Image display on /bev/panorama
+# record: ... bev_panorama.launch.py params:=... with save_video set, or edit the yaml
+```
+
+Caveats: the extrinsics are physical-layout (not bundle-adjusted) and the cameras have parallax,
+so expect a slightly wavy horizon + faint seams (no exposure compensation). Poles are black
+(outside the ±`elevation_max_deg` / camera FOV). Tune `pano_width/height`, `elevation_max_deg`,
+`feather_deg` in the params yaml.
+
+## 7. Troubleshooting
 
 | Symptom | Cause / fix |
 |---------|-------------|
