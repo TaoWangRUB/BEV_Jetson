@@ -26,3 +26,10 @@
 ## 5. Wrap-up
 
 - [ ] 5.1 Record results (rate, CPU delta, latency if measured) in the change; update README/roadmap
+
+## 6. Resolution / fps sweep (find the rate sweet spot; Track is the bottleneck)
+
+- [ ] 6.1 Decouple **sensor mode** from **output resolution** in the fused node (params `sensor_width/sensor_height` vs `width/height`); Argus ISP downscales in NVMM (stays zero-copy)
+- [ ] 6.2 Calib per output res: `1640x1232/` and `1280x720/` (done, on board); generate ½-scaled `820x616` (= 1640÷2) and `640x360` (= 1280÷2) — KB intrinsics scale linearly (mu,mv,u0,v0,w,h ×0.5; k2..k5 unchanged)
+- [ ] 6.3 Measure Track ms + VIO Hz + CPU for: A) 1640×1232 full, B) 1640×1232→820×616, C) 1280×720 full, D) 1280×720→640×360
+- [ ] 6.4 Record the table + recommend a default (full-FOV 1640×1232 caps at 22 fps input; 1280×720 is a cropped FOV @44 fps — note the overlap-ring trade-off)
