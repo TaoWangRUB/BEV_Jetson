@@ -57,13 +57,31 @@ target_link_libraries(bev_cuvslam_fused_node
 ament_target_dependencies(bev_cuvslam_fused_node
   rclcpp nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
 
-# --- CUDA spike (surround-panorama task 1): nvcc .cu (g++-8/sm_62) + colcon gcc-9 ---
+# --- CUDA: nvcc .cu (g++-8/sm_62) compiles inside colcon gcc-9 (validated by cuda_spike) ---
+# nvcc 10.2 needs host gcc<=8; pin nvcc + g++-8 + sm_62 so the default colcon build just works.
+if(NOT DEFINED CMAKE_CUDA_COMPILER)
+  set(CMAKE_CUDA_COMPILER /usr/local/cuda/bin/nvcc)
+endif()
+if(NOT DEFINED CMAKE_CUDA_HOST_COMPILER)
+  set(CMAKE_CUDA_HOST_COMPILER g++-8)
+endif()
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(CMAKE_CUDA_ARCHITECTURES 62)
+endif()
 enable_language(CUDA)
-add_executable(cuda_spike src/cuda_spike.cu)
-set_target_properties(cuda_spike PROPERTIES CUDA_ARCHITECTURES 62)
-install(TARGETS cuda_spike DESTINATION lib/${PROJECT_NAME})
 
-install(TARGETS cuvslam_multicam_node bev_cuvslam_fused_node DESTINATION lib/${PROJECT_NAME})
+# --- surround panorama: capture (NVMM->CUDA) + custom equirect stitch kernel -> /bev/panorama ---
+add_executable(bev_panorama_node src/bev_panorama_node.cpp src/stitch_kernel.cu)
+set_target_properties(bev_panorama_node PROPERTIES CUDA_ARCHITECTURES 62)
+target_include_directories(bev_panorama_node PRIVATE
+  "${MMAPI_ROOT}/argus/include" "${MMAPI_ROOT}/include" "${CUDA_DIR}/include" ${OpenCV_INCLUDE_DIRS})
+target_link_directories(bev_panorama_node PRIVATE "${TEGRA_LIB_DIR}" "${CUDA_DIR}/lib64")
+target_link_libraries(bev_panorama_node
+  nvargus_socketclient nveglstream_camconsumer nvbuf_utils EGL GLESv2
+  cuda cudart yaml-cpp ${OpenCV_LIBS} pthread)
+ament_target_dependencies(bev_panorama_node rclcpp sensor_msgs)
+
+install(TARGETS cuvslam_multicam_node bev_cuvslam_fused_node bev_panorama_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 
 ament_package()
