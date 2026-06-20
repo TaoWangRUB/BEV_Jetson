@@ -29,7 +29,7 @@ using namespace Argus;
 class ArgusCaptureNode : public rclcpp::Node {
  public:
   ArgusCaptureNode() : Node("argus_capture") {
-    sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {0, 1, 2, 3});
+    sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {4, 2, 3, 1});
     topics_ = declare_parameter<std::vector<std::string>>(
         "topics", {"/cam1/image_raw", "/cam2/image_raw", "/cam3/image_raw", "/cam4/image_raw"});
     frame_ids_ = declare_parameter<std::vector<std::string>>(

@@ -2,12 +2,13 @@
 # rig frame: TX2 board center; X=right(lateral) Y=forward(longitudinal) Z=up. units: metres.
 # camera image-up = [0, 0, 1] (rig frame). translations in m, quaternions wxyz.
 #
-# camN <-> port:  cam1=c  cam2=d  cam3=e  cam4=f  (calib camN.yaml is keyed to the PORT).
-# IMPORTANT — Argus enumerates the sensors in port order **e, f, c, d**, so:
-#   sensor_id 0 -> port e -> cam3,  1 -> f -> cam4,  2 -> c -> cam1,  3 -> d -> cam2.
-# Hence every node's `cameras` param (which pairs sensor_id i with camN's calib+extrinsics)
-# is [cam3, cam4, cam1, cam2] for sensor_ids [0,1,2,3]. Get this wrong and the stitch/VO is
-# cyclically rotated with mis-paired per-camera intrinsics.
+# Wiring: port b empty (6th cam not probing). /dev/video -> port: a=video0, c=video1,
+# d=video2, e=video3, f=video4. Calibrated cams are keyed to PORT: cam1=c cam2=d cam3=e cam4=f.
+# Argus enumerates devices in order [a, f, d, e, c] (= getCameraDevices index 0..4; port a is
+# the uncalibrated extra). So to capture cam1-4 (ports c,d,e,f) pair:
+#   sensor_ids = [4, 2, 3, 1]  with  cameras = [cam1, cam2, cam3, cam4]
+#   (Argus dev 4=port c=cam1, dev 2=d=cam2, dev 3=e=cam3, dev 1=f=cam4).
+# NOTE: sensor_ids=[0,1,2,3] is WRONG — it grabs port a (uncalibrated) and misses port c.
 rig_frame: board_center
 cameras:
   cam1:
