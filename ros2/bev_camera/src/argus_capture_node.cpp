@@ -39,8 +39,10 @@ class ArgusCaptureNode : public rclcpp::Node {
     fps_ = declare_parameter<int>("fps", 20);
     n_ = sensor_ids_.size();
 
+    // Best-effort sensor-data QoS: high-rate camera streams must never let a slow
+    // reliable subscriber back-pressure (and block) the Argus capture thread.
     for (size_t i = 0; i < n_; ++i)
-      pubs_.push_back(create_publisher<sensor_msgs::msg::Image>(topics_[i], 10));
+      pubs_.push_back(create_publisher<sensor_msgs::msg::Image>(topics_[i], rclcpp::SensorDataQoS()));
 
     if (!setup_argus())
       throw std::runtime_error("Argus setup failed");
