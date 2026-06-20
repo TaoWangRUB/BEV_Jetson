@@ -31,6 +31,8 @@
 #include <nvbuf_utils.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <cuda.h>
+#include <cudaEGL.h>
 #include <cuda_runtime.h>
 #ifdef Success
 #undef Success
