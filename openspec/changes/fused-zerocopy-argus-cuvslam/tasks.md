@@ -29,9 +29,15 @@
 
 ## 7. Fused (zero-copy) vs modular (ROS2 GPU→CPU→GPU) head-to-head
 
-- [ ] 7.1 Measure the original integration — `argus_capture_node` (NvBufferMemMap→DDS) + `cuvslam_multicam_node` (DDS→cv_bridge→cuVSLAM CPU upload) — at 1640×1232, native fps, same methodology (sustained odom + total CPU)
-- [ ] 7.2 Compare against fused at the same 1640×1232 (config A) → isolate the zero-copy delta (CPU, latency) at equal resolution/rate
-- [ ] 7.3 Record the table + the GPU→CPU→GPU cost
+- [x] 7.1/7.2/7.3 Head-to-head at **1640×1232, native fps, same scene**:
+
+  | Pipeline | data path | sustained odom | CPU |
+  |---|---|---|---|
+  | **Modular** (ROS2 GPU→CPU→GPU) | Argus→NVMM→**CPU memmap**→DDS→cv_bridge→GPU re-upload | **9.2 Hz** | **78.5%** |
+  | **Fused** (zero-copy) | Argus→NVMM→CUDA (EGL register) →cuVSLAM | **19.8 Hz** | **23.1%** |
+
+  - **Zero-copy = ~3.4× less CPU AND ~2.1× higher rate** at equal resolution. The per-frame 4× 2 MP `NvBufferMemMap` memcpy + DDS image (de)serialize + cv_bridge + CPU→GPU re-upload both burns CPU *and* throttles throughput (caps modular at 9.2 Hz).
+  - **Rate gap is scene-dependent**: when Track is small (~29 ms here) the CPU-copy overhead dominates the modular loop → fused wins ~2× on rate; when Track is heavy (~90 ms scene) both are Track-bound and closer (earlier: modular 7.5 vs fused 8.6 Hz). CPU win (~3×) holds regardless.
 
 ## 6. Resolution / fps sweep (find the rate sweet spot; Track is the bottleneck)
 
