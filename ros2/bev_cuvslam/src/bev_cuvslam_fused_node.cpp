@@ -122,10 +122,11 @@ class FusedNode : public rclcpp::Node {
   ~FusedNode() override {
     running_ = false;
     if (worker_.joinable()) worker_.join();
-    // Release Argus cleanly so the session doesn't leak in nvargus-daemon (a leaked
-    // session wedges the daemon -> "no session" on the next run, needs a daemon restart).
+    // Release Argus so the session doesn't leak in nvargus-daemon (a leaked session wedges
+    // the daemon -> "no session" next run). stopRepeat() only — waitForIdle() can block and
+    // hang shutdown; the UniqueObj session/stream dtors below finish teardown.
     for (auto& s : sessions_)
-      if (auto* is = interface_cast<ICaptureSession>(s.get())) { is->stopRepeat(); is->waitForIdle(); }
+      if (auto* is = interface_cast<ICaptureSession>(s.get())) is->stopRepeat();
     for (size_t i = 0; i < 4; ++i) {
       if (cu_res_[i]) cuGraphicsUnregisterResource(cu_res_[i]);
       if (egl_img_[i] != EGL_NO_IMAGE_KHR) NvDestroyEGLImage(egl_display_, egl_img_[i]);
