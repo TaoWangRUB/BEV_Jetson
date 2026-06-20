@@ -14,6 +14,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
 
@@ -39,7 +40,7 @@ def main():
         return cb
 
     for t in args.topics:
-        node.create_subscription(Image, t, make_cb(t), 10)
+        node.create_subscription(Image, t, make_cb(t), qos_profile_sensor_data)
 
     best = None
     samples = []

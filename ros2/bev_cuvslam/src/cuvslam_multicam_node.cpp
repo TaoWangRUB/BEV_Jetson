@@ -91,8 +91,9 @@ class CuvslamMulticamNode : public rclcpp::Node {
     build_tracker();
 
     // Sync the 4 image streams (ApproximateTime: IMX219 has no hardware trigger).
+    // Match the capture node's best-effort sensor-data QoS (high-rate image streams).
     for (size_t i = 0; i < 4; ++i)
-      subs_[i].subscribe(this, topics_[i]);
+      subs_[i].subscribe(this, topics_[i], rmw_qos_profile_sensor_data);
     sync_ = std::make_shared<Sync>(SyncPolicy(10), subs_[0], subs_[1], subs_[2], subs_[3]);
     sync_->setMaxIntervalDuration(rclcpp::Duration(0, slop_ms * 1000000));
     sync_->registerCallback(std::bind(&CuvslamMulticamNode::on_images, this,
