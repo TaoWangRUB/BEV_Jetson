@@ -101,7 +101,7 @@ class PanoramaNode : public rclcpp::Node {
   PanoramaNode() : Node("bev_panorama") {
     calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/1280x720");
     rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics.yaml");
-    cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
+    cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam3", "cam4", "cam1", "cam2"});
     sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {0, 1, 2, 3});
     cam_w_ = declare_parameter<int>("width", 1280);    // capture/output res (matches calib)
     cam_h_ = declare_parameter<int>("height", 720);

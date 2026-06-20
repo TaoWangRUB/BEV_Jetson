@@ -13,7 +13,7 @@ def generate_launch_description():
                 # absolute paths recommended at runtime (these are repo-relative defaults)
                 'calib_dir': 'scripts/config/calib',
                 'rig_extrinsics': 'config/rig/rig_extrinsics.yaml',
-                'cameras': ['cam1', 'cam2', 'cam3', 'cam4'],
+                'cameras': ['cam3', 'cam4', 'cam1', 'cam2'],
                 'image_topics': [
                     '/cam1/image_raw', '/cam2/image_raw',
                     '/cam3/image_raw', '/cam4/image_raw',
