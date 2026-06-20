@@ -37,7 +37,27 @@ ament_target_dependencies(cuvslam_multicam_node
   rclcpp sensor_msgs nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs
   cv_bridge image_transport message_filters)
 
-install(TARGETS cuvslam_multicam_node DESTINATION lib/${PROJECT_NAME})
+# --- fused zero-copy Argus -> cuVSLAM node (NVMM Y plane -> CUDA, no CPU round-trip) ---
+# Needs the Jetson Multimedia API (Argus/EGLStream/nvbuf_utils, bind-mounted) + CUDA
+# (driver cuGraphicsEGLRegisterImage + runtime). tegra libs mounted by the nvidia runtime.
+set(MMAPI_ROOT "/usr/src/jetson_multimedia_api" CACHE PATH "jetson_multimedia_api root")
+set(TEGRA_LIB_DIR "/usr/lib/aarch64-linux-gnu/tegra" CACHE PATH "tegra libs")
+set(CUDA_DIR "/usr/local/cuda" CACHE PATH "cuda toolkit")
+
+add_executable(bev_cuvslam_fused_node src/bev_cuvslam_fused_node.cpp)
+target_include_directories(bev_cuvslam_fused_node PRIVATE
+  "${CUVSLAM_INCLUDE_DIR}/.."
+  "${MMAPI_ROOT}/argus/include" "${MMAPI_ROOT}/include"
+  "${CUDA_DIR}/include")
+target_link_directories(bev_cuvslam_fused_node PRIVATE "${TEGRA_LIB_DIR}" "${CUDA_DIR}/lib64")
+target_link_libraries(bev_cuvslam_fused_node
+  ${CUVSLAM_LIB} yaml-cpp
+  nvargus_socketclient nveglstream_camconsumer nvbuf_utils EGL GLESv2
+  cuda cudart pthread)
+ament_target_dependencies(bev_cuvslam_fused_node
+  rclcpp nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
+
+install(TARGETS cuvslam_multicam_node bev_cuvslam_fused_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 
 ament_package()
