@@ -1,0 +1,20 @@
+# Parameters for the surround panorama node (bev_panorama_node): GPU equirectangular stitch of
+# the 4 fisheye -> /bev/panorama (mono8). Default uses the 1280x720 calib (full sensor fps).
+# Paths are relative to the run directory (repo root / container -w /workspace).
+/**:
+  ros__parameters:
+    calib_dir: scripts/config/1280x720       # KB intrinsics for the capture resolution
+    rig_extrinsics: config/rig/rig_extrinsics.yaml
+    cameras: [cam1, cam2, cam3, cam4]
+    sensor_ids: [0, 1, 2, 3]
+    width: 1280                              # capture/output res (must match calib_dir)
+    height: 720
+    sensor_width: 1280                       # sensor mode (= width for native, or larger to ISP-downscale)
+    sensor_height: 720
+    fps: 60                                  # sensor mode caps it (1280x720 -> 44 fps)
+    pano_width: 1920                         # equirectangular output canvas
+    pano_height: 540
+    elevation_max_deg: 70.0                  # vertical coverage (+/-), poles left black
+    fisheye_fov_half_deg: 82.0               # per-camera FOV half-angle used for the remap
+    feather_deg: 15.0                        # overlap feather band
+    save_video: ""                           # set a path (e.g. bags/pano.mp4) to also record
