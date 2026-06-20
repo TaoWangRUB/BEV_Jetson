@@ -83,7 +83,10 @@ class CuvslamMulticamNode : public rclcpp::Node {
         "image_topics", {"/cam1/image_raw", "/cam2/image_raw", "/cam3/image_raw", "/cam4/image_raw"});
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
-    int slop_ms = declare_parameter<int>("sync_slop_ms", 20);
+    // Default 80 ms: the IMX219 rig free-runs with no HW trigger, so measured 4-cam
+    // timestamp spread is ~30–66 ms (one frame period). ApproximateTime needs the slop
+    // >= that spread to ever match a set. Lower it once frames are hardware-synced.
+    int slop_ms = declare_parameter<int>("sync_slop_ms", 80);
 
     if (cams_.size() != 4 || topics_.size() != 4)
       throw std::runtime_error("this node is wired for exactly 4 cameras");
@@ -136,6 +139,13 @@ class CuvslamMulticamNode : public rclcpp::Node {
   void on_images(const Img::ConstSharedPtr& m0, const Img::ConstSharedPtr& m1,
                  const Img::ConstSharedPtr& m2, const Img::ConstSharedPtr& m3) {
     const std::array<Img::ConstSharedPtr, 4> msgs{m0, m1, m2, m3};
+    // The IMX219 rig has no hardware trigger, so ApproximateTime-matched frames are
+    // tens of ms apart — but cuVSLAM's Multicamera mode hard-rejects sets whose
+    // timestamps differ by >1 ms. Present the matched set under one unified timestamp
+    // (cam0's) so cuVSLAM accepts it. Caveat: the cameras did NOT capture the same
+    // instant, so cross-camera geometry is skewed under motion (degrades tracking).
+    // The real fix is hardware frame sync; this unblocks bring-up. See sync_slop_ms.
+    const int64_t base_ts = rclcpp::Time(msgs[0]->header.stamp).nanoseconds();
     std::vector<cv_bridge::CvImageConstPtr> holds(4);  // keep pixel buffers alive during Track()
     cuvslam::Odometry::ImageSet images;
     images.reserve(4);
@@ -150,7 +160,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
       im.encoding = cuvslam::ImageData::Encoding::MONO;
       im.data_type = cuvslam::ImageData::DataType::UINT8;
       im.is_gpu_mem = false;
-      im.timestamp_ns = rclcpp::Time(msgs[i]->header.stamp).nanoseconds();
+      im.timestamp_ns = base_ts;  // unified per-set timestamp (see note above)
       im.camera_index = i;
       images.push_back(im);
     }
