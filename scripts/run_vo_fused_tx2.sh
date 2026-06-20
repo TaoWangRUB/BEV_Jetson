@@ -26,9 +26,6 @@ exec docker run --rm -it --runtime nvidia --network host --stop-signal=SIGTERM \
       mkdir -p /workspace/bags
       ros2 bag record -o /workspace/bags/fused_$(date +%Y%m%d_%H%M%S) /cuvslam/odometry /tf &
     fi
-    exec ros2 run bev_cuvslam bev_cuvslam_fused_node --ros-args \
-      -p calib_dir:=scripts/config/832x624 \
-      -p width:=832 -p height:=624 -p sensor_width:=1640 -p sensor_height:=1232 -p fps:=60 \
-      -p rig_extrinsics:=config/rig/rig_extrinsics.yaml \
-      -p cameras:=[cam1,cam2,cam3,cam4]
+    # params come from bev_cuvslam/config/fused_vo_params.yaml (default = 1640->832x624 full FOV)
+    exec ros2 launch bev_cuvslam bev_cuvslam_fused.launch.py
   '

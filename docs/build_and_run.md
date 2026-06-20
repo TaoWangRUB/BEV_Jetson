@@ -177,29 +177,63 @@ runfoxy ros2 topic echo /odom --no-arr
 
 ---
 
-## 5. Data path & a performance note
+## 5. Fused zero-copy node (recommended runtime)
 
-With the modular two-node design the image path is:
+The modular two-node pipeline (§4) moves every frame
+**Argus ISP → NVMM(GPU) → CPU (`NvBufferMemMap`) → DDS (CPU→CPU) → cuVSLAM upload (CPU→GPU)**
+— 3 copies + a CPU round-trip, even though the frame starts on the GPU and cuVSLAM wants it
+there. ROS 2 Foxy has no GPU-buffer transport (NITROS is Isaac-ROS/Humble-only), so the
+split is inherently lossy.
+
+**`bev_cuvslam_fused_node`** fuses capture + cuVSLAM into one process and feeds the Argus
+NVMM **Y(luma) plane straight to cuVSLAM as GPU memory** (`cuvslam::Image.is_gpu_mem=true`)
+via the EGL→CUDA bridge (`NvEGLImageFromFd` → `cuGraphicsEGLRegisterImage`), publishing only
+`/cuvslam/odometry` + the `odom→base_link` TF — no host copy, no DDS image transport. Same
+`cuvslam-foxy:tx2` image (Argus + NVIDIA-EGL + CUDA + `libcuvslam.so` are all already there).
+
+### Run it (params from a yaml, via launch)
+
+```bash
+runfoxy ros2 launch bev_cuvslam bev_cuvslam_fused.launch.py
 ```
-Argus ISP → NVMM (GPU) → CPU (NvBufferMemMap) → DDS (CPU→CPU) → cuVSLAM uploads (CPU→GPU)
-```
-i.e. **3 copies + a CPU round-trip**, even though the frame starts on the GPU and
-cuVSLAM wants it back there. Bandwidth is small (~0.5 GB/s of the TX2's ~60 GB/s),
-but it costs CPU cycles + latency. ROS 2 Foxy has no GPU-buffer transport
-(NITROS/type-adaptation is Isaac-ROS/Humble-only), so this is inherent to the
-split.
 
-For the lowest-latency build, **fuse capture + cuVSLAM into one process** and feed
-Argus NVMM straight to cuVSLAM as GPU memory (`cuvslam::Image.is_gpu_mem = true`,
-via `NvBufSurface`→CUDA / `cuGraphicsEGLRegisterImage`), publishing only the
-odometry over ROS 2. The modular split here is kept for bring-up (easy to record
-bags / inspect topics).
+Params live in [`ros2/bev_cuvslam/config/fused_vo_params.yaml`](../ros2/bev_cuvslam/config/fused_vo_params.yaml)
+(default = the best full-FOV config below). Override the whole file with
+`params:=/abs/path.yaml`, or use the helper `scripts/run_vo_fused_tx2.sh` (adds `RECORD=1` to
+bag `/cuvslam/odometry`+`/tf`). The node decouples **sensor mode** (`sensor_width/height`) from
+**output** (`width/height`): set the sensor to a full-FOV mode and the ISP downscales the output
+in NVMM (still zero-copy).
 
-This is a planned migration, and **the single `cuvslam-foxy:tx2` image already has
-everything it needs** — Argus, NVIDIA EGL, the CUDA toolchain (nvcc/g++-8) and
-`libcuvslam.so` are all in one place — so the fused node builds in the same
-container with no new image. The Argus NVMM→CUDA bridge reuses the same NVIDIA-EGL
-path the capture node already relies on.
+### Measured comparison (4 cams, TX2, stationary bench, native fps)
+
+**Fused vs the modular ROS2 pipeline @ 1640×1232 (same scene/methodology):**
+
+| Pipeline | data path | sustained odom | CPU |
+|----------|-----------|---------------:|----:|
+| Modular (ROS2 GPU→CPU→GPU) | NVMM→CPU memmap→DDS→cv_bridge→GPU re-upload | **9.2 Hz** | **78%** |
+| **Fused** (zero-copy NVMM→CUDA) | NVMM→CUDA→cuVSLAM | **19.8 Hz** | **23%** |
+
+Zero-copy is **~3.4× less CPU and ~2× the rate** at equal resolution — the CPU image
+round-trip both burns cycles and throttles throughput. (The rate gap shrinks when the scene
+makes `Track()` heavy, i.e. both become Track-bound; the CPU win holds regardless.)
+
+**Resolution / fps sweep (fused; output res = what cuVSLAM sees):**
+
+| sensor (max fps) | →output | FOV | Track | odom | CPU |
+|------------------|---------|-----|------:|-----:|----:|
+| 1640×1232 (22) | 1640×1232 | full | 29 ms | 17.9 Hz | 22% |
+| **1640×1232 (22)** | **832×624** | **full** | 12 ms | **22.3 Hz** | **15%** ← default |
+| 1280×720 (44) | 1280×720 | crop | 23 ms | 26.7 Hz | 29% |
+| 1280×720 (44) | 640×360 | crop | 20 ms | 34.8 Hz | 31% |
+
+Takeaways: **downscaling a full-FOV mode raises the rate up to the sensor's fps ceiling and
+cuts CPU at full FOV** → the **1640→832×624** default (~22 Hz, full surround FOV, lowest CPU).
+Beating ~22 Hz needs the 720p mode (44 fps) which **crops the fisheye FOV** (hurts the
+surround overlap) and costs more CPU. Per-call `Track` rises with the *processing rate*
+(more frames/s → cuVSLAM async-SBA overlaps across frames → GPU contention), not just pixels.
+See the [fused-zerocopy OpenSpec change](../openspec/changes/fused-zerocopy-argus-cuvslam/tasks.md)
+for the full data. Calibration per output resolution lives in `scripts/config/<WxH>/`
+(scale with [`scripts/calib/scale_calib.py`](../scripts/calib/scale_calib.py)).
 
 ---
 
