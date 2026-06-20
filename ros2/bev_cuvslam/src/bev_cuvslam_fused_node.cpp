@@ -245,6 +245,7 @@ class FusedNode : public rclcpp::Node {
     std::array<bool, 4> first; first.fill(true);
 
     while (running_ && rclcpp::ok()) {
+      const auto t_loop = std::chrono::steady_clock::now();
       int64_t ts0 = 0; bool ok = true;
       for (size_t i = 0; i < 4 && ok; ++i) {
         UniqueObj<EGLStream::Frame> frame(ifc[i]->acquireFrame(1000000000));
@@ -256,6 +257,7 @@ class FusedNode : public rclcpp::Node {
         if (first[i]) { RCLCPP_INFO(get_logger(), "%s first GPU frame", cams_[i].c_str()); first[i] = false; }
       }
       if (!ok) continue;
+      const auto t_acq = std::chrono::steady_clock::now();  // after 4-cam acquire (+GPU copy)
 
       // Build the cuVSLAM ImageSet from the 4 GPU Y planes (unified timestamp = cam0's).
       cuvslam::Odometry::ImageSet images; images.reserve(4);
@@ -279,6 +281,12 @@ class FusedNode : public rclcpp::Node {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Track() failed: %s", e.what());
         continue;
       }
+      const auto t_trk = std::chrono::steady_clock::now();  // after Track()
+      using ms = std::chrono::duration<double, std::milli>;
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+          "loop=%.0f ms (%.1f Hz): acquire+gpucopy=%.0f ms, Track=%.0f ms",
+          ms(t_trk - t_loop).count(), 1000.0 / ms(t_trk - t_loop).count(),
+          ms(t_acq - t_loop).count(), ms(t_trk - t_acq).count());
       if (!est.world_from_rig) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "tracking lost (no pose)");
         continue;
@@ -344,15 +352,18 @@ class FusedNode : public rclcpp::Node {
   std::thread worker_;
 };
 
+namespace { volatile std::sig_atomic_t g_stop = 0; }
+
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
   // This node has no ROS callbacks (the worker thread captures, tracks, and publishes), so
-  // there's nothing to spin — just wait until shutdown. SIGINT is handled by rclcpp; handle
-  // SIGTERM too (docker stop) so the node destructs and releases Argus/EGL/CUDA promptly
-  // instead of being SIGKILL'd after the grace period (a leaked session wedges nvargus).
-  std::signal(SIGTERM, [](int) { rclcpp::shutdown(); });
+  // there's nothing to spin — just wait until shutdown. rclcpp handles SIGINT (-> !ok());
+  // catch SIGTERM (docker stop) with a flag (calling rclcpp::shutdown() from a signal handler
+  // can deadlock). Either way we destruct the node and release Argus/EGL/CUDA promptly instead
+  // of being SIGKILL'd after the grace period (a leaked Argus session wedges nvargus-daemon).
+  std::signal(SIGTERM, [](int) { g_stop = 1; });
   auto node = std::make_shared<FusedNode>();
-  while (rclcpp::ok()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  while (rclcpp::ok() && !g_stop) std::this_thread::sleep_for(std::chrono::milliseconds(100));
   node.reset();  // run the destructor (clean Argus/EGL/CUDA release) before context shutdown
   rclcpp::shutdown();
   return 0;
