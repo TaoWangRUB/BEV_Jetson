@@ -13,13 +13,18 @@ import os
 import re
 
 
-def scale_file(src, dst, s):
+def scale_file(src, dst, sx, sy, to_w=None, to_h=None):
     with open(src) as f:
         txt = f.read()
-    def mul_int(m):  return f"{m.group(1)}: {int(round(int(m.group(2)) * s))}"
-    def mul_flt(m):  return f"{m.group(1)}: {float(m.group(2)) * s:.10f}"
-    txt = re.sub(r"(image_width|image_height):\s*(\d+)", mul_int, txt)
-    txt = re.sub(r"(mu|mv|u0|v0):\s*([-\d.]+)", mul_flt, txt)  # k2..k5 left as-is
+    if to_w and to_h:  # target resolution: derive per-axis ratios from the source size
+        srcw = int(re.search(r"image_width:\s*(\d+)", txt).group(1))
+        srch = int(re.search(r"image_height:\s*(\d+)", txt).group(1))
+        sx, sy = to_w / srcw, to_h / srch
+    # x-axis params: mu, u0, image_width ; y-axis params: mv, v0, image_height ; k* unchanged
+    txt = re.sub(r"image_width:\s*(\d+)",  lambda m: f"image_width: {to_w or int(round(int(m.group(1))*sx))}", txt)
+    txt = re.sub(r"image_height:\s*(\d+)", lambda m: f"image_height: {to_h or int(round(int(m.group(1))*sy))}", txt)
+    txt = re.sub(r"(mu|u0):\s*([-\d.]+)", lambda m: f"{m.group(1)}: {float(m.group(2))*sx:.10f}", txt)
+    txt = re.sub(r"(mv|v0):\s*([-\d.]+)", lambda m: f"{m.group(1)}: {float(m.group(2))*sy:.10f}", txt)
     with open(dst, "w") as f:
         f.write(txt)
 
@@ -28,15 +33,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="indir", required=True)
     ap.add_argument("--out", dest="outdir", required=True)
-    ap.add_argument("--scale", type=float, default=0.5)
+    ap.add_argument("--scale", type=float, default=0.5, help="uniform scale (ignored if --to-width/-height given)")
+    ap.add_argument("--to-width", type=int, default=None, help="target width (anisotropic ratios derived from source)")
+    ap.add_argument("--to-height", type=int, default=None)
     a = ap.parse_args()
     os.makedirs(a.outdir, exist_ok=True)
     n = 0
     for fn in sorted(os.listdir(a.indir)):
         if re.fullmatch(r"cam\d+\.yaml", fn):
-            scale_file(os.path.join(a.indir, fn), os.path.join(a.outdir, fn), a.scale)
+            scale_file(os.path.join(a.indir, fn), os.path.join(a.outdir, fn),
+                       a.scale, a.scale, a.to_width, a.to_height)
             n += 1
-    print(f"scaled {n} files from {a.indir} -> {a.outdir} (x{a.scale})")
+    tag = f"->{a.to_width}x{a.to_height}" if a.to_width else f"x{a.scale}"
+    print(f"scaled {n} files from {a.indir} -> {a.outdir} ({tag})")
 
 
 if __name__ == "__main__":
