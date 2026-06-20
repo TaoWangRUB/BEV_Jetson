@@ -10,6 +10,7 @@
 // Build/run inside cuvslam-foxy:tx2 (Argus socket + /dev + jetson_multimedia_api + CUDA).
 #include <array>
 #include <atomic>
+#include <csignal>
 #include <cstdint>
 #include <fstream>
 #include <mutex>
@@ -120,6 +121,10 @@ class FusedNode : public rclcpp::Node {
   ~FusedNode() override {
     running_ = false;
     if (worker_.joinable()) worker_.join();
+    // Release Argus cleanly so the session doesn't leak in nvargus-daemon (a leaked
+    // session wedges the daemon -> "no session" on the next run, needs a daemon restart).
+    for (auto& s : sessions_)
+      if (auto* is = interface_cast<ICaptureSession>(s.get())) { is->stopRepeat(); is->waitForIdle(); }
     for (size_t i = 0; i < 4; ++i) {
       if (cu_res_[i]) cuGraphicsUnregisterResource(cu_res_[i]);
       if (egl_img_[i] != EGL_NO_IMAGE_KHR) NvDestroyEGLImage(egl_display_, egl_img_[i]);
@@ -340,6 +345,9 @@ class FusedNode : public rclcpp::Node {
 
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
+  // docker stop sends SIGTERM (rclcpp only catches SIGINT by default) — handle it so the
+  // node destructs and releases Argus/EGL/CUDA instead of being SIGKILL'd (which leaks).
+  std::signal(SIGTERM, [](int) { rclcpp::shutdown(); });
   rclcpp::spin(std::make_shared<FusedNode>());
   rclcpp::shutdown();
   return 0;
