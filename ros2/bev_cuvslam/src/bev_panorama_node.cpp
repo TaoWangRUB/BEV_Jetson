@@ -100,12 +100,12 @@ class PanoramaNode : public rclcpp::Node {
  public:
   PanoramaNode() : Node("bev_panorama") {
     // Default = full-sensor 1640x1232 (HFOV ~127deg -> ~37deg overlap at 90deg spacing, vs ~7deg
-    // at 720p). cam1..4 = ports c,d,e,f; Argus order is a,f,d,e,c so ports c,d,e,f = sensor_ids
-    // [4,2,3,1]. See rig_extrinsics.yaml.
+    // at 720p). cam1..4 = ports c,d,e,f; Argus indices compact over present sensors (port b absent):
+    // a=0,c=1,d=2,e=3,f=4, so ports c,d,e,f = sensor_ids [1,2,3,4]. See rig_extrinsics.yaml.
     calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/1640x1232");
     rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics.yaml");
     cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
-    sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {4, 2, 3, 1});
+    sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {1, 2, 3, 4});
     cam_w_ = declare_parameter<int>("width", 1640);    // capture/output res (matches calib)
     cam_h_ = declare_parameter<int>("height", 1232);
     sensor_w_ = declare_parameter<int>("sensor_width", 1640);
