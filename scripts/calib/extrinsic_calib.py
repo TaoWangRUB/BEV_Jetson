@@ -160,8 +160,12 @@ def match_pair(imgA, imgB, KA, DA, KB_, DB, ratio=0.75):
 
 
 def render_panorama(imgs, intr, rots, out_w=1920, out_h=540, el_max_deg=50.0,
-                    fov_half_deg=65.0, feather_deg=20.0):
-    """Replicate the panorama node's equirect stitch in numpy (R = camera->rig, flip180 applied)."""
+                    fov_half_deg=65.0, feather_deg=20.0, trans=None, depth=None):
+    """Replicate the panorama node's equirect stitch in numpy (R = camera->rig, flip180 applied).
+
+    If trans (rig-frame per-camera t_xyz) and depth (assumed scene distance, m) are given, the ray
+    to a point at `depth` along d_rig is taken from the camera center t: v_rig = depth*d_rig - t
+    (so translation has a visible, depth-dependent effect; depth->inf reduces to pure rotation)."""
     el_max = np.deg2rad(el_max_deg); fov = np.deg2rad(fov_half_deg); feath = np.deg2rad(feather_deg)
     xs = (2 * np.pi) * (np.arange(out_w) + 0.5) / out_w - np.pi
     ys = el_max - (2 * el_max) * (np.arange(out_h) + 0.5) / out_h
@@ -171,7 +175,10 @@ def render_panorama(imgs, intr, rots, out_w=1920, out_h=540, el_max_deg=50.0,
     for cam, img in imgs.items():
         K, D, w, h = intr[cam]
         R = rots[cam]
-        dcam = dr @ R  # d_cam = R^T d_rig  -> (H,W,3) since (dr @ R)_k = sum_j dr_j R_jk = (R^T dr)_k
+        v = dr
+        if trans is not None and depth is not None:
+            v = depth * dr - np.asarray(trans[cam], float)        # rig-frame ray from camera center
+        dcam = v @ R  # d_cam = R^T v  -> (H,W,3) since (v @ R)_k = sum_j v_j R_jk = (R^T v)_k
         X, Y, Z = dcam[..., 0].copy(), dcam[..., 1].copy(), dcam[..., 2]
         X = -X; Y = -Y  # flip_180 (upside-down mount)
         with np.errstate(divide="ignore", invalid="ignore"):
