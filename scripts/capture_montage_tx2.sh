@@ -17,7 +17,9 @@ OPTS=(--runtime nvidia --network host
   -v /tmp/argus_socket:/tmp/argus_socket -v /dev:/dev
   -v "$VDIR":/views -v "$PWD":/workspace -w /workspace "$IMG")
 
-restart_argus() { sudo systemctl restart nvargus-daemon; sleep 3; }
+# Restart nvargus-daemon to clear any leaked Argus session. Non-blocking: if passwordless
+# sudo isn't set up, it's skipped — restart it manually if a capture phase fails.
+restart_argus() { sudo -n systemctl restart nvargus-daemon 2>/dev/null || true; sleep 3; }
 src='source /opt/ros/foxy/setup.bash && source install/setup.bash'
 
 # --- phase 1: capture node -> the 4 raw views (rotate 180: modules are mounted upside-down) ---
