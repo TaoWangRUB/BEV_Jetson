@@ -102,7 +102,7 @@ class PanoramaNode : public rclcpp::Node {
     calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/1280x720");
     rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics.yaml");
     cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
-    sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {4, 2, 3, 1});
+    sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {1, 2, 3, 4});
     cam_w_ = declare_parameter<int>("width", 1280);    // capture/output res (matches calib)
     cam_h_ = declare_parameter<int>("height", 720);
     sensor_w_ = declare_parameter<int>("sensor_width", 1280);
@@ -113,6 +113,7 @@ class PanoramaNode : public rclcpp::Node {
     el_max_deg_ = declare_parameter<double>("elevation_max_deg", 70.0);
     fov_max_deg_ = declare_parameter<double>("fisheye_fov_half_deg", 82.0);
     feather_deg_ = declare_parameter<double>("feather_deg", 15.0);
+    roll180_ = declare_parameter<bool>("flip_180", true);  // cameras mounted upside-down
     save_video_ = declare_parameter<std::string>("save_video", "");
     if (cams_.size() != 4 || sensor_ids_.size() != 4)
       throw std::runtime_error("panorama node is wired for exactly 4 cameras");
@@ -176,6 +177,10 @@ class PanoramaNode : public rclcpp::Node {
           double X = R[0]*dr[0] + R[3]*dr[1] + R[6]*dr[2];
           double Y = R[1]*dr[0] + R[4]*dr[1] + R[7]*dr[2];
           double Z = R[2]*dr[0] + R[5]*dr[1] + R[8]*dr[2];
+          // Cameras are mounted upside-down (the extrinsics assume image-up=+Z, but the modules
+          // are rolled 180 deg about the optical axis). Apply that roll in-camera-frame (X,Y -> -X,-Y)
+          // so we sample the correct pixel -> upright, correctly-placed panorama (no output rotation).
+          if (roll180_) { X = -X; Y = -Y; }
           size_t idx = (size_t)y * out_w_ + x;
           float wgt = 0.0f, uu = -1.0f, vv = -1.0f;
           if (Z > 1e-6) {
@@ -305,6 +310,7 @@ class PanoramaNode : public rclcpp::Node {
   std::vector<int64_t> sensor_ids_;
   int cam_w_, cam_h_, sensor_w_, sensor_h_, fps_, out_w_, out_h_;
   double el_max_deg_, fov_max_deg_, feather_deg_;
+  bool roll180_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_;
   cv::VideoWriter vw_; cv::Mat pano_;
 
