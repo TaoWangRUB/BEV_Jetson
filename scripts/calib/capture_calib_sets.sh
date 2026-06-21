@@ -21,7 +21,7 @@ cd "$ROOT"
 echo nvidia | sudo -S systemctl restart nvargus-daemon
 sleep 4
 docker ps -aq --filter "ancestor=cuvslam-foxy:tx2" | xargs -r docker rm -f >/dev/null 2>&1
-rm -rf "$OUT"/set*; mkdir -p "$OUT"
+sudo rm -rf "$OUT"/set*; mkdir -p "$OUT"   # sudo: prior sets are written root-owned by the container
 
 OPTS="--rm --runtime nvidia --network host -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all \
   -v /usr/local/cuda:/usr/local/cuda:ro -v /usr/src/jetson_multimedia_api:/usr/src/jetson_multimedia_api:ro \
