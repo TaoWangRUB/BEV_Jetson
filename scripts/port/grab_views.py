@@ -18,10 +18,10 @@ import re
 import time
 
 CAM_LABELS = {
-    "cam1": "cam1  port c  -Y back",
-    "cam2": "cam2  port d  -X left",
-    "cam3": "cam3  port e  +Y front",
-    "cam4": "cam4  port f  +X right",
+    "cam1": "/cam1  port f  +X right",
+    "cam2": "/cam2  port d  -X left",
+    "cam3": "/cam3  port e  +Y front",
+    "cam4": "/cam4  port c  -Y back",
 }
 
 
@@ -82,7 +82,13 @@ def cmd_montage(a):
         pano = np.zeros((540, 1920), np.uint8)
     h = int(1920 * pano.shape[0] / pano.shape[1])
     pano = cv2.cvtColor(cv2.resize(pano, (1920, h)), cv2.COLOR_GRAY2BGR)
-    cv2.putText(pano, "/bev/panorama", (8, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    # az gridlines at each camera's optical axis (panorama center = az 0 = +Y front)
+    for frac, txt in [(0.0, "c -Y back"), (0.25, "d -X left"), (0.5, "e +Y FRONT"),
+                      (0.75, "f +X right"), (0.999, "c -Y")]:
+        gx = int(frac * (pano.shape[1] - 1))
+        cv2.line(pano, (gx, 0), (gx, pano.shape[0]), (0, 200, 0), 1)
+        cv2.putText(pano, txt, (min(gx + 4, pano.shape[1] - 90), 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
     cv2.imwrite(a.out, np.vstack([row, pano]))
     print("montage ->", a.out)
