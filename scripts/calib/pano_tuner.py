@@ -63,7 +63,7 @@ def save_yaml(path):
 
 
 PARAMS = [("yaw", -30, 30, 0.5, "deg"), ("pitch", -30, 30, 0.5, "deg"), ("roll", -30, 30, 0.5, "deg"),
-          ("tx", -200, 200, 1, "mm"), ("ty", -200, 200, 1, "mm"), ("tz", -200, 200, 1, "mm")]
+          ("tx", -400, 400, 1, "mm"), ("ty", -400, 400, 1, "mm"), ("tz", -400, 400, 1, "mm")]
 
 
 def html():
@@ -78,8 +78,10 @@ def html():
     return f"""<!doctype html><html><head><meta charset=utf-8><title>BEV panorama tuner</title>
 <style>body{{font-family:sans-serif;margin:0;display:flex;height:100vh}}
 #left{{width:360px;overflow:auto;padding:10px;background:#1c1c1c;color:#ddd}}
-#right{{flex:1;background:#000;display:flex;align-items:center;justify-content:center}}
-img{{max-width:100%}} fieldset{{border:1px solid #444;margin:6px 0}} legend{{color:#6f6;font-size:12px}}
+#right{{flex:1;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}}
+#pano{{max-width:100%;transform-origin:0 0;cursor:grab}}
+#hint{{position:absolute;bottom:6px;left:8px;color:#777;font-size:11px}}
+fieldset{{border:1px solid #444;margin:6px 0}} legend{{color:#6f6;font-size:12px}}
 .s{{display:flex;flex-direction:column;font-size:11px;margin:2px 0}} input[type=range]{{width:100%}}
 button{{margin:4px 2px;padding:6px}} .g{{display:flex;align-items:center;gap:8px}}</style></head>
 <body><div id=left>
@@ -93,10 +95,20 @@ button{{margin:4px 2px;padding:6px}} .g{{display:flex;align-items:center;gap:8px
 <button onclick="save()">Save → rig_extrinsics_tuned.yaml</button>
 <button onclick="location.href='/reset'">Reset</button>
 <div id=msg></div></div>
-<div id=right><img id=pano src="/render"></div>
+<div id=right><img id=pano src="/render"><div id=hint>scroll = zoom · drag = pan · double-click = reset</div></div>
 <script>
 let t=null;
 function refresh(){{document.getElementById('pano').src='/render?_='+Date.now();}}
+const pano=document.getElementById('pano'), right=document.getElementById('right');
+let sc=1,tx=0,ty=0,drag=false,lx,ly;
+function applyT(){{pano.style.transform='translate('+tx+'px,'+ty+'px) scale('+sc+')';}}
+right.addEventListener('wheel',e=>{{e.preventDefault();const r=right.getBoundingClientRect();
+ const mx=e.clientX-r.left,my=e.clientY-r.top,f=e.deltaY<0?1.1:1/1.1;
+ sc=Math.min(20,Math.max(0.2,sc*f));tx=mx-(mx-tx)*f;ty=my-(my-ty)*f;applyT();}},{{passive:false}});
+right.addEventListener('mousedown',e=>{{drag=true;lx=e.clientX;ly=e.clientY;pano.style.cursor='grabbing';}});
+window.addEventListener('mouseup',()=>{{drag=false;pano.style.cursor='grab';}});
+window.addEventListener('mousemove',e=>{{if(!drag)return;tx+=e.clientX-lx;ty+=e.clientY-ly;lx=e.clientX;ly=e.clientY;applyT();}});
+right.addEventListener('dblclick',()=>{{sc=1;tx=0;ty=0;applyT();}});
 function upd(c,k,v){{document.getElementById((c?c+'_':'')+k+'_v').innerText=v;
  fetch('/set?cam='+c+'&key='+k+'&val='+v).then(()=>{{clearTimeout(t);t=setTimeout(refresh,60);}});}}
 function STATE_q(v){{fetch('/set?cam=&key=quality&val='+v).then(refresh);}}
