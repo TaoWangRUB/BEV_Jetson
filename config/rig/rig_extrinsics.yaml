@@ -5,9 +5,10 @@
 # Wiring: port b empty (6th cam not probing). /dev/video <-> port: a=video0 (unused, no cam),
 # c=video1, d=video2, e=video3, f=video4. Calibrated cams are keyed to PORT:
 #   cam1=port c (-Y back), cam2=port d (-X left), cam3=port e (+Y front), cam4=port f (+X right).
-# Argus sensor index == /dev/video index (verified), so capture with:
-#   sensor_ids = [1, 2, 3, 4]   paired with   cameras = [cam1, cam2, cam3, cam4].
-#   (sensor_ids=[0,1,2,3] is WRONG — sensor 0 = video0 = port a, uncalibrated/unused.)
+# Argus enumerates devices in the order [a, f, d, e, c] (sensor_id 0..4), so ports c,d,e,f are
+# Argus sensor_ids 4,2,3,1. Capture with:
+#   sensor_ids = [4, 2, 3, 1]   paired with   cameras = [cam1, cam2, cam3, cam4]
+#   (sensor4=port c=cam1, s2=d=cam2, s3=e=cam3, s1=f=cam4). [1,2,3,4] mis-pairs (port f->cam1).
 # The modules are mounted UPSIDE-DOWN (180 deg roll about the optical axis). image-up below is
 # nominal (+Z); the panorama stitch applies the roll (flip_180=true). Feeding cuVSLAM upright
 # would need the same 180 roll folded into these quaternions (TODO for VO accuracy).
