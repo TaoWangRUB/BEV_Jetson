@@ -18,10 +18,10 @@ import re
 import time
 
 CAM_LABELS = {
-    "cam1": "/cam1  port f  +X right",
+    "cam1": "/cam1  port c  -Y back",
     "cam2": "/cam2  port d  -X left",
     "cam3": "/cam3  port e  +Y front",
-    "cam4": "/cam4  port c  -Y back",
+    "cam4": "/cam4  port f  +X right",
 }
 
 
