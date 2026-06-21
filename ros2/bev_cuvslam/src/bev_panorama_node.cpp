@@ -99,19 +99,21 @@ void quat_to_R(const YAML::Node& n, double R[9]) {
 class PanoramaNode : public rclcpp::Node {
  public:
   PanoramaNode() : Node("bev_panorama") {
-    calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/1280x720");
+    // Default = full-sensor 1640x1232 (HFOV ~127deg -> ~37deg overlap at 90deg spacing, vs ~7deg
+    // at 720p). cam1..4 = ports c,d,e,f; sensor_ids = /dev/video1..4. See rig_extrinsics.yaml.
+    calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/1640x1232");
     rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics.yaml");
     cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
     sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {1, 2, 3, 4});
-    cam_w_ = declare_parameter<int>("width", 1280);    // capture/output res (matches calib)
-    cam_h_ = declare_parameter<int>("height", 720);
-    sensor_w_ = declare_parameter<int>("sensor_width", 1280);
-    sensor_h_ = declare_parameter<int>("sensor_height", 720);
+    cam_w_ = declare_parameter<int>("width", 1640);    // capture/output res (matches calib)
+    cam_h_ = declare_parameter<int>("height", 1232);
+    sensor_w_ = declare_parameter<int>("sensor_width", 1640);
+    sensor_h_ = declare_parameter<int>("sensor_height", 1232);
     fps_ = declare_parameter<int>("fps", 60);
     out_w_ = declare_parameter<int>("pano_width", 1920);
     out_h_ = declare_parameter<int>("pano_height", 540);
-    el_max_deg_ = declare_parameter<double>("elevation_max_deg", 70.0);
-    fov_max_deg_ = declare_parameter<double>("fisheye_fov_half_deg", 82.0);
+    el_max_deg_ = declare_parameter<double>("elevation_max_deg", 50.0);
+    fov_max_deg_ = declare_parameter<double>("fisheye_fov_half_deg", 65.0);
     feather_deg_ = declare_parameter<double>("feather_deg", 15.0);
     roll180_ = declare_parameter<bool>("flip_180", true);  // cameras mounted upside-down
     save_video_ = declare_parameter<std::string>("save_video", "");

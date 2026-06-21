@@ -44,6 +44,21 @@ The 6-CSI IMX219 device-tree + driver work lives in a separate repo
 (`auvidea-j106-tx2`): a carrier DTB + a shared-reset driver patch on L4T R32.7.6.
 One sensor (i2c bus 1, addr `0x12`) is not yet probing — hence 5/6.
 
+**Port ↔ camera ↔ sensor mapping** (Argus `sensor_id` == `/dev/video` index). Only the 4
+calibrated ports c–f are used (port a = video0 is the unused 5th; port b is empty). The
+modules are mounted **upside-down** (180° roll). Capture with **`sensor_ids=[1,2,3,4]`**,
+`cameras=[cam1,cam2,cam3,cam4]` (`sensor_ids=[0,1,2,3]` is wrong — it grabs port a).
+
+| cam | port | /dev/video | sensor_id | rig dir | HFOV/VFOV @720p | @1640×1232 |
+|-----|------|-----------|-----------|---------|-----------------|------------|
+| cam1 | c | video1 | 1 | −Y (back)  | 94.9° / 52.9° | 125.2° / 91.5° |
+| cam2 | d | video2 | 2 | −X (left)  | 97.7° / 54.1° | 126.8° / 92.7° |
+| cam3 | e | video3 | 3 | +Y (front) | 96.8° / 53.4° | 128.2° / 91.8° |
+| cam4 | f | video4 | 4 | +X (right) | 98.7° / 54.4° | 129.1° / 94.4° |
+
+(FOV from the KB calib inverted at the image edges; 720p is a 16:9 crop, 1640×1232 the full
+2×2-binned sensor. rig frame: X=right, Y=forward, Z=up.)
+
 ### One-time board prep
 [scripts/setup_tx2_docker.sh](scripts/setup_tx2_docker.sh) (run with `sudo`):
 installs the NVIDIA container runtime, registers the `nvidia` Docker runtime,

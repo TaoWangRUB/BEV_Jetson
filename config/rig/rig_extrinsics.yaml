@@ -2,13 +2,15 @@
 # rig frame: TX2 board center; X=right(lateral) Y=forward(longitudinal) Z=up. units: metres.
 # camera image-up = [0, 0, 1] (rig frame). translations in m, quaternions wxyz.
 #
-# Wiring: port b empty (6th cam not probing). /dev/video <-> port: a=video0 (unused),
-# c=video1, d=video2, e=video3, f=video4. Only ports c,d,e,f are used = cam1,cam2,cam3,cam4.
-# Argus sensor index does NOT equal /dev/video index — empirically the Argus order is
-# [a, f, d, e, c] for sensor_id 0..4 (sensors 1 and 4 are swapped vs video). So:
-#   port c=cam1=sensor4, d=cam2=sensor2, e=cam3=sensor3, f=cam4=sensor1.
-# Capture with:  sensor_ids = [4, 2, 3, 1]   paired with   cameras = [cam1, cam2, cam3, cam4].
-# (Verified: a human on port f appears at cam4's azimuth only with this mapping.)
+# Wiring: port b empty (6th cam not probing). /dev/video <-> port: a=video0 (unused, no cam),
+# c=video1, d=video2, e=video3, f=video4. Calibrated cams are keyed to PORT:
+#   cam1=port c (-Y back), cam2=port d (-X left), cam3=port e (+Y front), cam4=port f (+X right).
+# Argus sensor index == /dev/video index (verified), so capture with:
+#   sensor_ids = [1, 2, 3, 4]   paired with   cameras = [cam1, cam2, cam3, cam4].
+#   (sensor_ids=[0,1,2,3] is WRONG — sensor 0 = video0 = port a, uncalibrated/unused.)
+# The modules are mounted UPSIDE-DOWN (180 deg roll about the optical axis). image-up below is
+# nominal (+Z); the panorama stitch applies the roll (flip_180=true). Feeding cuVSLAM upright
+# would need the same 180 roll folded into these quaternions (TODO for VO accuracy).
 rig_frame: board_center
 cameras:
   cam1:
