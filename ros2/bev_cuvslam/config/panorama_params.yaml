@@ -8,7 +8,7 @@
 /**:
   ros__parameters:
     calib_dir: scripts/config/1640x1232      # KB intrinsics for the capture resolution
-    rig_extrinsics: config/rig/rig_extrinsics.yaml
+    rig_extrinsics: config/rig/rig_extrinsics_calibrated.yaml   # feature-calibrated rotations (scripts/calib/extrinsic_calib.py)
     cameras: [cam1, cam2, cam3, cam4]        # cam1..4 = ports c,d,e,f
     sensor_ids: [1, 2, 3, 4]                 # Argus indices compact over present sensors (port b absent): a=0,c=1,d=2,e=3,f=4 -> cam1..4=ports c,d,e,f=sensors 1,2,3,4
     width: 1640                              # capture/output res (must match calib_dir)
