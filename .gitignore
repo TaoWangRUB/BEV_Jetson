@@ -16,3 +16,4 @@ __pycache__/
 *.swp
 bags/
 scripts/calib/capture/
+config/rig/rig_extrinsics_tuned.yaml
