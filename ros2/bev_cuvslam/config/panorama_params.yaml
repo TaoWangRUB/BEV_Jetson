@@ -1,0 +1,25 @@
+# Parameters for the surround panorama node (bev_panorama_node): GPU equirectangular stitch of
+# the 4 fisheye -> /bev/panorama (mono8).
+#
+# Uses the FULL-SENSOR 1640x1232 mode: HFOV ~127deg vs ~97deg at 720p. With the cameras 90deg
+# apart, that gives ~37deg of adjacent overlap (vs only ~7deg at 720p) — far better stitch
+# seams (and VFOV ~92deg vs ~53deg). Sensor mode 1640x1232 runs at 22 fps.
+# Paths are relative to the run directory (repo root / container -w /workspace).
+/**:
+  ros__parameters:
+    calib_dir: scripts/config/1640x1232      # KB intrinsics for the capture resolution
+    rig_extrinsics: config/rig/rig_extrinsics_calibrated.yaml   # feature-calibrated rotations (scripts/calib/extrinsic_calib.py)
+    cameras: [cam1, cam2, cam3, cam4]        # cam1..4 = ports c,d,e,f
+    sensor_ids: [1, 2, 3, 4]                 # Argus indices compact over present sensors (port b absent): a=0,c=1,d=2,e=3,f=4 -> cam1..4=ports c,d,e,f=sensors 1,2,3,4
+    width: 1640                              # capture/output res (must match calib_dir)
+    height: 1232
+    sensor_width: 1640                       # full-sensor mode (full FOV); = width for native
+    sensor_height: 1232
+    fps: 60                                  # sensor mode caps it (1640x1232 -> 22 fps)
+    pano_width: 1920                         # equirectangular output canvas
+    pano_height: 540                         # ~square px at +/-50deg elevation
+    elevation_max_deg: 50.0                  # vertical coverage (+/-); ~VFOV/2, poles black
+    fisheye_fov_half_deg: 65.0               # per-camera half-HFOV used for the remap (~127/2)
+    feather_deg: 20.0                        # overlap feather band (now there's real overlap)
+    flip_180: true                           # cameras are mounted upside-down (180 roll)
+    save_video: ""                           # set a path (e.g. bags/pano.mp4) to also record

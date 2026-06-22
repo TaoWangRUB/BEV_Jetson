@@ -1,0 +1,21 @@
+# Parameters for the fused zero-copy Argus -> cuVSLAM VO node (bev_cuvslam_fused_node).
+#
+# Default = the best full-FOV config from the fused-zerocopy resolution sweep
+# (see docs/build_and_run.md): capture the full-FOV 1640x1232 sensor mode and let the
+# Argus ISP downscale to 832x624 output (stays in NVMM -> zero-copy). Gives ~22 Hz (the
+# sensor's fps ceiling), full surround FOV, and the lowest CPU.
+#
+# Paths are relative to the run directory (the repo root / container -w /workspace).
+/**:
+  ros__parameters:
+    calib_dir: scripts/config/832x624        # intrinsics for the OUTPUT resolution
+    rig_extrinsics: config/rig/rig_extrinsics.yaml
+    cameras: [cam1, cam2, cam3, cam4]
+    sensor_ids: [1, 2, 3, 4]
+    width: 832                               # output (-> cuVSLAM + calib)
+    height: 624
+    sensor_width: 1640                       # capture full-FOV mode; ISP downscales in NVMM
+    sensor_height: 1232
+    fps: 60                                  # request high; sensor mode caps it (1640x1232 -> 22 fps)
+    odom_frame: odom
+    base_frame: base_link

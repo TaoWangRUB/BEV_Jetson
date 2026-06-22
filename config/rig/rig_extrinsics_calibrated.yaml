@@ -1,0 +1,27 @@
+# Calibrated by scripts/calib/extrinsic_calib.py (feature-based relative-rotation).
+# Rotations refined from scene-feature overlap; translations/imu unchanged.
+rig_frame: board_center
+cameras:
+  cam1:
+    port: c
+    forward: [0, -1, 0]
+    t_xyz_m: [0.0, -0.015, 0.04]
+    q_wxyz: [0.00795974, 0.02288261, 0.72711946, -0.68608332]
+  cam2:
+    port: d
+    forward: [-1, 0, 0]
+    t_xyz_m: [-0.015, 0.0, 0.04]
+    q_wxyz: [-0.49897667, 0.55580581, 0.47820819, -0.46197306]
+  cam3:
+    port: e
+    forward: [0, 1, 0]
+    t_xyz_m: [0.0, 0.015, 0.04]
+    q_wxyz: [0.70710634, -0.70710722, 0.0, 0.0]
+  cam4:
+    port: f
+    forward: [1, 0, 0]
+    t_xyz_m: [0.015, 0.0, 0.04]
+    q_wxyz: [-0.47251515, 0.49573784, -0.47431216, 0.55317393]
+imu:
+  t_xyz_m: [0.00265, 0.0275, 0.0]
+  q_wxyz: [1.0, 0.0, 0.0, 0.0]
