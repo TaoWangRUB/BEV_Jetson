@@ -216,11 +216,13 @@ def main():
     for d in args.images:
         s = {}
         for c in cams:
-            im = cv2.imread(os.path.join(d, c + "_image_raw.png"), cv2.IMREAD_GRAYSCALE)
-            if im is None:
-                sys.exit("missing image: " + os.path.join(d, c + "_image_raw.png"))
-            s[c] = im
+            s[c] = cv2.imread(os.path.join(d, c + "_image_raw.png"), cv2.IMREAD_GRAYSCALE)
+        if any(s[c] is None for c in cams):     # skip incomplete sets (a dropped frame in capture)
+            print(f"  skipping {d}: missing {[c for c in cams if s[c] is None]}")
+            continue
         sets.append(s)
+    if not sets:
+        sys.exit("no complete capture sets found")
     imgs = sets[0]                              # first set used for the before/after render
     print(f"loaded {len(sets)} capture set(s)")
     with open(args.rig) as f:
