@@ -221,10 +221,31 @@ ssh $TX2 "cd $BEVDIR && ./scripts/capture_montage_tx2.sh /tmp/bev.png" && scp $T
 Live panorama for rviz (publishes `/bev/panorama`, mono8): `docker compose run --rm panorama`
 (then add an Image display on `/bev/panorama`). Just the raw camera topics: `docker compose run --rm capture`.
 
-If Argus wedges (after a SIGKILL'd run), reset the daemon:
-`ssh $TX2 "echo nvidia | sudo -S systemctl restart nvargus-daemon"`. A stuck **port D** camera needs
-`ssh $TX2 "echo 1 | sudo tee /sys/bus/i2c/devices/2-0010/j106_reset_recover"` (see
-[auvidea-j106-tx2/README.md](../auvidea-j106-tx2/README.md#L299)).
+**If a camera isn't working** (a montage tile is black / the node logs `acquireFrame timeout`), reset
+it from least to most invasive — each step fixes a different failure mode:
+
+```bash
+# 1. Argus daemon wedged (most common, after a SIGKILL'd run leaks a session) -> ALL cams may go black.
+#    Also clean up any leftover containers first.
+ssh $TX2 "docker ps -aq --filter ancestor=cuvslam-foxy:tx2 | xargs -r docker rm -f; echo nvidia | sudo -S systemctl restart nvargus-daemon"
+
+# 2. One camera binds but won't stream (e.g. port D 'lottery'): pulse the shared reset + re-probe.
+#    Trigger from a BOUND sibling on the same bus (port C 2-0010 recovers port D 2-0012), then restart Argus.
+ssh $TX2 "echo 1 | sudo tee /sys/bus/i2c/devices/2-0010/j106_reset_recover; echo nvidia | sudo -S systemctl restart nvargus-daemon"
+
+# 3. Still dead -> a shifter-latch state a reset edge can't clear: TRUE COLD POWER-CYCLE
+#    (pull the DC barrel jack ~10 s; a soft 'reboot' leaves the rails up and won't fix it).
+
+# verify a specific sensor (id 2 = port d) streams again:
+ssh $TX2 "cd $BEVDIR && docker run --rm --runtime nvidia --network host -v /tmp/argus_socket:/tmp/argus_socket -v /dev:/dev -v \$PWD:/workspace -w /workspace cuvslam-foxy:tx2 bash -lc 'source /opt/ros/foxy/setup.bash && source install/setup.bash && ros2 run bev_camera argus_capture_node --ros-args -p sensor_ids:=[2] -p width:=1280 -p height:=720'"
+# 'first frame published' = OK; 'acquireFrame timeout' = still dead.
+```
+
+If a camera **binds at i2c (`i2cdetect -y -r 2` shows `UU`) but never delivers frames** even after all
+three steps, it's a physical CSI fault — **re-seat the ribbon both ends, or swap that port's module**
+to isolate cable vs camera. Full background + the sensor↔port map:
+[auvidea-j106-tx2/README.md](../auvidea-j106-tx2/README.md#L299). Always stop runs with `docker stop`
+(not `docker rm -f`/SIGKILL) so they don't leak an Argus session and wedge the daemon.
 
 ### 4.4 Intrinsic calibration (per camera)
 
