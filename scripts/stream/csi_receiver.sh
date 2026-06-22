@@ -1,35 +1,45 @@
 #!/usr/bin/env bash
-# Receive the 4 CSI H.264 / RTP / UDP streams from the TX2 (scripts/stream/csi_sender.sh) and show
-# them in a labelled 2x2 mosaic.  RUN ON THE HOST.
+# Receive the CSI H.264 / RTP / UDP streams from the TX2 (scripts/stream/csi_sender.sh) and show them
+# in a 2x3 grid laid out BY PORT.  RUN ON THE HOST.
 #
 #   ./csi_receiver.sh
 #
-# Ports/labels match csi_sender.sh:
-#   5001 = cam1 (port c)   5002 = cam2 (port d)
-#   5003 = cam3 (port e)   5004 = cam4 (port f)
-# Nothing shows for a stream whose camera is dark/dead on the TX2 -> that's your "which camera is
-# broken" check. Ctrl-C to stop. (Needs gstreamer1.0 + gst-libav for avdec_h264.)
+# Layout (J106 ports):   [a][b][c]      a=5000  c=5001
+#                        [d][e][f]      d=5002  e=5003  f=5004
+# Port b has no sensor (always an empty placeholder). Any camera that isn't streaming shows its
+# "port X (no signal)" placeholder instead of stalling the grid (compositor ignore-inactive-pads).
+# Ctrl-C to stop. Needs gstreamer1.0 + gst-libav (avdec_h264).
 
-W=640; H=480
+CW=480; CH=360                                 # per-cell size -> 1440x720 canvas
+CANVAS_W=$((CW*3)); CANVAS_H=$((CH*2))
 CAPS="application/x-rtp,media=video,encoding-name=H264,payload=96"
+PORTS_ALL=(a b c d e f)                         # all 6 grid cells
+CAMS=(a c d e f)                                # ports that actually have a sensor
+declare -A UDP=( [a]=5000 [c]=5001 [d]=5002 [e]=5003 [f]=5004 )
+declare -A X=( [a]=0 [b]=$CW [c]=$((CW*2)) [d]=0 [e]=$CW [f]=$((CW*2)) )
+declare -A Y=( [a]=0 [b]=0 [c]=0 [d]=$CH [e]=$CH [f]=$CH )
 
-rx() {  # $1=udp port  $2=label  $3=compositor sink index
-  echo "udpsrc port=$1 caps=$CAPS ! rtpjitterbuffer latency=100 ! rtph264depay ! avdec_h264 !"\
-       "videoconvert ! videoscale ! video/x-raw,width=$W,height=$H !"\
-       "textoverlay text=\"$2\" valignment=top halignment=left font-desc=\"Sans Bold 18\" shaded-background=true !"\
-       "comp.sink_$3"
-}
+PROPS=""; BRANCHES=""; i=0
+# bottom layer: a labelled placeholder tile per cell (so empty/dead cells are clearly marked)
+for p in "${PORTS_ALL[@]}"; do
+  PROPS="$PROPS sink_${i}::xpos=${X[$p]} sink_${i}::ypos=${Y[$p]} sink_${i}::width=$CW sink_${i}::height=$CH"
+  BRANCHES="$BRANCHES videotestsrc is-live=true pattern=2 ! video/x-raw,width=$CW,height=$CH,framerate=30/1 !"
+  BRANCHES="$BRANCHES textoverlay text=\"port $p (no signal)\" valignment=center halignment=center font-desc=\"Sans 13\" ! comp.sink_${i}"
+  i=$((i+1))
+done
+# top layer: the live cameras, overlaid on their cell (covers the placeholder when streaming)
+for p in "${CAMS[@]}"; do
+  PROPS="$PROPS sink_${i}::xpos=${X[$p]} sink_${i}::ypos=${Y[$p]} sink_${i}::width=$CW sink_${i}::height=$CH"
+  BRANCHES="$BRANCHES udpsrc port=${UDP[$p]} caps=$CAPS ! rtpjitterbuffer latency=100 ! rtph264depay ! avdec_h264 !"
+  BRANCHES="$BRANCHES videoconvert ! videoscale ! video/x-raw,width=$CW,height=$CH !"
+  BRANCHES="$BRANCHES textoverlay text=\"port $p\" valignment=top halignment=left font-desc=\"Sans Bold 16\" shaded-background=true ! comp.sink_${i}"
+  i=$((i+1))
+done
 
-CMD="gst-launch-1.0 -e compositor name=comp \
-  sink_0::xpos=0   sink_0::ypos=0 \
-  sink_1::xpos=$W  sink_1::ypos=0 \
-  sink_2::xpos=0   sink_2::ypos=$H \
-  sink_3::xpos=$W  sink_3::ypos=$H ! \
-  video/x-raw,width=$((W*2)),height=$((H*2)) ! videoconvert ! autovideosink sync=false \
-  $(rx 5001 'cam1 port c' 0) \
-  $(rx 5002 'cam2 port d' 1) \
-  $(rx 5003 'cam3 port e' 2) \
-  $(rx 5004 'cam4 port f' 3)"
+SINK="${SINK:-autovideosink sync=false}"          # SINK=fakesink for a headless link/decode check
+CMD="gst-launch-1.0 -e compositor name=comp ignore-inactive-pads=true $PROPS ! \
+  video/x-raw,width=$CANVAS_W,height=$CANVAS_H ! videoconvert ! $SINK \
+  $BRANCHES"
 
-echo "receiving udp 5001-5004 -> 2x2 mosaic (Ctrl-C to stop)"
+echo "2x3 port grid (a..f); port b + any dead camera show 'no signal'. Ctrl-C to stop."
 eval exec "$CMD"
