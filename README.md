@@ -163,23 +163,123 @@ calibration, measurement) see the [scripts index](scripts/README.md).
 
 ## 4. Build & run
 
-All container parameters live in [`docker-compose.yml`](docker-compose.yml), so the build/run
-steps are short `docker compose` commands (run from the repo root on the TX2):
+All container parameters live in [`docker-compose.yml`](docker-compose.yml), so most steps are short
+`docker compose` commands run from the repo root **on the TX2** (`/media/nvidia/workspace/BEV_Jetson`).
+
+### Accessing the board (eth or wifi)
+
+The board is reachable two ways — pick whichever link is up and set these once in your host shell:
 
 ```bash
-# On the TX2, repo at /media/nvidia/workspace/BEV_Jetson:
-
-sudo ./scripts/setup_tx2_docker.sh        # 0. one-time board prep (log out/in for the docker group)
-
-docker compose build                      # 1. build the cuvslam-foxy:tx2 image
-docker compose run --rm build-cuvslam     # 2. build libcuvslam.so (CUDA-10.2 port)
-docker compose run --rm build-ws          # 3. colcon build the ROS 2 workspace
-docker compose run --rm fused             # 4. run the fused zero-copy VO (recommended)
+export TX2=tx2-eth        # ethernet  10.42.0.157   (or:  export TX2=tx2-wlan   # wifi  192.168.0.168)
+export BEVDIR=/media/nvidia/workspace/BEV_Jetson
 ```
 
-(`./scripts/port/build_and_validate.sh` still does image build → `libcuvslam.so` →
-WarmUpGPU smoke test in one shot.) See **[docs/build_and_run.md](docs/build_and_run.md)** for
-the full guide, the modular pipeline, and the **fused vs modular** performance comparison.
+Every board command then has two forms — **on TX2** (after `ssh $TX2`) or **from host** (wrap it):
+
+```bash
+ssh    $TX2 "cd $BEVDIR && <command>"      # non-interactive (capture, build, calibration capture)
+ssh -t $TX2 "cd $BEVDIR && <command>"      # interactive / needs a TTY (compose run you watch live)
+```
+
+Sync code host→board: edit on host → `git push` → `ssh $TX2 "cd $BEVDIR && git pull --no-recurse-submodules"`.
+Sudo password on the board is `nvidia`.
+
+### 4.1 Build
+
+```bash
+# on TX2 (repo root)
+sudo ./scripts/setup_tx2_docker.sh        # 0. one-time board prep (log out/in for the docker group)
+docker compose build                      # 1. build the cuvslam-foxy:tx2 image
+docker compose run --rm build-cuvslam     # 2. build libcuvslam.so (CUDA-10.2 port)
+docker compose run --rm build-ws          # 3. colcon build the ROS 2 workspace (bev_camera + bev_cuvslam)
+```
+From host (example): `ssh $TX2 "cd $BEVDIR && docker compose run --rm build-ws"`.
+`./scripts/port/build_and_validate.sh` does image → `libcuvslam.so` → WarmUpGPU smoke test in one shot.
+
+### 4.2 Run VO
+
+```bash
+# on TX2
+docker compose run --rm fused             # fused zero-copy Argus->cuVSLAM VO (recommended)
+docker compose run --rm modular           # modular capture + VO (ROS2 GPU->CPU->GPU), for comparison
+RECORD=1 docker compose run --rm fused    # also bag /cuvslam/odometry + /tf into bags/
+```
+From host (watch it live): `ssh -t $TX2 "cd $BEVDIR && docker compose run --rm fused"`.
+Params: [`ros2/bev_cuvslam/config/fused_vo_params.yaml`](ros2/bev_cuvslam/config/fused_vo_params.yaml).
+See **[docs/build_and_run.md](docs/build_and_run.md)** for the full guide + **fused vs modular** numbers.
+
+### 4.3 Capture & view the surround panorama
+
+Montage (4 fisheye views + stitched 360° panorama) into one image:
+```bash
+# on TX2
+./scripts/capture_montage_tx2.sh /tmp/bev.png
+# from host (capture, then pull the image off the board):
+ssh $TX2 "cd $BEVDIR && ./scripts/capture_montage_tx2.sh /tmp/bev.png" && scp $TX2:/tmp/bev.png .
+```
+Live panorama for rviz (publishes `/bev/panorama`, mono8): `docker compose run --rm panorama`
+(then add an Image display on `/bev/panorama`). Just the raw camera topics: `docker compose run --rm capture`.
+
+If Argus wedges (after a SIGKILL'd run), reset the daemon:
+`ssh $TX2 "echo nvidia | sudo -S systemctl restart nvargus-daemon"`. A stuck **port D** camera needs
+`ssh $TX2 "echo 1 | sudo tee /sys/bus/i2c/devices/2-0010/j106_reset_recover"` (see
+[auvidea-j106-tx2/README.md](../auvidea-j106-tx2/README.md#L299)).
+
+### 4.4 Intrinsic calibration (per camera)
+
+Identify which Argus sensor-id is which physical camera (live grid on the TX2 HDMI):
+```bash
+./scripts/calib/grid_view_tx2.sh "0 1 2 3 4"            # on TX2 (HDMI display)
+```
+Calibrate one camera against a checkerboard (Kannala-Brandt fisheye), live on the TX2 display:
+```bash
+# on TX2 — sensor-id 1 = port c = cam1; 11x9 inner-corner board, 30 mm squares; modules are upside-down (--flip 180)
+python3 scripts/calib/online_calib.py --id 1 --board 11x9 --square 30 --flip 180 --width 1640 --height 1232
+```
+Or calibrate offline from saved raw frames, and scale a calibrated set to another output resolution:
+```bash
+python3 scripts/calib/offline_calib.py --id 1 --board 11x9 --square 30 --out config/calib
+python3 scripts/calib/scale_calib.py --in scripts/config/1640x1232 --out scripts/config/832x624 --to-width 832 --to-height 624
+```
+Intrinsics live in `scripts/config/<WxH>/camN.yaml`.
+
+### 4.5 Extrinsic calibration (rig rotations → panorama seams)
+
+Full procedure + how to read the output: **[docs/extrinsic_calibration.md](docs/extrinsic_calibration.md)**.
+Short version (do it in good light, rig aimed at a distant textured scene):
+```bash
+# 1. capture N sets on the TX2 while you slowly pan the rig
+ssh $TX2 "cd $BEVDIR && ./scripts/calib/capture_calib_sets.sh 10 3"
+# 2. pull the sets to the host
+cd scripts/calib/capture && rm -rf set* && scp -qr $TX2:$BEVDIR/scripts/calib/capture/'set*' . && cd -
+# 3. solve on the host (writes config/rig/rig_extrinsics_calibrated.yaml + a before/after render)
+python3 scripts/calib/extrinsic_calib.py --images scripts/calib/capture/set*
+# 4. deploy: panorama_params already points at the calibrated yaml -> commit/push, then on the board:
+git add config/rig/rig_extrinsics_calibrated.yaml && git commit -m "recalibrate extrinsics" && git push
+ssh $TX2 "cd $BEVDIR && git pull --no-recurse-submodules && ./scripts/capture_montage_tx2.sh /tmp/bev.png"
+```
+
+### 4.6 Tune the stitch (panorama params)
+
+Edit [`ros2/bev_cuvslam/config/panorama_params.yaml`](ros2/bev_cuvslam/config/panorama_params.yaml),
+then re-run `docker compose run --rm panorama` (or the montage). The tunable knobs:
+
+| param | default | effect |
+|---|---|---|
+| `pano_width` × `pano_height` | 1920 × 540 | output equirect canvas size |
+| `elevation_max_deg` | 50 | vertical coverage (±); beyond it the poles are black |
+| `fisheye_fov_half_deg` | 65 | per-camera half-HFOV used in the remap (~127/2 at full sensor) |
+| `feather_deg` | 20 | width of the overlap blend band (bigger = softer seams) |
+| `flip_180` | true | apply the 180° roll for the upside-down mounting |
+| `rig_extrinsics` | …`_calibrated.yaml` | which extrinsics file to stitch with |
+| `save_video` | "" | set a path (e.g. `bags/pano.mp4`) to also record |
+
+For hands-on tuning, the interactive tuner runs on the **host** against captured frames (sliders for
+each camera's yaw/pitch/roll + translation + scene depth; live re-render; **Save** → `rig_extrinsics_tuned.yaml`):
+```bash
+python3 scripts/calib/pano_tuner.py        # open http://localhost:8000  (scroll=zoom, drag=pan)
+```
 
 ---
 
