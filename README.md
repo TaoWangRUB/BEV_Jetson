@@ -143,6 +143,9 @@ See [docs/build_and_run.md](docs/build_and_run.md) for the full build/run guide.
 
 ### Scripts (what runs what)
 
+Full index with one-line descriptions: **[scripts/README.md](scripts/README.md)**. The key ones on
+the build/port path:
+
 | Script | Run where | Purpose / called by |
 |--------|-----------|---------------------|
 | [scripts/setup_tx2_docker.sh](scripts/setup_tx2_docker.sh) | TX2 host (sudo) | One-time: Docker + nvidia runtime on the SD card |
@@ -152,6 +155,9 @@ See [docs/build_and_run.md](docs/build_and_run.md) for the full build/run guide.
 | [scripts/port/smoke_test.cpp](scripts/port/smoke_test.cpp) | inside container | `WarmUpGPU()` runtime validation; compiled by `build_and_validate.sh` |
 | [scripts/calib/grid_view_tx2.sh](scripts/calib/grid_view_tx2.sh) | TX2 host | Live 4-camera grid preview (calibration framing aid) |
 | [docker/entrypoint_foxy.sh](docker/entrypoint_foxy.sh) | container entry | `ldconfig` (tegra libcuda/EGL) + source ROS 2 / workspace |
+
+For the run/capture/calibration helpers (VO wrappers, panorama montage, intrinsic + extrinsic
+calibration, measurement) see the [scripts index](scripts/README.md).
 
 ---
 
