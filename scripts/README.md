@@ -39,6 +39,13 @@ See [docs/extrinsic_calibration.md](../docs/extrinsic_calibration.md) for the fu
 | [port/sync_check.py](port/sync_check.py) | TX2 | measure the timestamp spread across N camera topics |
 | [port/topic_rate.py](port/topic_rate.py) | TX2 | count messages on topics over a window and print the rate |
 
+## stream/ — quick live camera preview (no ROS/docker)
+
+| script | runs on | purpose |
+|---|---|---|
+| [stream/csi_sender.sh](stream/csi_sender.sh) | TX2 | stream the 4 cameras as H.264/RTP/UDP to the host (`./csi_sender.sh [HOST_IP]`) |
+| [stream/csi_receiver.sh](stream/csi_receiver.sh) | dev | receive the 4 UDP streams into a labelled 2×2 mosaic (`./csi_receiver.sh`) |
+
 ## rig/ — rig geometry
 
 | script | runs on | purpose |
