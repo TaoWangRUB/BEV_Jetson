@@ -10,8 +10,10 @@
 #   sensor_ids = [1, 2, 3, 4]   paired with   cameras = [cam1, cam2, cam3, cam4]
 #   (sensor1=port c=cam1, s2=d=cam2, s3=e=cam3, s4=f=cam4).
 # The modules are mounted UPSIDE-DOWN (180 deg roll about the optical axis). image-up below is
-# nominal (+Z); the panorama stitch applies the roll (flip_180=true). Feeding cuVSLAM upright
-# would need the same 180 roll folded into these quaternions (TODO for VO accuracy).
+# nominal (+Z); the panorama stitch applies the roll (flip_180=true). For VO, cuVSLAM has no flip,
+# so the roll is baked into config/rig/rig_extrinsics_vo.yaml (Q = R_calibrated . Rz180), generated
+# by scripts/calib/fold_roll_for_vo.py from the calibrated rotations. This file stays nominal (it is
+# the calibrator's reference); panorama uses _calibrated.yaml, VO uses _vo.yaml.
 rig_frame: board_center
 cameras:
   cam1:
