@@ -78,7 +78,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
  public:
   CuvslamMulticamNode() : Node("cuvslam_multicam") {
     calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/calib");
-    rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics.yaml");
+    rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics_vo.yaml");
     cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
     topics_ = declare_parameter<std::vector<std::string>>(
         "image_topics", {"/cam1/image_raw", "/cam2/image_raw", "/cam3/image_raw", "/cam4/image_raw"});
