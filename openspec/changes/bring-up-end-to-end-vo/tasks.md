@@ -2,7 +2,7 @@
 
 - [x] 0.1 Sync via git (push from dev → pull on TX2 `BEV_Jetson`); submodule git error fixed via patch refactor + `ignore = all`
 - [x] 0.2 Build the ROS 2 workspace (`colcon build bev_camera bev_cuvslam`) in the `cuvslam-foxy:tx2` container — both packages link
-- [~] 0.3 `build_and_validate.sh` on the patch-based build (lib + WarmUpGPU) — running; patch step confirmed "already applied"
+- [x] 0.3 `build_and_validate.sh` on the patch-based build (lib + WarmUpGPU) — validated; patch step idempotent ("already applied"); workspace rebuilds clean
 
 ## 1. Capture frame-flow validation
 
@@ -14,7 +14,7 @@
 
 - [x] 2.1 Locate the real intrinsics: `scripts/config/calib/cam{1..4}.yaml` (KANNALA_BRANDT, 1640×1232, tracked) — the old default `config/calib/1640x1232` did not exist
 - [x] 2.2 Point the node + launch default `calib_dir` at `scripts/config/calib`; update docs
-- [ ] 2.3 Verify the 4-camera cuVSLAM `Rig` builds without file-not-found errors (needs VO node board run)
+- [x] 2.3 Verify the 4-camera cuVSLAM `Rig` builds without file-not-found errors — confirmed on the board (2026-06-24): fused + modular nodes load calib + extrinsics, build the 4-cam Rig, `Multicamera` inits, no file-not-found
 
 ## 3. End-to-end capture → VO  ✅ WORKING (with the sync workaround)
 
@@ -28,4 +28,4 @@
 ## 4. Wrap-up
 
 - [x] 4.1 Bag path validated (`ros2 bag record` → 80 msgs/6.3 s, odom+tf+cam1; close with SIGINT so the sqlite WAL flushes). `scripts/run_vo_tx2.sh` with `RECORD=1` captures the lightweight VO output (`/cuvslam/odometry` + `/tf`); recording camera streams too throttles the pipeline (~20 MB/s SD writes → odom dropped to ~1.3 Hz)
-- [ ] 4.2 Record final status: capture-rate + end-to-end VO **done** (~8.5 Hz odom, tracking live); remaining is the physical-motion confirmation (3.4/3.6)
+- [x] 4.2 Final status recorded: capture-rate + end-to-end VO **done** (~8.5 Hz odom, tracking live); calibrated extrinsics applied to VO (roll folded). **Remaining (this change stays open): physical-motion confirmation — 3.4 / 3.6** (move the rig, record `/cuvslam/odometry`+`/tf`, check drift/metric tracking)
