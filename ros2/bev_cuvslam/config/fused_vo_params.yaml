@@ -9,7 +9,7 @@
 /**:
   ros__parameters:
     calib_dir: scripts/config/832x624        # intrinsics for the OUTPUT resolution
-    rig_extrinsics: config/rig/rig_extrinsics.yaml
+    rig_extrinsics: config/rig/rig_extrinsics_vo.yaml   # calibrated rotations + 180-deg roll folded in (scripts/calib/fold_roll_for_vo.py)
     cameras: [cam1, cam2, cam3, cam4]
     sensor_ids: [1, 2, 3, 4]
     width: 832                               # output (-> cuVSLAM + calib)
