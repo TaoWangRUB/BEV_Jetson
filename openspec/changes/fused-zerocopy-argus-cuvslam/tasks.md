@@ -25,7 +25,7 @@
 
 ## 5. Wrap-up
 
-- [ ] 5.1 Record results (rate, CPU delta, latency if measured) in the change; update README/roadmap
+- [x] 5.1 Results recorded — §6.3/6.4 sweep table + §7 fused-vs-modular head-to-head (9.2 Hz/78% modular vs 19.8 Hz/23% fused); README + docs/build_and_run.md carry the comparison + resolution table
 
 ## 7. Fused (zero-copy) vs modular (ROS2 GPU→CPU→GPU) head-to-head
 
@@ -41,8 +41,8 @@
 
 ## 6. Resolution / fps sweep (find the rate sweet spot; Track is the bottleneck)
 
-- [ ] 6.1 Decouple **sensor mode** from **output resolution** in the fused node (params `sensor_width/sensor_height` vs `width/height`); Argus ISP downscales in NVMM (stays zero-copy)
-- [ ] 6.2 Calib per output res: `1640x1232/` and `1280x720/` (done, on board); generate ½-scaled `820x616` (= 1640÷2) and `640x360` (= 1280÷2) — KB intrinsics scale linearly (mu,mv,u0,v0,w,h ×0.5; k2..k5 unchanged)
+- [x] 6.1 Decoupled **sensor mode** from **output resolution** in the fused node (params `sensor_width/sensor_height` vs `width/height`; Argus ISP downscales in NVMM, stays zero-copy) — used by the §6.3 sweep (e.g. 1640×1232 → 832×624)
+- [x] 6.2 Calib per output res: `1640x1232/`, `1280x720/`, plus ½-scaled `640x360` and **`832x624`** (substitutes 820×616 — Argus needs a 32-aligned width) via `scripts/calib/scale_calib.py` (KB params scale linearly; k2..k5 unchanged)
 - [x] 6.3 Measured — **windowed-average + sustained-odom, native fps** (`fps:=60`, sensor caps). Earlier tables were invalid: single-sample throttle prints AND a hidden 20 fps cap (`fps_` default 20 throttled every config). Corrected:
 
   | Cfg | sensor (max fps) | →output | FOV | Track | sustained odom | CPU |
