@@ -12,7 +12,7 @@ def generate_launch_description():
             parameters=[{
                 # absolute paths recommended at runtime (these are repo-relative defaults)
                 'calib_dir': 'scripts/config/calib',
-                'rig_extrinsics': 'config/rig/rig_extrinsics.yaml',
+                'rig_extrinsics': 'config/rig/rig_extrinsics_vo.yaml',  # calibrated + 180-deg roll folded in
                 'cameras': ['cam1', 'cam2', 'cam3', 'cam4'],
                 'image_topics': [
                     '/cam1/image_raw', '/cam2/image_raw',
