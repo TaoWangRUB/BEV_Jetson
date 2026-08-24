@@ -4,9 +4,9 @@
 #
 #   ./csi_receiver.sh
 #
-# Layout (J106 ports):   [a][b][c]      a=5000  c=5001
-#                        [d][e][f]      d=5002  e=5003  f=5004
-# Port b has no sensor (always an empty placeholder). Any camera that isn't streaming shows its
+# Layout (J106 ports):   [a][b][c]      a=5000  b=5001  c=5002
+#                        [d][e][f]      d=5003  e=5004  f=5005
+# Every port has its own UDP port. Any camera that isn't streaming shows its
 # "port X (no signal)" placeholder instead of stalling the grid (compositor ignore-inactive-pads).
 # Ctrl-C to stop. Needs gstreamer1.0 + gst-libav (avdec_h264).
 
@@ -14,8 +14,8 @@ CW=480; CH=360                                 # per-cell size -> 1440x720 canva
 CANVAS_W=$((CW*3)); CANVAS_H=$((CH*2))
 CAPS="application/x-rtp,media=video,encoding-name=H264,payload=96"
 PORTS_ALL=(a b c d e f)                         # all 6 grid cells
-CAMS=(a c d e f)                                # ports that actually have a sensor
-declare -A UDP=( [a]=5000 [c]=5001 [d]=5002 [e]=5003 [f]=5004 )
+CAMS=(a b c d e f)                              # all 6 ports; a dead one just shows "no signal"
+declare -A UDP=( [a]=5000 [b]=5001 [c]=5002 [d]=5003 [e]=5004 [f]=5005 )
 declare -A X=( [a]=0 [b]=$CW [c]=$((CW*2)) [d]=0 [e]=$CW [f]=$((CW*2)) )
 declare -A Y=( [a]=0 [b]=0 [c]=0 [d]=$CH [e]=$CH [f]=$CH )
 
