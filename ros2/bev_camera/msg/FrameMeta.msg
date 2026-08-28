@@ -18,6 +18,11 @@ uint32 capture_id
 # of READOUT, which on a global shutter is after the exposure ended. CLOCK_MONOTONIC.
 uint64 sof_ns
 
+# False when the frame was acquired and timed but its pixels never made it out — the
+# NVMM map or copy failed. The timing record still stands (the exposure happened), so
+# this says "expect no image at this stamp" rather than leaving an unmatched record.
+bool image_published
+
 # The exposure used to derive the midpoint. One value for the whole rig: all cameras
 # fire on the same trigger edge for the same pulse width.
 uint64 exposure_ns

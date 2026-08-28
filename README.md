@@ -394,13 +394,17 @@ was derived from, and **two** sequence counters:
 | `capture_id` | Argus session | the session did not produce that capture |
 | `frame_number` | consumer | it was produced but never reached us |
 
+`image_published` says whether the pixels for that stamp actually went out: the NVMM map or copy
+can fail after the frame has been acquired and timed, and the timing record still stands. False
+means "expect no image at this stamp" rather than leaving a consumer with an unmatched record.
+
 Set `frame_log_dir` and the node also writes `camN.csv` per camera — the same rows in the shape
 `j106-frametime.py` fits, under a provenance header (clock, timestamp convention, port, sensor,
 resolution, trigger state and rate, exposure source, and Δ marked `UNMEASURED`):
 
 ```
-#timestamp [ns],seq,capture_id,t_sof [ns],exposure [ns]
-11521506304000,355,355,11521508797000,4986000
+#timestamp [ns],seq,capture_id,t_sof [ns],exposure [ns],image
+11521506304000,355,355,11521508797000,4986000,1
 ```
 
 Measured over 30 s with no subscribers: 859 frames per camera at 29.86–30.03/s, with **0–3 lost

@@ -391,7 +391,7 @@ class ArgusCaptureNode : public rclcpp::Node {
                                                        : "as reported by Argus — NOT the pulse width")
           << "\n"
           << "# delta_camera_imu = UNMEASURED (see README 4.7)\n"
-          << "#timestamp [ns],seq,capture_id,t_sof [ns],exposure [ns]\n";
+          << "#timestamp [ns],seq,capture_id,t_sof [ns],exposure [ns],image\n";
     }
     RCLCPP_INFO(get_logger(), "writing frame-time CSVs to %s", frame_log_dir_.c_str());
   }
@@ -483,7 +483,7 @@ class ArgusCaptureNode : public rclcpp::Node {
   // wants. Both sequence counters are recorded: capture_id is what the Argus session
   // produced, frame_number is what was delivered here — when they diverge, the gap says
   // where the frame was lost.
-  void publish_meta(size_t i, const FrameTiming& ft) {
+  void publish_meta(size_t i, const FrameTiming& ft, bool image_published) {
     bev_camera::msg::FrameMeta m;
     m.header.stamp = rclcpp::Time(static_cast<int64_t>(ft.stamp_ns));
     m.header.frame_id = frame_ids_[i];
@@ -491,6 +491,7 @@ class ArgusCaptureNode : public rclcpp::Node {
     m.capture_id = ft.capture_id;
     m.sof_ns = ft.sof_ns;
     m.exposure_ns = ft.exposure_ns;
+    m.image_published = image_published;
     meta_pubs_[i]->publish(m);
 
     // Flush per row: the node is normally stopped with a signal, and an unflushed tail
@@ -498,7 +499,8 @@ class ArgusCaptureNode : public rclcpp::Node {
     // the missing frames it looks like. 120 small writes/s costs nothing.
     if (i < frame_logs_.size() && frame_logs_[i])
       *frame_logs_[i] << ft.stamp_ns << ',' << ft.number << ',' << ft.capture_id << ','
-                      << ft.sof_ns << ',' << ft.exposure_ns << std::endl;
+                      << ft.sof_ns << ',' << ft.exposure_ns << ',' << (image_published ? 1 : 0)
+                      << std::endl;
   }
 
   // Inter-camera skew, measured the only way that means anything: by matching frames
@@ -585,8 +587,7 @@ class ArgusCaptureNode : public rclcpp::Node {
           const FrameTiming ft = frame_timing(frame.get(), iframe);
           set_ts[i] = ft.stamp_ns;
           ++got;
-          publish_y(i, ft.stamp_ns);
-          publish_meta(i, ft);
+          publish_meta(i, ft, publish_y(i, ft.stamp_ns));
           if (first[i]) { RCLCPP_INFO(get_logger(), "cam idx %zu: first frame published", i); first[i] = false; }
         }
 
@@ -613,16 +614,19 @@ class ArgusCaptureNode : public rclcpp::Node {
     }
   }
 
-  void publish_y(size_t i, uint64_t t_ns) {
+  // Returns whether the pixels actually went out: the caller records that in the frame's
+  // timing message, so a consumer joining on the stamp knows an image is missing rather
+  // than finding an unmatched timing record and having to guess.
+  bool publish_y(size_t i, uint64_t t_ns) {
     NvBufferParams params;
     if (NvBufferGetParams(dmabufs_[i], &params) != 0) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "cam idx %zu: NvBufferGetParams failed", i);
-      return;
+      return false;
     }
     void* mapped = nullptr;
     if (NvBufferMemMap(dmabufs_[i], 0, NvBufferMem_Read, &mapped) != 0 || !mapped) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "cam idx %zu: NvBufferMemMap failed", i);
-      return;
+      return false;
     }
     NvBufferMemSyncForCpu(dmabufs_[i], 0, &mapped);
 
@@ -642,6 +646,7 @@ class ArgusCaptureNode : public rclcpp::Node {
 
     NvBufferMemUnMap(dmabufs_[i], 0, &mapped);
     pubs_[i]->publish(std::move(msg));
+    return true;
   }
 
   std::vector<int64_t> sensor_ids_;
