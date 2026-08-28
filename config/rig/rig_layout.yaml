@@ -28,19 +28,30 @@ camera_roll_deg: 180
 
 imu:
   model: MPU-9250
-  # MEASURED 2026-08-28, not from a datasheet or a drawing: neither the J106 README nor
-  # imu-mpu9250.dtsi states the mounting, and the datasheet only gives axes relative to
-  # package pin 1. Method: scripts/imu/axis_check.py over a 72 s recording in which the
-  # rig was moved front/back, left/right, up/down (front, left and up each first).
+  # MEASURED 2026-08-28 by TWO independent methods that agree. Nothing documents this:
+  # neither the J106 README nor imu-mpu9250.dtsi states the mounting, and the datasheet
+  # gives axes only relative to package pin 1. Tool: scripts/imu/axis_check.py.
   #
-  #   rig front -> IMU +y     (burst spread 0.78 m/s^2 on y vs 0.30/0.27)
-  #   rig left  -> IMU +x     (1.38 on x vs 0.44/0.38)
-  #   rig up    -> IMU -z     (1.17 on z), and independently from gravity at rest:
-  #                           specific force (-1.07, -0.10, -10.39) points UP, so +z is down
+  # 1. Translation (72 s, rig slid front/back, left/right, up/down):
+  #      front -> +y (burst spread 0.78 m/s^2 vs 0.30/0.27), left -> +x (1.38 vs
+  #      0.44/0.38), up -> -z (1.17 vs 0.35/0.29).
+  # 2. Held tilt poses (65 s, level / nose-up / left-side-up, repeated) — the stronger
+  #    method, since gravity is 10.4 m/s^2 of noise-free signal against ~1 m/s^2 from a
+  #    hand-pushed slide. Solved as a rotation rather than three labels:
+  #      rig front -> IMU +y (1.5 deg off the axis)
+  #      rig left  -> IMU +x (3.9 deg off)
+  #      rig up    -> IMU -z (3.7 deg off),  det = +1.000
   #
-  # Cross-checks: front x left = -z = up, so the triad is right-handed, and the mapping
-  # has determinant +1 (a proper rotation, not a reflection). The IMU's +z pointing down
-  # is consistent with the whole board being mounted inverted, same as the cameras.
+  # PRECISION: the hand-held poses were not perpendicular to each other (front^left came
+  # out 77.8 deg, and orthonormalising moved the frame 6.1 deg; repeated nose-up poses
+  # agreed to 8.9 deg). So this fixes the axis LABELS AND SIGNS to within a few degrees.
+  # It is NOT a calibration - the precise rotation comes from kalibr_calibrate_imu_camera,
+  # and this is what that result gets checked against.
+  #
+  # Cross-checks: front x left = -z = up (right-handed), determinant +1 (a rotation, not
+  # a reflection), and gravity at rest agrees with the tilt solve on the up axis. The
+  # IMU's +z pointing down matches the whole board being mounted inverted, as the
+  # cameras are.
   axes:
     rig_front: +y
     rig_left:  +x
