@@ -416,11 +416,13 @@ health from `frame_meta`/the CSV, not from what a consumer received.
 #### The IMU side
 
 `bev_imu`'s `imu_node` publishes `sensor_msgs/Imu` on `/imu0` with `header.stamp` taken **at the
-data-ready edge**, on the same `CLOCK_MONOTONIC` as the cameras. It delegates the edge handling to
-the J106 project's `j106-imu-read.py` (mounted at `/opt/j106-tools`) rather than reimplementing it,
-because the board-specific parts are easy to get silently wrong: the INT line is inverted with no
-pull-up, so the sensor is configured push-pull and the assertion arrives as a *falling* edge, and
-the chardev's own event stamp is `CLOCK_REALTIME` and must be discarded.
+data-ready edge**, on the same `CLOCK_MONOTONIC` as the cameras. It talks to `/dev/spidev1.0` and
+the GPIO character device directly, because the sample loop must not do anything that can stall
+between the edge and the timestamp. Three board-specific parts are easy to get silently wrong and
+are worth knowing before touching that file: the INT line is inverted with no pull-up, so the
+sensor is configured **push-pull** and the assertion arrives as a **falling** edge; the chardev's
+own event stamp is `CLOCK_REALTIME` and must be discarded (it is used only to *wait*); and the
+kernel here is 4.9, so only the **v1** GPIO event ABI exists.
 
 Two things the node reports and does **not** apply:
 
@@ -432,21 +434,14 @@ Two things the node reports and does **not** apply:
 It needs `privileged` (device-cgroup access to `/dev/spidev1.0` and `/dev/gpiochip*`, plus
 `CAP_SYS_NICE` for `SCHED_FIFO`); `docker compose run --rm imu` sets that up.
 
-⚠️ **Python in a 200 Hz sample loop needs the cyclic GC off.** A GC pause stalls the loop, and a
-stalled loop misses data-ready edges outright — measured as one 78 ms gap and 29 lost samples in
-18 s. With `gc.freeze()` + `gc.disable()` after startup (nothing in the loop builds reference
-cycles, so refcounting still frees the per-sample garbage) and one reused message object:
+⚠️ **Anything that can pause the sample loop costs samples, not just jitter.** A stalled loop
+misses data-ready edges outright — the data registers only ever hold the newest sample, so an edge
+seen late is a sample gone. An early Python implementation of this node lost 29 samples in 18 s to
+a single cyclic-GC pause (one 78 ms gap) against 0 for the same hardware read in C. That is why the
+loop is C++, allocates nothing per sample, and does the timestamp before anything else.
 
-| | interval sd | max interval | missed edges |
-|---|---|---|---|
-| `j106-imu-read.py` alone (reference) | 15.7 µs | 5137 µs | 0 / 3600 |
-| `imu_node` before the fix | 1251 µs | **78414 µs** | 29 / 3653 |
-| `imu_node` after | **46 µs** | 5073 µs | **0 / 4061** |
-
-The ROS layer still costs ~30 µs of extra timestamp jitter over the bare reader, because the next
-edge is only detected once the publish returns. That is well inside the 0.1–1 ms Δ is resolved to —
-but for a reference-grade calibration recording, run the J106 reader directly and keep ROS out of
-the loop.
+Reference figures for the same hardware, `j106-imu-read.py` at 200 Hz under `chrt -f 80`:
+interval sd 15.7 µs, max 5137 µs, 0 dropped in 3600 samples.
 
 **4. Δ is stated, with provenance — or marked unmeasured.** After the fit, exactly one unknown is
 left: the offset between the camera timebase and the IMU timebase. It is **one constant for the whole
