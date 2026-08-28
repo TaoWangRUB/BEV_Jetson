@@ -323,8 +323,15 @@ class ImuNode : public rclcpp::Node {
     // median. 0 disables.
     rt_priority_ = declare_parameter<int>("rt_priority", 80);
 
+    // RELIABLE, deep queue — not the usual SensorDataQoS. IMU samples are 60 bytes at
+    // 200 Hz, so reliability is nearly free, and a recorder that misses samples is worse
+    // than one that lags: measured best-effort into `ros2 bag record`, 927 samples
+    // arrived out of 2140 published (87 Hz of 200). Kalibr solves the camera-IMU offset
+    // from IMU motion, so dropped samples are dropped observability — and unevenly
+    // dropped ones bias it rather than just weakening it.
     pub_ = create_publisher<sensor_msgs::msg::Imu>(
-        declare_parameter<std::string>("topic", "/imu0"), rclcpp::SensorDataQoS());
+        declare_parameter<std::string>("topic", "/imu0"),
+        rclcpp::QoS(rclcpp::KeepLast(2000)).reliable());
   }
 
   void run() {
