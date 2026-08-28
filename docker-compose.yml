@@ -34,6 +34,9 @@ x-bev: &bev
     - /tmp/argus_socket:/tmp/argus_socket
     - /dev:/dev
     - ./:/workspace
+    # The IMU node delegates data-ready-edge timestamping to the J106 project's reader
+    # (one implementation of the timing, not two). Board path -> container path.
+    - /home/nvidia/tools:/opt/j106-tools:ro
 
 services:
   shell:
@@ -48,7 +51,7 @@ services:
 
   build-ws:
     <<: *bev
-    command: bash -lc "colcon build --packages-select bev_camera bev_cuvslam --cmake-args -DCMAKE_BUILD_TYPE=Release"
+    command: bash -lc "colcon build --packages-select bev_camera bev_cuvslam bev_imu --cmake-args -DCMAKE_BUILD_TYPE=Release"
 
   # Recommended runtime: fused zero-copy Argus -> cuVSLAM (params in bev_cuvslam/config/fused_vo_params.yaml)
   fused:
@@ -79,6 +82,14 @@ services:
   capture:
     <<: *bev
     command: ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p exposure_us:=4986
+
+  # MPU-9250 IMU -> /imu0, stamped at the data-ready edge on CLOCK_MONOTONIC (README 4.7).
+  # Needs root for /dev/spidev1.0 + /dev/gpiochip* and for SCHED_FIFO.
+  imu:
+    <<: *bev
+    user: root
+    privileged: true          # device cgroup for /dev/spidev1.0 + /dev/gpiochip*, CAP_SYS_NICE
+    command: ros2 run bev_imu imu_node --ros-args -p reader:=/opt/j106-tools/j106-imu-read.py
 
   # GPU equirectangular surround stitch of the 4 fisheye -> /bev/panorama (view in rviz)
   panorama:

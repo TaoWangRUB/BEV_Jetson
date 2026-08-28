@@ -413,6 +413,41 @@ startup transient is not, so drop the leading rows or reject any row where `seq`
 all four streams showed 55–211 gaps per 30 s. That loss is in delivery, not capture. Judge capture
 health from `frame_meta`/the CSV, not from what a consumer received.
 
+#### The IMU side
+
+`bev_imu`'s `imu_node` publishes `sensor_msgs/Imu` on `/imu0` with `header.stamp` taken **at the
+data-ready edge**, on the same `CLOCK_MONOTONIC` as the cameras. It delegates the edge handling to
+the J106 project's `j106-imu-read.py` (mounted at `/opt/j106-tools`) rather than reimplementing it,
+because the board-specific parts are easy to get silently wrong: the INT line is inverted with no
+pull-up, so the sensor is configured push-pull and the assertion arrives as a *falling* edge, and
+the chardev's own event stamp is `CLOCK_REALTIME` and must be discarded.
+
+Two things the node reports and does **not** apply:
+
+- **DLPF group delay** — the edge marks when the *filtered* sample was ready, and the gyro path lags
+  the accel path by ~1.0 ms at every matched bandwidth. One correction cannot serve both, so both
+  are logged and left to the consumer.
+- **Δ** — logged as `UNMEASURED` until §3 of the retarget change measures it.
+
+It needs `privileged` (device-cgroup access to `/dev/spidev1.0` and `/dev/gpiochip*`, plus
+`CAP_SYS_NICE` for `SCHED_FIFO`); `docker compose run --rm imu` sets that up.
+
+⚠️ **Python in a 200 Hz sample loop needs the cyclic GC off.** A GC pause stalls the loop, and a
+stalled loop misses data-ready edges outright — measured as one 78 ms gap and 29 lost samples in
+18 s. With `gc.freeze()` + `gc.disable()` after startup (nothing in the loop builds reference
+cycles, so refcounting still frees the per-sample garbage) and one reused message object:
+
+| | interval sd | max interval | missed edges |
+|---|---|---|---|
+| `j106-imu-read.py` alone (reference) | 15.7 µs | 5137 µs | 0 / 3600 |
+| `imu_node` before the fix | 1251 µs | **78414 µs** | 29 / 3653 |
+| `imu_node` after | **46 µs** | 5073 µs | **0 / 4061** |
+
+The ROS layer still costs ~30 µs of extra timestamp jitter over the bare reader, because the next
+edge is only detected once the publish returns. That is well inside the 0.1–1 ms Δ is resolved to —
+but for a reference-grade calibration recording, run the J106 reader directly and keep ROS out of
+the loop.
+
 **4. Δ is stated, with provenance — or marked unmeasured.** After the fit, exactly one unknown is
 left: the offset between the camera timebase and the IMU timebase. It is **one constant for the whole
 rig**, not one per camera, because a shared trigger edge leaves no per-camera component. Two routes:
