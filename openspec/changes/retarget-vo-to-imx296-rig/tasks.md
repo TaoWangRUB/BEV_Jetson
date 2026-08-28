@@ -42,7 +42,7 @@
 
 - [x] 1.8 Stamp the **exposure midpoint** (`SOF − exposure/2`), one rig-wide exposure for all four cameras, per README 4.7. Argus reports 0.521 ms here; under the trigger the true exposure is the pulse width, so `exposure_us` overrides it and the node warns until it is set.
 - [ ] 1.9 Expose the Argus frame number and per-frame exposure so downstream can detect drops (55–211 per 30 s were measured in 1.7) and so a periodic frame-time fit is possible. ROS 2 has no `header.seq`, so this needs a companion topic or a diagnostic channel — decide which when §4 lands.
-- [ ] 1.10 Get the trigger pulse width: reconnect the STM32 USB-CDC link (no `/dev/ttyACM*` on either machine right now), read the commanded width with `j106-trigctl.py`, and set `exposure_us` from it. Until then the midpoint carries a ~±0.26 ms unknown — constant, so Δ absorbs it, but it moves if the width is ever changed.
+- [x] 1.10 **Trigger pulse width read — Argus was wrong by ~10×.** The MCU is not on USB CDC at all; it is on the M110 UART, `/dev/ttyTHS1`. `j106-trigctl.py --port /dev/ttyTHS1 status`: `period_us=33333`, `polarity=active_high`, `opto_skew_ns=0`, and **all four channels at `ch_exposure_us=5000`, `pulse_ns=4985740`**. Argus reported **0.521 ms** for the same frames, so stamping from Argus's exposure put every frame **2.2 ms** off the true midpoint — squarely in the range Kalibr resolves Δ to. `exposure_us:=4986` is now set in the compose `capture`/`modular` services. Re-read after any MCU reset: the firmware boots at compiled-in defaults silently.
 
 ## 2. Intrinsics for the IMX296 modules
 

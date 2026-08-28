@@ -67,14 +67,18 @@ services:
       - bash
       - -lc
       - |
-        ros2 run bev_camera argus_capture_node --ros-args -p sensor_ids:=[1,2,3,4] -p width:=1640 -p height:=1232 -p fps:=60 &
+        ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p exposure_us:=4986 &
         trap "kill %1 2>/dev/null" EXIT
         sleep 8
         exec ros2 launch bev_cuvslam bev_cuvslam.launch.py
 
+  # Ports (not sensor-ids) are resolved at runtime; exposure_us is the STM32's MEASURED
+  # trigger pulse width, which in Fast Trigger mode IS the exposure. Read it back with
+  #   sudo j106-trigctl.py --port /dev/ttyTHS1 status     -> chN_exposure_us / pulse_ns
+  # and re-check after any MCU reset: the firmware boots at its compiled-in defaults.
   capture:
     <<: *bev
-    command: ros2 run bev_camera argus_capture_node --ros-args -p sensor_ids:=[1,2,3,4] -p width:=1640 -p height:=1232 -p fps:=20
+    command: ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p exposure_us:=4986
 
   # GPU equirectangular surround stitch of the 4 fisheye -> /bev/panorama (view in rviz)
   panorama:

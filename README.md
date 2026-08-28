@@ -345,9 +345,23 @@ t_frame = SOF − exposure/2
 
 Half an exposure is a constant bias against the IMU that would otherwise hide inside Δ and move
 whenever the exposure changed. Under the hardware trigger the true exposure **is the trigger pulse
-width** — Argus reports the value it commanded, which the driver may be ignoring, so pass the pulse
-width via `exposure_us` once it is known. One exposure is used for the whole rig: all four cameras
-expose on the same edge, so a per-camera value would inject differences the hardware does not have.
+width**, and **Argus does not know it** — measured on this rig Argus reported 0.521 ms while the
+STM32 was emitting 4.986 ms, so trusting Argus put the stamp 2.2 ms off. Read the real value from
+the generator and pass it as `exposure_us`:
+
+```bash
+# on the TX2 — the MCU is on the M110 UART, not a USB CDC port
+sudo python3 tools/j106-trigctl.py --port /dev/ttyTHS1 status
+#   period_us=33333  ch1_exposure_us=5000 pulse_ns=4985740  (all four channels equal)
+```
+
+⚠ Re-read it after any MCU reset: the firmware boots at its compiled-in defaults and says so
+nowhere. Note `pulse_ns` (4.98574 ms) is the value to use, not the commanded 5000 µs.
+
+One exposure is used for the whole rig: all four cameras expose on the same edge, so a per-camera
+value would inject differences the hardware does not have. The firmware *can* set per-channel
+exposures (`raw 'exp <ch> <us>'`) — if that is ever used, this assumption and the single
+`exposure_us` parameter both stop holding.
 
 The other latencies are *not* timestamp corrections — they are delivery costs (measured at
 1456×1088): readout+MIPI→VI 16.1 ms, ISP 1.9 ms, raw-V4L2 buffer age at `DQBUF` **66.7 ms**. Note
