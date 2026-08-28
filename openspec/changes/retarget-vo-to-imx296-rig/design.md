@@ -74,28 +74,45 @@ takes the J106 project's conclusion: the wake-path bias cancels only if both sid
 same way, and whatever does not cancel *is* Δ. So the code applies exactly one documented offset in
 one direction, and the recorded Δ carries the provenance of how it was obtained.
 
-### D4: Get Δ from a single-camera + IMU Kalibr run; get extrinsics from the four-camera run
+### D4: Calibrate in stages, never jointly — the quarterKalibr method
 
-Kalibr's multi-camera solver needs overlap between consecutive cameras in the chain. This rig is
-divergent by construction, and overlap between adjacent fisheyes is the known weak point (it is what
-blocks cuVSLAM's 0.5 frustum gate and what OpenMAVIS's stereo init needs). Splitting the runs means
-a hard four-camera solve cannot block Δ, which the VIO actually needs:
+A single joint solve over four divergent fisheyes is the thing not to attempt. quarterKalibr
+(`github.com/UAV-Swarm/tools-quarterKalibr`, from the OmniNxt authors, built for a 4-fisheye module
+of the same shape as ours) states it directly: *"Calibrating all four fisheye cameras together is
+unlikely to succeed due to the much more complex cost function."* That matches our own risk — the
+overlap between adjacent fisheyes is this rig's weak point, and it is what cuVSLAM's 0.5 frustum
+gate and OpenMAVIS's stereo init both depend on.
 
-- `kalibr_calibrate_cameras` over all four (pinhole-equi / KB fisheye) → rig extrinsics.
-- `kalibr_calibrate_imu_camera` with **one** camera + the MPU-9250 → Δ (and that camera's IMU pose).
+So the pipeline is staged, each stage independently checkable and independently re-runnable:
 
-*Fallback if the four-camera chain will not converge*: solve adjacent pairs and compose around the
-ring, or keep the existing feature-based extrinsics (`config/rig/rig_extrinsics_vo.yaml`, residual
-~1.5–1.9°) and take only Δ from Kalibr. The spec's loop-closure scenario is what decides which
-result ships.
+1. **Intrinsics per camera, with tartancalib** rather than stock Kalibr. Stock Kalibr is weakest at
+   the periphery of a fisheye, which is exactly where our inter-camera overlap lives.
+2. **Extrinsics for adjacent PAIRS**, sequentially, then composed around the ring.
+3. **Camera↔IMU** for Δ.
+4. **Virtual stereo generation** — which is not a bonus but the artifact the next change needs: the
+   OmniNxt virtual-stereo frontend feeding cuVSLAM Multicamera is the locked plan.
 
-### D5: Kalibr runs on the host in Docker, over a converted bag
+We adopt the method and its staging, not the repo as a black box: both of its dockerfiles are empty,
+its entry point assumes one assembled image topic where we publish four, and its `imu.yaml` carries
+another IMU's noise densities.
 
-Kalibr is ROS1/Python2-era and will not build on the board. Record on the TX2 with `ros2 bag`
-(reduced rate is fine — Kalibr wants ~4 Hz images and full-rate IMU), convert on the host with
-`rosbags-convert`, and run Kalibr in a Noetic container against the host's existing Docker setup.
-The alternative — a live ROS1 bridge — adds a timing path to a calibration whose whole purpose is
-timing.
+*Alternative rejected*: `kalibr_calibrate_cameras` over all four at once, with pairwise as a
+fallback. Same destination, but it spends a recording session and a target print to discover what
+the people who built this rig shape already documented.
+
+### D5: The board records; the host solves
+
+Kalibr and tartancalib are ROS1/Noetic batch optimizers — Ceres/SuiteSparse over a whole bag,
+offline, once. Nothing about that belongs on an 18.04 aarch64 board that is already CPU-bound
+streaming four cameras, and neither project publishes aarch64 images, so running them there means
+porting a heavyweight ROS1 stack to the TX2 for a job with no reason to be on it.
+
+So: record on the TX2 with `ros2 bag` (reduced rate is fine — the solvers want ~4 Hz images and
+full-rate IMU), convert on the host with `rosbags-convert`, solve on the host in containers we
+build. The bag has to cross to the host for the ROS2→ROS1 conversion regardless.
+
+*Alternative rejected*: a live ROS1 bridge. It adds a timing path to a calibration whose entire
+purpose is timing.
 
 ### D6: Retain the IMX219 calibration by moving, not deleting
 
@@ -109,9 +126,19 @@ compare both against the live capture configuration at startup and refuse a mism
 
 ## Risks / Trade-offs
 
-- **The four-camera Kalibr solve does not converge on a divergent rig** → D4 splits Δ off so it is
-  never blocked; documented fallbacks are pairwise composition or keeping the feature-based
-  extrinsics.
+- **quarterKalibr ships two EMPTY dockerfiles**, so the Kalibr and tartancalib images are ours to
+  build, and tartancalib is a heavyweight Kalibr fork → find out whether it builds *before* printing
+  a target and booking rig time; if tartancalib will not build, stock Kalibr per-camera intrinsics
+  still feed stages 2–4, at some cost in peripheral accuracy.
+- **Its entry point assumes one assembled image topic** (`/oak_ffc_4p/assemble_image/compressed`,
+  split into four by `split_image.py`) where we publish four separate topics → adapt
+  `BagExtractor.py`; small, but it is the first thing that runs.
+- **Its `imu.yaml` carries another IMU's noise densities** → the MPU-9250 needs its own. Datasheet
+  values to start; an Allan-variance run (hours of static recording) only if Δ or the VIO turns out
+  sensitive to them.
+- **The pairwise chain still needs adjacent overlap to exist at all.** Staging makes the solve
+  tractable; it does not create overlap that the rig geometry does not have. If a pair will not
+  solve, that is the same evidence the frustum-gate question in §5 is after.
 - **Tracking is still not metric after sync is fixed** — cuVSLAM's hard-coded 0.5 frustum-overlap
   threshold may reject every pair regardless of timing → the spec requires the node to *say* it is
   running unscaled rather than presenting an unscaled pose as metric. If that is what we see, the
@@ -129,8 +156,8 @@ compare both against the live capture configuration at startup and refuse a mism
 
 1. Land capture-node changes; verify all four ports resolve and stream at 1456×1088 with AE locked.
 2. Recalibrate intrinsics; move the IMX219 set aside in the same commit that adds the IMX296 set.
-3. Record the Kalibr bag once (target visible to all four cameras, then an IMU excitation sequence);
-   solve extrinsics and Δ on the host.
+3. Record once (AprilGrid through all four fields of view, including the adjacent overlaps, then an
+   IMU excitation sequence); solve intrinsics, pairwise extrinsics and Δ on the host, in stages.
 4. Switch the VO nodes to real timestamps + skew gate, then run the motion test.
 5. Close `bring-up-end-to-end-vo` tasks 3.4/3.6 with the motion-test evidence, or record why they
    remain open (e.g. overlap gate) and hand that to the next change.

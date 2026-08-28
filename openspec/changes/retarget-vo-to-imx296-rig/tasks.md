@@ -46,31 +46,28 @@
   Verified live, and it immediately corrected 1.7: over 30 s with **no subscribers**, 859 frames per camera at 29.86–30.03/s with **0–3 lost, all in one startup gap** — the capture path is essentially lossless. In steady state `seq` advances exactly 1 per trigger edge (351/353 intervals), so it is a valid fit index once the startup transient is dropped. (Also fixed: the CSV now flushes per row — killing the node truncated the last line, which reads as corruption rather than as the loss it resembles.)
 - [x] 1.10 **Trigger pulse width read — Argus was wrong by ~10×.** The MCU is not on USB CDC at all; it is on the M110 UART, `/dev/ttyTHS1`. `j106-trigctl.py --port /dev/ttyTHS1 status`: `period_us=33333`, `polarity=active_high`, `opto_skew_ns=0`, and **all four channels at `ch_exposure_us=5000`, `pulse_ns=4985740`**. Argus reported **0.521 ms** for the same frames, so stamping from Argus's exposure put every frame **2.2 ms** off the true midpoint — squarely in the range Kalibr resolves Δ to. `exposure_us:=4986` is now set in the compose `capture`/`modular` services. Re-read after any MCU reset: the firmware boots at compiled-in defaults silently.
 
-## 2. Intrinsics for the IMX296 modules
+## 2. Calibration prerequisites (host-side, before any rig time)
 
-- [ ] 2.1 Move `scripts/config/calib/cam{1..4}.yaml` (+ their `.npz`/preview artefacts) to `scripts/config/calib/imx219-1640x1232/`, labelled with the rig they belong to (D6).
-- [ ] 2.2 Capture calibration sets at 1456×1088 for all four cameras with `scripts/calib/capture_calib_sets.sh` (adjust for the new size/ports).
-- [ ] 2.3 Solve KANNALA_BRANDT intrinsics per camera with `intrinsic_calib.py`; reject and re-shoot any camera whose RMS reprojection error is ≥ 1.0 px.
-- [ ] 2.4 Write the new `cam{1..4}.yaml` with `sensor: imx296` and the true image size; commit with `git add -f` (`scripts/config` is gitignored — see design D6).
-- [ ] 2.5 Verify undistortion previews look sane per camera (straight lines straight near the centre, no gross fisheye residual).
+- [x] 2.1 Target recorded: `config/calib/april_6x6.yaml` — AprilGrid 6×6, **tagSize 0.055 m, tagSpacing 0.3** (5.5 cm tags, 1.65 cm gaps → 41.2 cm board). `tagSpacing` is a ratio, not a length.
+- [ ] 2.2 **Measure the printed board** and correct `tagSize` if the print rescaled. This number sets the metric scale of every extrinsic and of the VIO; mount it flat (foam board), since a curl is a systematic error nothing downstream recovers.
+- [ ] 2.3 Build the **tartancalib** container on the host. quarterKalibr's dockerfiles are empty, so this is ours to write, and it is the dependency most likely to fail — do it *before* booking rig time. If it will not build, fall back to stock Kalibr intrinsics and record the loss of peripheral accuracy.
+- [ ] 2.4 Build the **Kalibr** (Noetic) container on the host; verify both on a public dataset before trusting either on our data.
+- [ ] 2.5 Adapt quarterKalibr's `BagExtractor.py`: it assumes one assembled image topic split into four (`/oak_ffc_4p/assemble_image/compressed` + `split_image.py`); we publish four separate topics.
+- [ ] 2.6 Write our own `imu.yaml`: `/imu0` at 200 Hz with MPU-9250 noise densities (datasheet values to start — an Allan-variance run only if Δ or the VIO turns out sensitive).
+- [ ] 2.7 Move the IMX219 calibration aside to `scripts/config/calib/imx219-1640x1232/`, labelled with the rig it belongs to, so a stale file cannot be picked up (D6). Note `scripts/config` is gitignored — new files need `git add -f`.
 
-## 3. Extrinsics and camera↔IMU Δ via Kalibr
+## 3. Calibrate, in stages (the quarterKalibr method — never a joint 4-camera solve)
 
-- [ ] 3.1 Stand up Kalibr in Docker on the host (Noetic image); verify it runs on one of the existing `datasets/` bags before trusting it on ours.
-- [ ] 3.2 Print/obtain an AprilGrid target and record its geometry (tag size, spacing) in the repo alongside the calibration.
-- [ ] 3.3 Record the four-camera calibration bag on the board (`ros2 bag`, ~4 Hz images, target moving through all four fields of view incl. the adjacent overlaps); convert to ROS1 with `rosbags-convert` on the host.
-- [x] 3.3b **IMU node built: `bev_imu/imu_node` (C++).** Talks to `/dev/spidev1.0` and the GPIO character device directly — the sample loop must not do anything that can stall between the data-ready edge and the timestamp, and the timestamp is taken before the queue is drained or the SPI burst runs. Publishes `sensor_msgs/Imu` on `/imu0` stamped on `CLOCK_MONOTONIC`, the same clock as the cameras, so images and IMU land in one bag on one timebase.
-
-  Verified live: WHO_AM_I 0x71, `/dev/gpiochip1` offset 42, falling edge (the J106 inverts the line), 200.24 Hz, **interval sd 7.6 µs, max 5184 µs, 0 dropped, 0 late reads over 4279 samples** — better than the reference `j106-imu-read.py` under `chrt -f 80` (sd 15.7 µs). DLPF group delays are logged and deliberately **not** applied (gyro lags accel by 1.02 ms), and Δ is logged UNMEASURED.
-
-  Board specifics that are load-bearing in that file: INT is inverted with no pull-up → push-pull config and a *falling* edge; the chardev's own event stamp is `CLOCK_REALTIME` and is used only to wait; kernel 4.9 means the **v1** GPIO event ABI only. Needs `privileged` (device cgroup for `/dev/spidev1.0` + `/dev/gpiochip*`, `CAP_SYS_NICE` for `SCHED_FIFO`) — the compose `imu` service sets it.
-
-- [ ] 3.3c Recording hygiene: stop `systemd-timesyncd` for the run (it cuts the frame-time fit residual 30.9 µs → 8.4 µs), and write the provenance alongside the bag — clock, trigger rate, exposure in force, Δ and its source — the way `j106-record-sync.py` writes `meta.json`. A recording with no provenance cannot be re-interpreted later.
-- [ ] 3.4 Record the camera+IMU bag: one camera at full rate + MPU-9250 at full rate, with the excitation sequence Kalibr wants (rotation about all three axes, then translation).
-- [ ] 3.5 Solve rig extrinsics with `kalibr_calibrate_cameras` (pinhole-equi). If the four-camera chain will not converge, fall back per design D4 (pairwise + compose, or keep the feature-based extrinsics) and record which route was taken.
-- [ ] 3.6 Solve Δ with `kalibr_calibrate_imu_camera` on the single camera + IMU; record the value, the method, and its uncertainty.
-- [ ] 3.7 Write the results: extrinsics into `config/rig/rig_extrinsics_vo.yaml` (stating frame convention, source recording, date, per-camera residuals) and Δ as a stated constant with provenance. Check the ring loop-closure residual (spec: *Extrinsics are consistent around the rig*).
-- [ ] 3.8 Confirm the mounting orientation question for the IMX296 modules — are they inverted like the IMX219s were? Whatever the answer, it must be *in* the extrinsics, not applied as a separate hidden roll.
+- [ ] 3.1 Record on the board: AprilGrid through all four fields of view **including the adjacent overlaps**, then an IMU excitation sequence (rotation about all three axes, then translation). `ros2 bag` at ~4 Hz images + full-rate `/imu0`; stop `systemd-timesyncd` first (it cuts the frame-time fit residual 30.9 µs → 8.4 µs).
+- [ ] 3.2 Write the recording's provenance beside the bag — clock, trigger rate and pulse width, exposure source, Δ and its source — the way `j106-record-sync.py` writes `meta.json`. A recording without it cannot be re-interpreted later.
+- [ ] 3.3 Convert ROS2 → ROS1 on the host (`rosbags-convert`) and extract per-camera bags.
+- [ ] 3.4 **Stage 1 — intrinsics per camera with tartancalib** (pinhole-equi / KB). Reject and re-shoot any camera over 1.0 px RMS reprojection.
+- [ ] 3.5 **Stage 2 — extrinsics for adjacent PAIRS**, sequentially, then compose around the ring and check the loop-closure residual (spec: *Extrinsics are consistent around the rig*). A pair that will not solve is evidence about overlap, not just a failed run — it is the same question §5.3 asks of cuVSLAM's frustum gate.
+- [ ] 3.6 **Stage 3 — camera↔IMU** for Δ. Record the value, the method, and its uncertainty; one constant for the whole rig, since a shared trigger edge leaves no per-camera component.
+- [ ] 3.7 **Stage 4 — virtual stereo configs.** Not a bonus: this is the artifact the OmniNxt-frontend→cuVSLAM plan needs next.
+- [ ] 3.8 Write the results: extrinsics into `config/rig/rig_extrinsics_vo.yaml` (frame convention, source recording, date, per-camera residuals) and Δ as a stated constant with provenance. Convert tartancalib's camchain into our `camN.yaml` (`fu,fv,pu,pv` + `k1..k4` → `mu,mv,u0,v0` + `k2..k5`), with `sensor: imx296` and the true image size.
+- [ ] 3.9 **Settle the mounting orientation.** A live frame off port C shows the desk and cables at the *bottom* of the image, i.e. this rig reads as mounted **upright** — unlike the IMX219 rig, whose 180° roll is baked into `rig_extrinsics_vo.yaml` and the panorama's `flip_180`. Confirm before anything consumes the extrinsics; whatever the answer, it belongs *in* the extrinsics, not as a separate hidden roll.
+- [ ] 3.10 Optional cross-check: solve one camera's intrinsics with the existing OpenCV checkerboard path (`intrinsic_calib.py`) and compare. Independent tooling on independent data is worth having if a tartancalib result looks odd — it is not on the critical path.
 
 ## 4. Remove the sync workaround
 
