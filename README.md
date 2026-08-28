@@ -475,6 +475,72 @@ Until one of them happens, Δ is recorded as **unmeasured** rather than as zero.
 - **`FSYNC` is not available** on the J106 (pin not brought out) and Tegra GTE hardware GPIO
   timestamping is Xavier-only — so waking on the edge is the best this board allows.
 
+### 4.8 Camera models — what cuVSLAM can actually consume
+
+Calibration is only useful if the VO can load it, and cuVSLAM accepts **four** distortion models
+([`libs/cuvslam/cuvslam2.h`](third_party/cuVSLAM/libs/cuvslam/cuvslam2.h)):
+
+| model | parameters | notes |
+|---|---|---|
+| `Pinhole` | 0 | no distortion — what rectified/virtual-stereo images are |
+| `Fisheye` | 4 | equidistant. **Coefficients are compatible with Kalibr `pinhole-equi` and `cv::fisheye`** |
+| `Brown` | 5 | 3 radial + 2 tangential |
+| `Polynomial` | 8 | first 8 OpenCV coefficients |
+
+So our KANNALA_BRANDT `camN.yaml` files load directly as `Fisheye` — that path is native, not a
+workaround. What matters is the two things that are **not** on the list.
+
+#### There is no omni / EUCM / double-sphere model
+
+tartancalib (and Kalibr) can solve `omni-none`, `omni-radtan`, `eucm-none`, `ds-none`; **cuVSLAM can
+consume none of them.** quarterKalibr calibrates `omni-radtan`, so its intrinsics are not loadable by
+our VO as they stand. Two routes, and the recording session supports both:
+
+- **Direct** — also solve `pinhole-equi` on the same bags and feed cuVSLAM `Fisheye` (what we do today).
+- **Rectified** — keep `omni-radtan`, generate virtual stereo pairs, and cuVSLAM sees plain `Pinhole`.
+  This is the OmniNxt architecture, and it is why their pipeline calibrates omni in the first place.
+
+`tartan_calibrate --models` takes one model per camera, so getting both is two runs over the same
+data, not two recordings. Decide from results, not in advance.
+
+#### The `Fisheye` path stops at 180° FOV — and it is the parameterization, not the algorithm
+
+cuVSLAM states the limit outright: *"this (pinhole + undistort) approach works only for FOV < 180°.
+TUMVI has ~190°."* The reason is visible in its own projection formula:
+
+```
+x_n = x/z,  y_n = y/z,  r = sqrt(x_n^2 + y_n^2)
+radial(r) = arctan(r) * (1 + k1*arctan^2(r) + k2*arctan^4(r) + ...)
+```
+
+The incidence angle is θ = arctan(r). As θ → 90°, z → 0 and r → ∞; past 90°, z < 0 and `x/z` flips
+sign, folding the ray into the wrong half-plane. arctan(r) ∈ [0°, 90°) for any finite r, so the
+representable half-FOV is strictly under 90°. That is arithmetic, not an implementation shortcut —
+and `FisheyeCameraModel`'s `max_normalized_uv_radius` / `max_xy_radius` guards exist because of it.
+
+**Kannala-Brandt itself is not limited.** Compute θ directly from the ray
+(`θ = atan2(sqrt(x²+y²), z)`) and ≥180° is fine — which is what ORB-SLAM3 and OpenMAVIS do, and why
+cuVSLAM notes their coefficients are incompatible with its own. The ceiling is inherited from being
+coefficient-compatible with `pinhole-equi` / `cv::fisheye`; the `pinhole-` prefix in Kalibr's model
+name is announcing exactly this.
+
+Practically: it binds only if a lens exceeds 180°. Ours are believed ~130° and the image circle
+overruns the sensor, so the *usable* field is bounded by the sensor rather than the lens — but take
+the number from the calibration rather than assuming it, because it decides whether the direct route
+is legal at all.
+
+#### The multi-camera gate: frustum overlap
+
+`OdometryMode::Multicamera` requires **every camera to share frustum overlap with at least one
+other**, tested in [`frustum_intersection_graph.cpp`](third_party/cuVSLAM/libs/camera/frustum_intersection_graph.cpp):
+1000 points back-projected over a depth range (`d_min = -2`, `d_max = -4`) must intersect the other
+camera's frustum in at least `intersected_num_points_ratio_threshold` — **0.5** upstream.
+
+A surround rig with fisheyes ~90° apart overlaps far less than 50%, so this gate is what rejects the
+rig. Our tree patches it to read `CUVSLAM_FRUSTUM_THRESHOLD` from the environment (e.g. `0.05`) so
+the pairing can be tuned without a rebuild. The hard-coded depth range is the second lever if pairs
+still refuse to connect.
+
 ---
 
 ## 5. Roadmap

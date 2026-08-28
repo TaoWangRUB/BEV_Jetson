@@ -100,6 +100,28 @@ another IMU's noise densities.
 fallback. Same destination, but it spends a recording session and a target print to discover what
 the people who built this rig shape already documented.
 
+### D5a: Solve both camera models from the same bags
+
+cuVSLAM accepts exactly four distortion models — `Pinhole`, `Fisheye` (equidistant, coefficients
+compatible with Kalibr `pinhole-equi` and `cv::fisheye`), `Brown`, `Polynomial` — and **no omni,
+EUCM or double-sphere**. quarterKalibr calibrates `omni-radtan`, so its intrinsics are not loadable
+by our VO as they stand. That leaves two routes, and they need the same recording:
+
+- **Direct**: solve `pinhole-equi` too, feed cuVSLAM `Fisheye` (what the stack does today).
+- **Rectified**: keep `omni-radtan`, generate virtual stereo, cuVSLAM sees plain `Pinhole` — the
+  OmniNxt architecture, and the reason their pipeline calibrates omni at all.
+
+`tartan_calibrate --models` takes one model per camera, so both routes are two solver runs over the
+same bags. So this is **not** a decision to take before recording; it is decided by which one
+tracks. Full detail in README 4.8.
+
+One constraint does have to be checked from the calibration rather than assumed: cuVSLAM's `Fisheye`
+path is capped at **FOV < 180°**, because it parameterises through a pinhole normalisation (`x/z`,
+θ = arctan(r)) that cannot represent rays at or past 90° incidence. That ceiling is inherited from
+`pinhole-equi`/`cv::fisheye`, not a cuVSLAM defect — Kannala-Brandt computed from the ray handles
+≥180° fine, which is what ORB-SLAM3 and OpenMAVIS do. If our lenses come back over 180°, the direct
+route is not merely worse, it is unavailable, and virtual stereo becomes mandatory.
+
 ### D5: The board records; the host solves
 
 Kalibr and tartancalib are ROS1/Noetic batch optimizers — Ceres/SuiteSparse over a whole bag,
