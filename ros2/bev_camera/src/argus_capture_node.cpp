@@ -4,8 +4,12 @@
 // the container), so it needs no tegra gstreamer plugin. Opens the cameras on the
 // requested carrier ports at a chosen sensor mode, acquires frames, extracts each
 // frame's luma (Y) plane — which is exactly the grayscale image cuVSLAM wants —
-// and publishes it as sensor_msgs/Image (mono8) on /camN/image_raw with that
-// frame's own capture timestamp.
+// and publishes it as sensor_msgs/Image (mono8) on /camN/image_raw.
+//
+// TIMESTAMPS (the contract — see README 4.7): header.stamp is that frame's own
+// EXPOSURE MIDPOINT on CLOCK_MONOTONIC, derived from the Argus sensor (SOF) timestamp
+// minus half the exposure. It is NOT ROS system time, so it must never be compared
+// against now(); the IMU has to be stamped on the same clock for the two to be fused.
 //
 // The rig is 4x IMX296 global-shutter on ports C-F, driven by an external hardware
 // trigger, so every camera exposes on the same edge (measured skew 1 us). Two things
@@ -141,6 +145,11 @@ class ArgusCaptureNode : public rclcpp::Node {
     ae_lock_mode_ = declare_parameter<std::string>("ae_lock", "auto");
     ae_gain_ = declare_parameter<std::vector<double>>("ae_gain", {16.0, 16.0});
     ae_dgain_ = declare_parameter<std::vector<double>>("ae_dgain", {4.0, 4.0});
+    // Timestamp convention: exposure midpoint (what a VIO wants) vs raw SOF.
+    stamp_midpoint_ = declare_parameter<bool>("stamp_exposure_midpoint", true);
+    // 0 = use the exposure Argus reports. Set it to the trigger pulse width when the
+    // driver is in trigger mode and the commanded exposure is being ignored.
+    exposure_us_ = declare_parameter<int>("exposure_us", 0);
     // Optional: refuse to publish under a calibration measured on another rig.
     calib_dir_ = declare_parameter<std::string>("calib_dir", "");
 
@@ -341,24 +350,71 @@ class ArgusCaptureNode : public rclcpp::Node {
     return true;
   }
 
-  // The frame's SENSOR timestamp — the kernel SOF time, i.e. when the sensor actually
-  // started this exposure. NOT IFrame::getTime(), which is the EGLStream frame time and
-  // therefore consumer-side: measured live, it put the four cameras ~7 ms apart in the
-  // order the capture loop happens to visit them (cam4 -7.0, cam1 0, cam2 +6.8,
-  // cam3 +13.8 ms), i.e. it was reporting this loop's own phase. On the free-running
-  // IMX219 rig that was invisible under 30-86 ms of real skew; on a rig triggered to
-  // 1 us it is the whole measurement. Sensor timestamps need setMetadataEnable(true).
-  uint64_t sensor_timestamp(EGLStream::Frame* frame, EGLStream::IFrame* iframe) {
+  // The instant this frame corresponds to, on CLOCK_MONOTONIC.
+  //
+  // Two corrections, and both are needed:
+  //
+  // 1. Take the SENSOR timestamp, not IFrame::getTime(). getTime() is the EGLStream
+  //    frame time and therefore consumer-side: measured live it put the four cameras
+  //    ~7 ms apart in the order this loop happens to visit them (cam4 -7.0, cam1 0,
+  //    cam2 +6.8, cam3 +13.8 ms) — it was reporting the loop's own phase. Note the
+  //    "30-86 ms spread" this project previously recorded for the free-running IMX219
+  //    rig was measured through those same timestamps and is therefore partly the same
+  //    artifact; the V4L2-measured free-running skew was 2.43 ms with 8.33 us/s drift.
+  //    Sensor timestamps require setMetadataEnable(true) on the stream.
+  //
+  // 2. Walk SOF back to the EXPOSURE MIDPOINT. SOF is "the time the first data from
+  //    this capture arrives from the sensor" (Argus/CaptureMetadata.h) — i.e. the start
+  //    of READOUT, which on a global shutter is when the exposure has already finished.
+  //    The exposure therefore spans [SOF - exposure, SOF] and the instant the frame
+  //    actually depicts is SOF - exposure/2. That is what a VIO wants and what the J106
+  //    timing model states; leaving it out biases every camera by half an exposure
+  //    against the IMU. It cancels between cameras (one shared trigger edge) but not
+  //    against anything else, so it would end up hidden inside Delta and move whenever
+  //    the exposure changed.
+  //
+  // Under the hardware trigger the true exposure IS the trigger pulse width, and Argus
+  // reports the value it commanded, which the driver may be ignoring — so exposure_us
+  // overrides the reported value when the pulse width is known.
+  uint64_t frame_timestamp(EGLStream::Frame* frame, EGLStream::IFrame* iframe) {
+    uint64_t sof = 0, exposure_ns = 0;
     if (auto* iacm = interface_cast<EGLStream::IArgusCaptureMetadata>(frame)) {
-      if (auto* imeta = interface_cast<ICaptureMetadata>(iacm->getMetadata()))
-        return imeta->getSensorTimestamp();
+      if (auto* imeta = interface_cast<ICaptureMetadata>(iacm->getMetadata())) {
+        sof = imeta->getSensorTimestamp();
+        exposure_ns = imeta->getSensorExposureTime();
+      }
     }
-    if (!warned_no_metadata_) {
-      RCLCPP_WARN(get_logger(), "no capture metadata — falling back to EGLStream frame time, "
-                  "which is consumer-side and NOT comparable across cameras");
-      warned_no_metadata_ = true;
+    if (sof == 0) {
+      if (!warned_no_metadata_) {
+        RCLCPP_WARN(get_logger(), "no capture metadata — falling back to EGLStream frame time, "
+                    "which is consumer-side and NOT comparable across cameras or with the IMU");
+        warned_no_metadata_ = true;
+      }
+      return iframe->getTime();
     }
-    return iframe->getTime();
+    // ONE exposure for the whole rig, not one per camera. All four expose on the same
+    // trigger edge for the same pulse width, so the exposure is identical by
+    // construction, while Argus reports each camera's own AE state — subtracting a
+    // per-camera half-exposure would put differences into the timestamps that the
+    // hardware does not have. (Measured set spread wanders 1-17 us between runs either
+    // way, so this is correctness by construction, not a measured improvement.)
+    // Latch the first value seen (or the parameter) and use it for every camera.
+    if (rig_exposure_ns_ == 0)
+      rig_exposure_ns_ = exposure_us_ > 0 ? static_cast<uint64_t>(exposure_us_) * 1000 : exposure_ns;
+    exposure_ns = rig_exposure_ns_;
+
+    if (!logged_exposure_) {
+      RCLCPP_INFO(get_logger(), "stamping at %s (rig exposure %.3f ms, %s)",
+                  stamp_midpoint_ ? "exposure midpoint" : "SOF (start of readout)",
+                  exposure_ns / 1e6,
+                  exposure_us_ > 0 ? "from the exposure_us parameter" : "as reported by Argus");
+      if (trigger_active_ && exposure_us_ == 0)
+        RCLCPP_WARN(get_logger(), "under external trigger the true exposure is the trigger PULSE "
+                    "WIDTH, which the driver may be ignoring the commanded value for — set "
+                    "exposure_us to the pulse width once it is known");
+      logged_exposure_ = true;
+    }
+    return stamp_midpoint_ ? sof - exposure_ns / 2 : sof;
   }
 
   // Inter-camera skew, measured the only way that means anything: by matching frames
@@ -369,9 +425,9 @@ class ArgusCaptureNode : public rclcpp::Node {
   // camera and frame k+1 from the next. Comparing them by loop position measures the
   // loop's phase, not the rig's sync — it reported ~35 ms (one frame period at 30 Hz)
   // on a rig whose V4L2-measured skew is 1.0 us. So keep a short history per camera and
-  // match each of camera 0's frames to the NEAREST frame from every other camera; the
-  // spread of a matched set is the real skew, and a set that cannot be matched within
-  // half a frame period is a genuinely broken set.
+  // match each of camera 0's frames to the NEAREST frame from every other camera. The
+  // spread of a matched set is the real skew; a match is always found, so what says the
+  // rig is broken is that spread exceeding max_skew_us, not a failure to match.
   void measure_set_skew(const std::vector<uint64_t>& latest) {
     for (size_t i = 0; i < n_; ++i) {
       auto& h = ts_history_[i];
@@ -442,7 +498,7 @@ class ArgusCaptureNode : public rclcpp::Node {
             if (rc != 0 && timeouts[i]++ % 30 == 0)
               RCLCPP_WARN(get_logger(), "cam idx %zu: copyToNvBuffer rc=%d", i, rc);
           }
-          const uint64_t t_ns = sensor_timestamp(frame.get(), iframe);
+          const uint64_t t_ns = frame_timestamp(frame.get(), iframe);
           set_ts[i] = t_ns;
           ++got;
           publish_y(i, t_ns);
@@ -508,6 +564,9 @@ class ArgusCaptureNode : public rclcpp::Node {
   std::string ae_lock_mode_, calib_dir_;
   std::vector<double> ae_gain_, ae_dgain_;
   bool trigger_active_ = false, ae_lock_ = false, warned_no_metadata_ = false;
+  bool stamp_midpoint_ = true, logged_exposure_ = false;
+  int exposure_us_ = 0;
+  uint64_t rig_exposure_ns_ = 0;
   int width_, height_, fps_, max_skew_us_;
   int64_t sets_ = 0, bad_sets_ = 0, worst_skew_us_ = 0;
   static constexpr size_t kHistory = 8;                 // ~0.27 s at 30 Hz

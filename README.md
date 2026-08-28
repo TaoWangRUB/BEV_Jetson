@@ -302,6 +302,99 @@ each camera's yaw/pitch/roll + translation + scene depth; live re-render; **Save
 python3 scripts/calib/pano_tuner.py        # open http://localhost:8000  (scroll=zoom, drag=pan)
 ```
 
+### 4.7 Timestamps — camera and IMU on one clock
+
+The four cameras share one hardware trigger edge, so **the rig's sync is a solved hardware problem
+and every remaining timing error is created in software.** This section is the convention the whole
+stack follows; the measurements behind it live in the J106 project (`auvidea-j106-tx2`, README §5
+"Latency and where to timestamp" and §5a "Camera ⟷ IMU timebase").
+
+**The contract, in one line:** every sensor message carries the **exposure midpoint** (cameras) or
+the **data-ready edge** (IMU), both on **`CLOCK_MONOTONIC`**, and the residual camera↔IMU offset
+**Δ** is a single stated constant — never silently assumed to be zero.
+
+#### The four rules
+
+**1. One clock: `CLOCK_MONOTONIC`.** V4L2 stamps buffers with it (flag `0x00002001`, verified on
+this board), so everything else follows it rather than converting. Two traps:
+
+- The GPIO chardev's own event timestamp is `CLOCK_REALTIME` (`gpiolib.c`, `ktime_get_real_ns()`).
+  Use the chardev to *wait* for an edge, then take your own `clock_gettime(CLOCK_MONOTONIC)` —
+  mixing the two misdates everything by the REALTIME↔MONOTONIC offset, and NTP can slew one under
+  you.
+- ⚠ **`header.stamp` in this stack is monotonic, not ROS system time.** `argus_capture_node`
+  publishes the frame's monotonic time in the header. Never compare it against `now()`, and any IMU
+  node feeding this pipeline must stamp the same way. It is the difference between the two streams
+  that must be right, and a bag replayed later must not be re-dated.
+
+**2. Stamp the exposure midpoint, not the frame's arrival.** Three timestamps look like a capture
+time and are not:
+
+| Source | What it actually is | Usable? |
+|---|---|---|
+| `EGLStream::IFrame::getTime()` | consumer-side frame time | ❌ measured ~7 ms apart *in the order the capture loop visits the cameras* |
+| `nvarguscamerasrc` GstBuffer PTS | output-stamped (~0.7 ms, transport only) | ❌ and the RTP path discards capture time entirely |
+| `ICaptureMetadata::getSensorTimestamp()` | kernel **SOF** — first data out of the sensor | ✅ this is the one |
+
+SOF is the start of **readout**, which on a global shutter is *after* the exposure has finished, so
+the instant the frame depicts is:
+
+```
+t_frame = SOF − exposure/2
+```
+
+Half an exposure is a constant bias against the IMU that would otherwise hide inside Δ and move
+whenever the exposure changed. Under the hardware trigger the true exposure **is the trigger pulse
+width** — Argus reports the value it commanded, which the driver may be ignoring, so pass the pulse
+width via `exposure_us` once it is known. One exposure is used for the whole rig: all four cameras
+expose on the same edge, so a per-camera value would inject differences the hardware does not have.
+
+The other latencies are *not* timestamp corrections — they are delivery costs (measured at
+1456×1088): readout+MIPI→VI 16.1 ms, ISP 1.9 ms, raw-V4L2 buffer age at `DQBUF` **66.7 ms**. Note
+bypassing the ISP makes latency *worse*: use Argus for pixels, and the raw V4L2 path only for
+*proving* sync.
+
+**3. Match frames by timestamp, never by position.** Each camera's queue advances independently, so
+"one frame from each camera per loop iteration" can mix adjacent trigger edges — it read as 35 ms of
+skew on a rig whose real skew is 1 µs. The capture node matches each of camera 0's frames to the
+nearest frame from every other camera and reports the spread; sets beyond `max_skew_us` (default
+1000, cuVSLAM's own gate) are counted, not repaired.
+
+For **recordings used in calibration**, go further and *fit* the frame times: the trigger is
+hardware-periodic, so `t[k] = a·k + b` indexed by the V4L2 `sequence` field (not arrival order — one
+dropped frame in 600 shifts the fitted period by ~5800 ppm). With 1.5 µs of per-frame jitter the
+phase error falls as 1/√N. The slope `a` also absorbs the fact that the STM32 free-runs against the
+Tegra (−12.3 ppm de-slewed), which would otherwise make a once-calibrated offset go stale.
+`j106-frametime.py` and `j106-record-sync.py` in the J106 repo do this.
+
+**4. Δ is stated, with provenance — or marked unmeasured.** After the fit, exactly one unknown is
+left: the offset between the camera timebase and the IMU timebase. It is **one constant for the whole
+rig**, not one per camera, because a shared trigger edge leaves no per-camera component. Two routes:
+
+- **Estimate it** with Kalibr from a recording (`td`), ~0.1–1 ms — the route this project takes
+  (see the `retarget-vo-to-imx296-rig` change, §3).
+- **Measure it** by echoing the trigger into a GPIO and comparing against the fitted frame time,
+  ~1 µs — documented in the J106 repo's `hw-trigger/WIRING.md` §4.4. ⚠ The echo must be timestamped
+  through **the same userspace wake path as the IMU**, so the ~50 µs wake latency is common mode and
+  cancels; taking the kernel IRQ stamp instead measures the wrong quantity and leaves Δ ~50 µs short.
+
+Until one of them happens, Δ is recorded as **unmeasured** rather than as zero.
+
+#### Things that are already known to bite
+
+- **NTP slews `CLOCK_MONOTONIC`** (+48.45 ppm measured here; only `CLOCK_MONOTONIC_RAW` is free of
+  it). It is common mode between camera and IMU so it does not harm Δ — but it corrupts any
+  statement about *rate*, and the servo makes a frame-time fit residual wander (30.9 µs with
+  `systemd-timesyncd` running vs 8.4 µs without). Stop it for long calibration recordings.
+- **The MPU-9250's DLPF group delay differs between gyro and accel** — the gyro lags the accel by
+  ≈1.0 ms at every matched bandwidth. A front end that treats one timestamp as covering both
+  inherits that error.
+- **The IMU must be stamped at its data-ready edge**, not at the SPI read. Waking userspace on the
+  edge costs a median 50 µs (bias, absorbed by Δ) with a MAD of 2.8 µs (the real limit, and the same
+  order as the camera side's 1.5 µs jitter). Run the reader `SCHED_FIFO`.
+- **`FSYNC` is not available** on the J106 (pin not brought out) and Tegra GTE hardware GPIO
+  timestamping is Xavier-only — so waking on the edge is the best this board allows.
+
 ---
 
 ## 5. Roadmap
