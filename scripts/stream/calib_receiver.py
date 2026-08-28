@@ -52,7 +52,7 @@ state = {}                      # port -> dict(img, polys, ntags, cov, n, saved)
 lock = threading.Lock()
 
 
-def receive(host, port_letter, record_dir, detect):
+def receive(host, port_letter, record_dir, detect, every=1):
     """One camera: read the multipart JPEG stream, decode, detect, optionally save."""
     tcp, label = PORTS[port_letter]
     st = {"img": None, "polys": [], "ntags": 0, "n": 0, "saved": 0,
@@ -79,13 +79,13 @@ def receive(host, port_letter, record_dir, detect):
                     if a < 0 or b < 0:
                         break
                     jpg, buf = buf[a:b + 2], buf[b + 2:]
-                    handle(st, jpg, record_dir, detect)
+                    handle(st, jpg, record_dir, detect, every)
         except Exception as e:                      # a dropped link must not end the run
             st["err"] = str(e)
             time.sleep(1.0)
 
 
-def handle(st, jpg, record_dir, detect):
+def handle(st, jpg, record_dir, detect, every=1):
     img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_GRAYSCALE)
     if img is None:
         return
@@ -101,7 +101,7 @@ def handle(st, jpg, record_dir, detect):
                 st["cov"][gy, gx] += 1
     with lock:
         st["img"], st["polys"], st["ntags"], st["n"] = img, polys, len(polys), st["n"] + 1
-    if record_dir:
+    if record_dir and st["n"] % every == 0:
         # Written as received: re-encoding would add a second generation of JPEG loss to
         # the images a calibration depends on.
         path = os.path.join(record_dir, "%06d_%d.jpg" % (st["saved"], time.time_ns()))
@@ -196,6 +196,10 @@ def main():
                     help="port letters to receive: c=front-left d=front-right "
                          "e=back-left f=back-right")
     ap.add_argument("--record", default="", help="directory to write frames into")
+    ap.add_argument("--record-every", type=int, default=1,
+                    help="keep every Nth frame (default 1 = everything). Recording all of "
+                         "it is usually right: selection is better done offline, where a "
+                         "blurred or redundant frame can be rejected on evidence")
     ap.add_argument("--no-detect", action="store_true")
     ap.add_argument("--port", type=int, default=8090, help="local preview port")
     a = ap.parse_args()
@@ -206,7 +210,8 @@ def main():
         rec = os.path.join(a.record, PORTS[p][1].split()[0]) if a.record else ""
         if rec:
             os.makedirs(rec, exist_ok=True)
-        threading.Thread(target=receive, args=(a.host, p, rec, not a.no_detect),
+        threading.Thread(target=receive,
+                         args=(a.host, p, rec, not a.no_detect, a.record_every),
                          daemon=True).start()
 
     print("receiving %s from %s; preview http://localhost:%d/%s"
