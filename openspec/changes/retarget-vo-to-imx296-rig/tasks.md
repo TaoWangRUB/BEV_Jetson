@@ -40,6 +40,10 @@
   - **Brightness**: the AE limit cycle is gone (171 % of mean → 3–5 %), but p2p 4.1–6.9 does not clear the spec's "< 5 levels" on all four. The residual is periodic and looks like **mains flicker** (50 Hz lighting beating with the 30 Hz trigger), which is a scene property, not an AE fault — needs confirming under daylight or DC light before either passing it or changing the threshold. Do **not** relax the spec until that is measured.
   - **Dropped frames**: the median interval is 33.3 ms (30 Hz) but 55–211 gaps per 30 s, i.e. ~20 Hz effective. This is the known CPU cost of the modular path (1.58 MB memcpy + DDS per frame per camera); the fused node exists precisely to avoid it. Re-measure there in §4 before treating it as a defect.
 
+- [x] 1.8 Stamp the **exposure midpoint** (`SOF − exposure/2`), one rig-wide exposure for all four cameras, per README 4.7. Argus reports 0.521 ms here; under the trigger the true exposure is the pulse width, so `exposure_us` overrides it and the node warns until it is set.
+- [ ] 1.9 Expose the Argus frame number and per-frame exposure so downstream can detect drops (55–211 per 30 s were measured in 1.7) and so a periodic frame-time fit is possible. ROS 2 has no `header.seq`, so this needs a companion topic or a diagnostic channel — decide which when §4 lands.
+- [ ] 1.10 Get the trigger pulse width: reconnect the STM32 USB-CDC link (no `/dev/ttyACM*` on either machine right now), read the commanded width with `j106-trigctl.py`, and set `exposure_us` from it. Until then the midpoint carries a ~±0.26 ms unknown — constant, so Δ absorbs it, but it moves if the width is ever changed.
+
 ## 2. Intrinsics for the IMX296 modules
 
 - [ ] 2.1 Move `scripts/config/calib/cam{1..4}.yaml` (+ their `.npz`/preview artefacts) to `scripts/config/calib/imx219-1640x1232/`, labelled with the rig they belong to (D6).
@@ -53,6 +57,8 @@
 - [ ] 3.1 Stand up Kalibr in Docker on the host (Noetic image); verify it runs on one of the existing `datasets/` bags before trusting it on ours.
 - [ ] 3.2 Print/obtain an AprilGrid target and record its geometry (tag size, spacing) in the repo alongside the calibration.
 - [ ] 3.3 Record the four-camera calibration bag on the board (`ros2 bag`, ~4 Hz images, target moving through all four fields of view incl. the adjacent overlaps); convert to ROS1 with `rosbags-convert` on the host.
+- [ ] 3.3b **Decide and build the IMU source.** BEV has no IMU node — only `scripts/imu/mpu9250_reader.c`. Kalibr needs IMU *and* images in one recording, while the J106 recorder deliberately stores no pixels. Either port the J106 stamping into a ROS 2 node (data-ready edge, `CLOCK_MONOTONIC`, `SCHED_FIFO`, per README 4.7) or record with `j106-imu-read.py` and merge into the bag. Whichever: the IMU must not be stamped with `now()`.
+- [ ] 3.3c Recording hygiene: stop `systemd-timesyncd` for the run (it cuts the frame-time fit residual 30.9 µs → 8.4 µs), and write the provenance alongside the bag — clock, trigger rate, exposure in force, Δ and its source — the way `j106-record-sync.py` writes `meta.json`. A recording with no provenance cannot be re-interpreted later.
 - [ ] 3.4 Record the camera+IMU bag: one camera at full rate + MPU-9250 at full rate, with the excitation sequence Kalibr wants (rotation about all three axes, then translation).
 - [ ] 3.5 Solve rig extrinsics with `kalibr_calibrate_cameras` (pinhole-equi). If the four-camera chain will not converge, fall back per design D4 (pairwise + compose, or keep the feature-based extrinsics) and record which route was taken.
 - [ ] 3.6 Solve Δ with `kalibr_calibrate_imu_camera` on the single camera + IMU; record the value, the method, and its uncertainty.
