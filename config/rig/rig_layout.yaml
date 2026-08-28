@@ -48,6 +48,12 @@ imu:
   # It is NOT a calibration - the precise rotation comes from kalibr_calibrate_imu_camera,
   # and this is what that result gets checked against.
   #
+  # RECORD THE POSE LABELS AT THE TIME - the numbers alone are ambiguous by construction.
+  # Raising IMU +x by pivoting about IMU +y is geometrically identical for "nose-up, so
+  # front is +x" and "left-side-up, so left is +x", and the gyro during the transition
+  # cannot separate them either (checked). Only knowing which motion was performed does.
+  # Here that came from the operator and from the translation test, which agree.
+  #
   # Cross-checks: front x left = -z = up (right-handed), determinant +1 (a rotation, not
   # a reflection), and gravity at rest agrees with the tilt solve on the up axis. The
   # IMU's +z pointing down matches the whole board being mounted inverted, as the
