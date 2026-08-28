@@ -10,10 +10,15 @@ capture node publishes four separate topics, so this does the same job from thos
 THE RECORDING PROTOCOL (this is the part that is nowhere in quarterKalibr's README —
 it is encoded in its `step_dict`). In ONE continuous recording, show the target to:
 
-    1. cam1 alone          5. cam4 + cam1 together      <- the four overlaps, in
-    2. cam2 alone          6. cam1 + cam2 together         this order, each pair
-    3. cam3 alone          7. cam2 + cam3 together         adjacent around the ring
-    4. cam4 alone          8. cam3 + cam4 together
+    1. cam1 (front-left)     5. cam3 + cam1  (back-left  + front-left)
+    2. cam2 (front-right)    6. cam1 + cam2  (front-left  + front-right)
+    3. cam4 (back-right)     7. cam2 + cam4  (front-right + back-right)
+    4. cam3 (back-left)      8. cam4 + cam3  (back-right  + back-left)
+
+WATCH THE ORDER: it walks the rig, not the camera names. Ports are c=front-left,
+d=front-right, e=back-left, f=back-right, so the physical ring is c -> d -> f -> e,
+i.e. cam1 -> cam2 -> cam4 -> cam3. cam2 and cam3 are DIAGONAL: solving that pair as a
+stereo baseline asks for overlap the rig does not have.
 
 Stages 1-4 give per-camera intrinsics; 5-8 give the adjacent-pair extrinsics that get
 composed around the ring. The order matters: a stage is entered only when the set of
@@ -94,9 +99,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bag", required=True, help="ROS1 bag (converted from ros2 bag)")
     ap.add_argument("--out", required=True, help="output directory for the staged bags")
+    # In RING order (see config/rig/rig_layout.yaml), so CAM_A..CAM_D are physical
+    # neighbours: front-left, front-right, back-right, back-left.
     ap.add_argument("--image-topics", nargs=4,
                     default=["/cam1/image_raw", "/cam2/image_raw",
-                             "/cam3/image_raw", "/cam4/image_raw"])
+                             "/cam4/image_raw", "/cam3/image_raw"])
     ap.add_argument("--imu-topic", default="/imu0")
     ap.add_argument("--target", default="config/calib/april_6x6.yaml",
                     help="AprilGrid target yaml, copied beside the staged bags")

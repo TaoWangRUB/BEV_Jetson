@@ -1,0 +1,55 @@
+# Physical layout of the BEV rig: where each camera is, which way the modules face, and
+# how the IMU's axes sit relative to the vehicle. This is the reference a calibration
+# result is CHECKED against — a gross axis swap or a dropped 180-degree roll produces
+# numbers that still look plausible, so there has to be something to compare them with.
+#
+# Rig frame is FLU: x forward, y left, z up.
+
+cameras:
+  # port -> where it physically points. The ROS cam names follow the ports in
+  # alphabetical order, which is NOT the order they sit in around the rig.
+  cam1: {port: c, position: front_left,  i2c: 2-001a}
+  cam2: {port: d, position: front_right, i2c: 2-0018}
+  cam3: {port: e, position: back_left,   i2c: 7-001a}
+  cam4: {port: f, position: back_right,  i2c: 7-0018}
+
+# ADJACENCY. Walking the rig, the neighbours are front_left -> front_right ->
+# back_right -> back_left -> back to front_left, i.e. ports c, d, f, e. Note e and d
+# are DIAGONAL, not adjacent: any pairwise calibration that walks cam1..cam4 in name
+# order would try to solve a diagonal pair as if it were a stereo baseline, and the
+# overlap it needs does not exist.
+ring_order: [cam1, cam2, cam4, cam3]     # c (FL) -> d (FR) -> f (BR) -> e (BL)
+
+# The modules are mounted INVERTED, so raw images are upside-down. Confirmed on the
+# hardware 2026-08-28. The capture path rotates 180 on the ISP (csi_sender FLIP=2), and
+# the roll is folded into rig_extrinsics_vo.yaml rather than applied as a hidden extra
+# step somewhere downstream.
+camera_roll_deg: 180
+
+imu:
+  model: MPU-9250
+  # MEASURED 2026-08-28, not from a datasheet or a drawing: neither the J106 README nor
+  # imu-mpu9250.dtsi states the mounting, and the datasheet only gives axes relative to
+  # package pin 1. Method: scripts/imu/axis_check.py over a 72 s recording in which the
+  # rig was moved front/back, left/right, up/down (front, left and up each first).
+  #
+  #   rig front -> IMU +y     (burst spread 0.78 m/s^2 on y vs 0.30/0.27)
+  #   rig left  -> IMU +x     (1.38 on x vs 0.44/0.38)
+  #   rig up    -> IMU -z     (1.17 on z), and independently from gravity at rest:
+  #                           specific force (-1.07, -0.10, -10.39) points UP, so +z is down
+  #
+  # Cross-checks: front x left = -z = up, so the triad is right-handed, and the mapping
+  # has determinant +1 (a proper rotation, not a reflection). The IMU's +z pointing down
+  # is consistent with the whole board being mounted inverted, same as the cameras.
+  axes:
+    rig_front: +y
+    rig_left:  +x
+    rig_up:    -z
+  # Rotation taking a vector in rig(FLU) coordinates to IMU coordinates: swap x/y and
+  # flip z, i.e. 180 degrees about (1,1,0)/sqrt(2).
+  R_imu_from_rig: [[0, 1, 0],
+                   [1, 0, 0],
+                   [0, 0, -1]]
+  # At rest |a| = 10.46 m/s^2, 6.7% above 1 g. That is the part's uncalibrated zero-g
+  # offset (+-60 mg typical) and is exactly what a VIO/Kalibr calibration estimates —
+  # it is NOT a clean gravity reference. Gyro bias at rest ~0.013 rad/s per axis.
