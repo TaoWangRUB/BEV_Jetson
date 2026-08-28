@@ -51,12 +51,47 @@ _detector = cv2.aruco.ArucoDetector(
 state = {}                      # port -> dict(img, polys, ntags, cov, n, saved)
 lock = threading.Lock()
 
+# What a calibration is actually short of is DIVERSITY, not frames. A hundred views
+# taken centred and flat-on constrain less than thirty spread across the image, across
+# tilt and across distance - flat-on views in particular cannot separate focal length
+# from radial distortion, because both just scale the target. So novelty is judged in
+# three axes at once and each bin has a quota; the operator is told what is still empty
+# rather than left to guess when to stop.
+POS_BINS = 6            # target centre, across the image
+TILT_BINS = 3           # how oblique the board is (its quad's squareness)
+SCALE_BINS = 3          # apparent size, i.e. distance
 
-def receive(host, port_letter, record_dir, detect, every=1):
+
+def pose_bin(pts_list, shape):
+    """(position, tilt, scale) bin for the target in this frame.
+
+    Tilt is estimated from the tag quads themselves: a square-on tag projects to a
+    square, an oblique one to a trapezoid, so the ratio of its diagonals is a cheap,
+    calibration-free measure of obliquity that needs no pose solve.
+    """
+    cx = np.mean([p[:, 0].mean() for p in pts_list])
+    cy = np.mean([p[:, 1].mean() for p in pts_list])
+    pos = (min(POS_BINS - 1, int(cy / shape[0] * POS_BINS)),
+           min(POS_BINS - 1, int(cx / shape[1] * POS_BINS)))
+
+    areas, skews = [], []
+    for p in pts_list:
+        areas.append(abs(cv2.contourArea(p.astype(np.float32))))
+        d1 = np.linalg.norm(p[0] - p[2]); d2 = np.linalg.norm(p[1] - p[3])
+        skews.append(min(d1, d2) / max(d1, d2) if max(d1, d2) > 0 else 1.0)
+    frac = np.mean(areas) / (shape[0] * shape[1])
+    scale = 0 if frac < 0.002 else (1 if frac < 0.008 else 2)
+    sk = float(np.mean(skews))                      # 1.0 = square-on, lower = oblique
+    tilt = 0 if sk > 0.92 else (1 if sk > 0.8 else 2)
+    return pos, tilt, scale
+
+
+def receive(host, port_letter, record_dir, detect, every=1, sel=None):
     """One camera: read the multipart JPEG stream, decode, detect, optionally save."""
     tcp, label = PORTS[port_letter]
     st = {"img": None, "polys": [], "ntags": 0, "n": 0, "saved": 0,
-          "cov": np.zeros((GRID, GRID), int), "label": label, "err": None}
+          "cov": np.zeros((GRID, GRID), int), "label": label, "err": None,
+          "bins": {}, "accepted": False, "why": ""}
     with lock:
         state[port_letter] = st
 
@@ -79,13 +114,13 @@ def receive(host, port_letter, record_dir, detect, every=1):
                     if a < 0 or b < 0:
                         break
                     jpg, buf = buf[a:b + 2], buf[b + 2:]
-                    handle(st, jpg, record_dir, detect, every)
+                    handle(st, jpg, record_dir, detect, every, sel)
         except Exception as e:                      # a dropped link must not end the run
             st["err"] = str(e)
             time.sleep(1.0)
 
 
-def handle(st, jpg, record_dir, detect, every=1):
+def handle(st, jpg, record_dir, detect, every=1, sel=None):
     img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_GRAYSCALE)
     if img is None:
         return
@@ -101,6 +136,33 @@ def handle(st, jpg, record_dir, detect, every=1):
                 st["cov"][gy, gx] += 1
     with lock:
         st["img"], st["polys"], st["ntags"], st["n"] = img, polys, len(polys), st["n"] + 1
+    # Online selection: keep a frame only if it teaches the solver something new. Doing
+    # this live rather than afterwards is the difference between a set that is uniform
+    # by construction and one that is uniform by luck - offline selection can only pick
+    # from what was swept, and cannot conjure a corner that was never visited.
+    if sel is not None:
+        st["accepted"], st["why"] = False, ""
+        if not polys or len(polys) < sel["min_tags"]:
+            st["why"] = "%d tags" % len(polys)
+        else:
+            xs = [p[:, 0].mean() for p in polys]; ys = [p[:, 1].mean() for p in polys]
+            x0, x1 = int(max(0, min(xs) - 40)), int(min(img.shape[1], max(xs) + 40))
+            y0, y1 = int(max(0, min(ys) - 40)), int(min(img.shape[0], max(ys) + 40))
+            roi = img[y0:y1, x0:x1]
+            sharp = cv2.Laplacian(roi, cv2.CV_64F).var() if roi.size else 0.0
+            if sharp < sel["min_sharp"]:
+                st["why"] = "blurred (%.0f)" % sharp
+            else:
+                key = pose_bin(polys, img.shape)
+                have = st["bins"].get(key, 0)
+                if have >= sel["per_bin"]:
+                    st["why"] = "bin full"
+                else:
+                    st["bins"][key] = have + 1
+                    st["accepted"] = True
+        if not st["accepted"]:
+            return
+
     if record_dir and st["n"] % every == 0:
         # Written as received: re-encoding would add a second generation of JPEG loss to
         # the images a calibration depends on.
@@ -131,6 +193,11 @@ def render(scale):
         filled = int((cov > 0).sum())
         text = "%s  %d tags  coverage %d/%d  saved %d" % (
             s["label"], s["ntags"], filled, GRID * GRID, s["saved"])
+        if s.get("bins"):
+            tilts = len({k[1] for k in s["bins"]}); scales = len({k[2] for k in s["bins"]})
+            text += "  tilt %d/%d  scale %d/%d" % (tilts, TILT_BINS, scales, SCALE_BINS)
+        if s.get("why"):
+            text += "   [skipped: %s]" % s["why"]
         if s["err"]:
             text += "  [%s]" % s["err"]
         for col, th in ((0, 4), (255, 1)):
@@ -201,6 +268,14 @@ def main():
                          "it is usually right: selection is better done offline, where a "
                          "blurred or redundant frame can be rejected on evidence")
     ap.add_argument("--no-detect", action="store_true")
+    ap.add_argument("--auto", action="store_true",
+                    help="save only frames that add something: a new (position, tilt, "
+                         "scale) bin, sharp enough, with enough tags")
+    ap.add_argument("--per-bin", type=int, default=3, help="frames to keep per bin")
+    ap.add_argument("--min-tags", type=int, default=6)
+    ap.add_argument("--min-sharp", type=float, default=40.0,
+                    help="Laplacian variance over the target; blurred tags detect fine "
+                         "but land their corners a pixel or two off")
     ap.add_argument("--port", type=int, default=8090, help="local preview port")
     a = ap.parse_args()
 
@@ -210,8 +285,10 @@ def main():
         rec = os.path.join(a.record, PORTS[p][1].split()[0]) if a.record else ""
         if rec:
             os.makedirs(rec, exist_ok=True)
+        sel = None if not a.auto else {"per_bin": a.per_bin, "min_tags": a.min_tags,
+                                       "min_sharp": a.min_sharp}
         threading.Thread(target=receive,
-                         args=(a.host, p, rec, not a.no_detect, a.record_every),
+                         args=(a.host, p, rec, not a.no_detect, a.record_every, sel),
                          daemon=True).start()
 
     print("receiving %s from %s; preview http://localhost:%d/%s"
