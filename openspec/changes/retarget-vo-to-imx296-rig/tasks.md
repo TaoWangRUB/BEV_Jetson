@@ -1,19 +1,44 @@
 ## 0. Board prerequisites (verify before writing code)
 
-- [ ] 0.1 Find the board and confirm the population: SSH in, confirm it booted `LABEL j106imx296`, and list `/dev/video*` with each device's i2c name — expect `2-001a`, `2-0018`, `7-001a`, `7-0018` (ports C–F). Record the bind order actually observed.
-- [ ] 0.2 Confirm trigger state: `cat /sys/module/imx296/parameters/trigger_mode` and that the STM32 is emitting (`j106-trigctl.py` in the J106 repo). Record the trigger rate and pulse width in use.
-- [ ] 0.3 Confirm `jetson-clocks` is applied, then capture a 4-camera baseline with `scripts/stream/csi_sender.sh` + `csi_receiver.sh` (`PORTS="c d e f"`) — all four live, stable brightness, no flashing.
-- [ ] 0.4 Measure the live inter-camera skew and frame rate on the board (the J106 repo's `j106-sync-check.py`) and record the numbers as this change's baseline.
+- [x] 0.1 **Confirmed live 2026-08-28** (`ssh tx2-eth` = `nvidia@10.42.0.157`, 4.9.337-tegra). Boot label is `j106fix` (newer than `j106imx296`). `/dev/video0..3` = `imx296 2-001a`, `2-0018`, `7-001a`, `7-0018` → bind order **equals** port order (c,d,e,f) *on this boot* — which is exactly what must not be assumed (0.1 of a different boot shifted it), so 1.1 still resolves at runtime.
+- [x] 0.2 `trigger_mode=1` and frames flow (30 raw V4L2 frames off `/dev/video0`), so the STM32 **is** pulsing at **30.000 Hz**. Note: no `/dev/ttyACM*` on the board *or* the host, so the CDC control link is not currently connected — the trigger free-runs and its pulse width (= the exposure) cannot be queried or changed right now. Reconnect the CDC link before any exposure tuning.
+- [~] 0.3 `jetson_clocks` **is** applied (all 6 CPUs pinned at 2035200 kHz) and `nvpmodel` is **MAXN**. The visual 4-up check via `csi_sender.sh`/`csi_receiver.sh` still wants a human at the host display — the numbers in 0.4 already cover liveness and rate.
+- [x] 0.4 **Baseline measured** (`j106-sync-check.py -n 300`, 10 s, board copy at `/home/nvidia/tools/`):
+
+  | node | frames | dropped | interval | jitter | rate | median skew | max skew | drift |
+  |---|---|---|---|---|---|---|---|---|
+  | video0 (c) | 300 | 0 | 33333.0 µs | 0.7 µs | 30.00 fps | — | — | — |
+  | video1 (d) | 300 | 0 | 33333.0 µs | 0.7 µs | 30.00 fps | 0.0 µs | 1.0 µs | 0.01 µs/s |
+  | video2 (e) | 300 | 0 | 33333.0 µs | 0.7 µs | 30.00 fps | 0.0 µs | 1.0 µs | 0.00 µs/s |
+  | video3 (f) | 300 | 0 | 33333.0 µs | 0.7 µs | 30.00 fps | 0.0 µs | 1.0 µs | 0.00 µs/s |
+
+  Verdict **SYNCHRONISED** — worst skew 1.0 µs over 10 s, worst drift 0.01 µs/s. That is 1/1000 of cuVSLAM's 1 ms gate, and ~30–86 ms better than the IMX219 rig the bundler was written for.
 
 ## 1. Capture node → IMX296
 
-- [ ] 1.1 Add runtime port→sensor-id resolution to `argus_capture_node.cpp` (D1): read each `/dev/videoN`'s i2c name from sysfs, map through the port table incl. the IMX219 aliases, log the resolved mapping at startup. Keep `sensor_ids` as an explicit override.
-- [ ] 1.2 Fail startup with a named message when a configured port has no live device (spec: *A missing camera is reported, not silently dropped*).
-- [ ] 1.3 Default capture geometry to 1456×1088; parameterise the rate from the trigger rate found in 0.2.
-- [ ] 1.4 Detect trigger mode and lock AE (gain + digital gain clamp) when it is active; leave AE free otherwise; log which branch was taken (spec: *Exposure is stable under external trigger*).
-- [ ] 1.5 Add the calibration/geometry cross-check: refuse to publish when the loaded calibration's image size or sensor family disagrees with the live capture configuration.
-- [ ] 1.6 Publish per-frame Argus timestamps (already the case) and add a set-skew/drop counter suitable for the health requirement — expose it on a diagnostics topic or as throttled logging with the measured spread.
-- [ ] 1.7 Build on the board in the `cuvslam-foxy:tx2` container and verify: all 4 topics publish at the trigger rate, mapping log matches 0.1, brightness p2p < 5 luma levels over 30 s (spec: *Brightness holds steady*).
+- [x] 1.1 Done. Verified live: `port c (imx296 2-001a) -> sensor-id 0 -> cam1` … `port f -> sensor-id 3 -> cam4`. `sensor_ids` override kept, and it warns that the mapping is then unverified.
+- [x] 1.2 Done — throws `no camera on port(s): <list> — refusing to start a partially populated rig`.
+- [x] 1.3 Done — defaults 1456×1088 @ 30 fps (the trigger's rate); running live at that geometry.
+- [x] 1.4 Done — reads `/sys/module/imx296/parameters/trigger_mode`; logs `external trigger active -> locking AE (gain 16.0-16.0, dgain 4.0-4.0)`. `ae_lock=auto|on|off` overrides.
+- [~] 1.5 Implemented (optional `calib_dir` param; compares `image_width/height` and a new `sensor:` key against the live rig, warns when the file does not state a sensor). **Not yet exercised** — it needs the IMX296 calibration from §2 to test against.
+- [x] 1.6 Done — **and it found two real bugs, both invisible on the old rig:**
+
+  1. *The published timestamp was not the sensor's.* The node stamped frames with `EGLStream::IFrame::getTime()`, which is the consumer-side frame time: measured live it put the cameras ~7 ms apart **in the order the capture loop visits them** (cam4 −7.0, cam1 0, cam2 +6.8, cam3 +13.8 ms) — it was reporting the loop's own phase. Fixed by taking the kernel SOF time from `ICaptureMetadata::getSensorTimestamp()`. Under 30–86 ms of free-running IMX219 skew this was undetectable; on a 1 µs rig it is the whole measurement. **The bundler and the fused node's `ts0` have been consuming these timestamps all along.**
+  2. *Pairing frames by loop position is not a set.* Each camera's EGLStream queue advances independently, so one sweep can return frame k from one camera and k+1 from the next — reported as ~35 ms skew. Replaced with a nearest-frame matcher over an 8-deep per-camera history (same matching the VO needs in §4).
+
+  With both fixed: **worst skew 1 µs per 5 s window, per-camera offsets 0 µs, 2 over-limit sets total (both at startup)** — the node's own measurement now agrees with the V4L2 baseline in 0.4.
+- [~] 1.7 Built and run on the board (scratch workspace `/media/nvidia/workspace/bev_build_test`, `cuvslam-foxy:tx2`). Mapping and AE log as expected; all four topics publish. 30 s measurement (`scripts/port/luma_stability.py`):
+
+  | topic | frames | rate | gaps | luma mean | p2p | sd |
+  |---|---|---|---|---|---|---|
+  | /cam1 | 593 | 30.00/s | 183 | 99.2 | 4.1 | 1.10 |
+  | /cam2 | 576 | 30.00/s | 211 | 128.0 | 6.9 | 1.51 |
+  | /cam3 | 625 | 30.00/s | 172 | 139.7 | 4.8 | 1.23 |
+  | /cam4 | 821 | 30.00/s | 55 | 141.4 | 5.3 | 1.08 |
+
+  Two things left open:
+  - **Brightness**: the AE limit cycle is gone (171 % of mean → 3–5 %), but p2p 4.1–6.9 does not clear the spec's "< 5 levels" on all four. The residual is periodic and looks like **mains flicker** (50 Hz lighting beating with the 30 Hz trigger), which is a scene property, not an AE fault — needs confirming under daylight or DC light before either passing it or changing the threshold. Do **not** relax the spec until that is measured.
+  - **Dropped frames**: the median interval is 33.3 ms (30 Hz) but 55–211 gaps per 30 s, i.e. ~20 Hz effective. This is the known CPU cost of the modular path (1.58 MB memcpy + DDS per frame per camera); the fused node exists precisely to avoid it. Re-measure there in §4 before treating it as a defect.
 
 ## 2. Intrinsics for the IMX296 modules
 

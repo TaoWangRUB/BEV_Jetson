@@ -1,22 +1,44 @@
 // 4-camera Argus capture node for ROS 2 Foxy (TX2/J106 BEV rig).
 //
 // Uses the libargus C++ API directly (the nvidia runtime mounts libnvargus into
-// the container), so it needs no tegra gstreamer plugin. Opens N IMX219 cameras
-// at a chosen sensor mode, acquires frames, extracts each frame's luma (Y) plane
-// — which is exactly the grayscale image cuVSLAM wants — and publishes it as
-// sensor_msgs/Image (mono8) on /camN/image_raw with the capture timestamp.
+// the container), so it needs no tegra gstreamer plugin. Opens the cameras on the
+// requested carrier ports at a chosen sensor mode, acquires frames, extracts each
+// frame's luma (Y) plane — which is exactly the grayscale image cuVSLAM wants —
+// and publishes it as sensor_msgs/Image (mono8) on /camN/image_raw with that
+// frame's own capture timestamp.
+//
+// The rig is 4x IMX296 global-shutter on ports C-F, driven by an external hardware
+// trigger, so every camera exposes on the same edge (measured skew 1 us). Two things
+// follow, and both are load-bearing:
+//   - cameras are addressed by PORT, resolved to an Argus sensor-id at runtime
+//     (Argus numbers in /dev/video bind order, which is not port order);
+//   - in trigger mode the exposure IS the trigger pulse width, so AE is locked.
+// IMX219 modules on the same ports still work — the port table matches either family.
 //
 // Build/run inside cuvslam-foxy:tx2 with the Argus socket + /dev mounted, and the
 // jetson_multimedia_api headers bind-mounted for the include path.
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <deque>
+#include <fstream>
+#include <map>
+#include <sstream>
+#include <string>
 #include <thread>
 #include <vector>
+
+#include <dirent.h>
+#include <yaml-cpp/yaml.h>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
 #include <Argus/Argus.h>
+#include <EGLStream/ArgusCaptureMetadata.h>
 #include <EGLStream/EGLStream.h>
 #include <EGLStream/FrameConsumer.h>
 #include <EGLStream/NV/ImageNativeBuffer.h>
@@ -26,18 +48,121 @@
 
 using namespace Argus;
 
+namespace {
+
+// Physical carrier port -> the i2c name the sensor on it reports. IMX296 sits at
+// 0x1a/0x18 where IMX219 sits at 0x10/0x12, so the same port reports a different
+// name depending on which module is fitted; match either family.
+struct PortEntry { const char* port; const char* imx296; const char* imx219; };
+constexpr PortEntry kPortTable[] = {
+    {"a", nullptr,  "1-0010"},
+    {"b", nullptr,  "1-0012"},
+    {"c", "2-001a", "2-0010"},
+    {"d", "2-0018", "2-0012"},
+    {"e", "7-001a", "7-0010"},
+    {"f", "7-0018", "7-0012"},
+};
+
+struct CameraNode { int sensor_id; std::string family; std::string i2c; };
+
+// Resolve port -> Argus sensor-id from sysfs. Argus assigns sensor-ids in /dev/video
+// bind order, which is NOT port order and is not stable across boots: binding port F
+// before E was observed live to give video4=7-0012 (port f) and video5=7-0010 (port e),
+// which shifts every hard-coded index by one and silently mislabels the whole rig —
+// extrinsics then belong to the wrong images. So never hard-code it; read it.
+std::map<std::string, CameraNode> scan_video_nodes() {
+  std::vector<int> nodes;
+  if (DIR* d = opendir("/sys/class/video4linux")) {
+    while (dirent* e = readdir(d)) {
+      int n = -1;
+      if (std::sscanf(e->d_name, "video%d", &n) == 1) nodes.push_back(n);
+    }
+    closedir(d);
+  }
+  std::sort(nodes.begin(), nodes.end());  // numeric order == Argus sensor-id order
+
+  std::map<std::string, CameraNode> out;
+  for (size_t sid = 0; sid < nodes.size(); ++sid) {
+    std::ifstream f("/sys/class/video4linux/video" + std::to_string(nodes[sid]) + "/name");
+    std::string name;  // e.g. "vi-output, imx296 2-001a"
+    if (!std::getline(f, name)) continue;
+    const auto sp = name.rfind(' ');
+    if (sp == std::string::npos) continue;
+    const std::string i2c = name.substr(sp + 1);
+    for (const auto& p : kPortTable) {
+      if (p.imx296 && i2c == p.imx296) out[p.port] = {static_cast<int>(sid), "imx296", i2c};
+      else if (p.imx219 && i2c == p.imx219) out[p.port] = {static_cast<int>(sid), "imx219", i2c};
+    }
+  }
+  return out;
+}
+
+// The IMX296 driver exposes Fast Trigger mode as a module parameter, not a control.
+bool external_trigger_active() {
+  std::ifstream f("/sys/module/imx296/parameters/trigger_mode");
+  int v = 0;
+  return static_cast<bool>(f >> v) && v == 1;
+}
+
+// OpenCV writes "%YAML:1.0" (no space), which is not a valid YAML directive — strip it
+// and the document marker, same as the VO nodes do.
+YAML::Node load_opencv_yaml(const std::string& path) {
+  std::ifstream f(path);
+  if (!f) throw std::runtime_error("cannot open " + path);
+  std::stringstream ss;
+  std::string line;
+  while (std::getline(f, line)) {
+    if (line.rfind("%YAML", 0) == 0 || line == "---") continue;
+    ss << line << "\n";
+  }
+  return YAML::Load(ss.str());
+}
+
+}  // namespace
+
 class ArgusCaptureNode : public rclcpp::Node {
  public:
   ArgusCaptureNode() : Node("argus_capture") {
-    sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {1, 2, 3, 4});
+    ports_ = declare_parameter<std::vector<std::string>>("ports", {"c", "d", "e", "f"});
     topics_ = declare_parameter<std::vector<std::string>>(
         "topics", {"/cam1/image_raw", "/cam2/image_raw", "/cam3/image_raw", "/cam4/image_raw"});
     frame_ids_ = declare_parameter<std::vector<std::string>>(
         "frame_ids", {"cam1", "cam2", "cam3", "cam4"});
-    width_ = declare_parameter<int>("width", 1640);
-    height_ = declare_parameter<int>("height", 1232);
-    fps_ = declare_parameter<int>("fps", 20);
-    n_ = sensor_ids_.size();
+    width_ = declare_parameter<int>("width", 1456);    // IMX296 native
+    height_ = declare_parameter<int>("height", 1088);
+    fps_ = declare_parameter<int>("fps", 30);          // set by the trigger when triggered
+    // A set whose frames span more than this is not a set. cuVSLAM's Multicamera gate
+    // is 1 ms; the triggered rig measures 1 us, so anything near the limit is a fault.
+    max_skew_us_ = declare_parameter<int>("max_skew_us", 1000);
+    // Empty (default) = resolve from sysfs. Set it only to override a resolution you
+    // have already checked by hand — it bypasses the port mapping entirely.
+    auto forced = declare_parameter<std::vector<int64_t>>("sensor_ids", std::vector<int64_t>{});
+    // "auto" locks AE only when the driver is actually in external-trigger mode.
+    ae_lock_mode_ = declare_parameter<std::string>("ae_lock", "auto");
+    ae_gain_ = declare_parameter<std::vector<double>>("ae_gain", {16.0, 16.0});
+    ae_dgain_ = declare_parameter<std::vector<double>>("ae_dgain", {4.0, 4.0});
+    // Optional: refuse to publish under a calibration measured on another rig.
+    calib_dir_ = declare_parameter<std::string>("calib_dir", "");
+
+    n_ = ports_.size();
+    if (n_ == 0) throw std::runtime_error("no ports requested");
+    if (topics_.size() < n_ || frame_ids_.size() < n_)
+      throw std::runtime_error("topics/frame_ids shorter than ports");
+
+    resolve_sensor_ids(forced);
+    ts_history_.resize(n_);
+    off_us_.assign(n_, 0);
+
+    trigger_active_ = external_trigger_active();
+    ae_lock_ = (ae_lock_mode_ == "1" || ae_lock_mode_ == "true" || ae_lock_mode_ == "on") ||
+               (ae_lock_mode_ == "auto" && trigger_active_);
+
+    if (ae_lock_)
+      RCLCPP_INFO(get_logger(), "%s -> locking AE (gain %.1f-%.1f, dgain %.1f-%.1f)",
+                  trigger_active_ ? "external trigger active" : "ae_lock requested",
+                  ae_gain_[0], ae_gain_[1], ae_dgain_[0], ae_dgain_[1]);
+
+    if (!calib_dir_.empty()) check_calibration();
 
     // Best-effort sensor-data QoS: high-rate camera streams must never let a slow
     // reliable subscriber back-pressure (and block) the Argus capture thread.
@@ -48,7 +173,9 @@ class ArgusCaptureNode : public rclcpp::Node {
       throw std::runtime_error("Argus setup failed");
     running_ = true;
     worker_ = std::thread([this] { capture_loop(); });
-    RCLCPP_INFO(get_logger(), "Argus capture up: %zu cameras @ %dx%d", n_, width_, height_);
+    RCLCPP_INFO(get_logger(), "Argus capture up: %zu cameras @ %dx%d, trigger %s, AE %s",
+                n_, width_, height_, trigger_active_ ? "external" : "free-running",
+                ae_lock_ ? "locked" : "auto");
   }
 
   ~ArgusCaptureNode() override {
@@ -59,6 +186,60 @@ class ArgusCaptureNode : public rclcpp::Node {
   }
 
  private:
+  // Map each requested port to an Argus sensor-id, and say out loud what was found —
+  // a mislabelled rig is invisible in the images and fatal in the extrinsics.
+  void resolve_sensor_ids(const std::vector<int64_t>& forced) {
+    if (!forced.empty()) {
+      if (forced.size() != n_) throw std::runtime_error("sensor_ids override length != ports length");
+      sensor_ids_ = forced;
+      families_.assign(n_, "override");
+      RCLCPP_WARN(get_logger(), "sensor_ids overridden by parameter — port mapping NOT verified");
+      return;
+    }
+    const auto found = scan_video_nodes();
+    std::vector<std::string> missing;
+    sensor_ids_.resize(n_);
+    families_.resize(n_);
+    for (size_t i = 0; i < n_; ++i) {
+      const auto it = found.find(ports_[i]);
+      if (it == found.end()) { missing.push_back(ports_[i]); continue; }
+      sensor_ids_[i] = it->second.sensor_id;
+      families_[i] = it->second.family;
+      RCLCPP_INFO(get_logger(), "  port %s (%s %s) -> sensor-id %d -> %s",
+                  ports_[i].c_str(), it->second.family.c_str(), it->second.i2c.c_str(),
+                  it->second.sensor_id, frame_ids_[i].c_str());
+    }
+    if (!missing.empty()) {
+      std::string list;
+      for (const auto& m : missing) list += (list.empty() ? "" : ", ") + m;
+      throw std::runtime_error("no camera on port(s): " + list +
+                               " — refusing to start a partially populated rig");
+    }
+  }
+
+  // Applying a calibration measured on another sensor or another resolution is a slow,
+  // silent drift rather than a crash, so make it a startup error instead.
+  void check_calibration() {
+    for (size_t i = 0; i < n_; ++i) {
+      const std::string path = calib_dir_ + "/" + frame_ids_[i] + ".yaml";
+      YAML::Node y = load_opencv_yaml(path);
+      const int w = y["image_width"].as<int>(), h = y["image_height"].as<int>();
+      if (w != width_ || h != height_)
+        throw std::runtime_error(path + ": calibrated at " + std::to_string(w) + "x" +
+                                 std::to_string(h) + " but capturing at " +
+                                 std::to_string(width_) + "x" + std::to_string(height_));
+      if (y["sensor"] && families_[i] != "override") {
+        const auto s = y["sensor"].as<std::string>();
+        if (s != families_[i])
+          throw std::runtime_error(path + ": calibrated on " + s + " but port " + ports_[i] +
+                                   " carries " + families_[i]);
+      } else if (!y["sensor"]) {
+        RCLCPP_WARN(get_logger(), "%s does not state which sensor it was measured on", path.c_str());
+      }
+    }
+    RCLCPP_INFO(get_logger(), "calibration in %s matches the live rig", calib_dir_.c_str());
+  }
+
   // Headless EGLDisplay: in a container there is no window system, so Argus's
   // fallback eglGetDisplay(EGL_DEFAULT_DISPLAY) fails. Get a display straight
   // from the GPU device via EGL_EXT_platform_device (no X needed) and hand it to
@@ -136,10 +317,99 @@ class ArgusCaptureNode : public rclcpp::Node {
           interface_cast<ISourceSettings>(requests_[i].get())->setSensorMode(m); break;
         }
       }
-      interface_cast<ISourceSettings>(requests_[i].get())->setFrameDurationRange(Range<uint64_t>(1e9 / fps_));
+      auto* isrc = interface_cast<ISourceSettings>(requests_[i].get());
+      isrc->setFrameDurationRange(Range<uint64_t>(1e9 / fps_));
+
+      // Under external trigger the exposure IS the trigger pulse width, so AE cannot
+      // move its main actuator (the driver logs "ignoring <n>") and hunts on gain
+      // instead — a measured 3.5 Hz limit cycle swinging 150 luma levels peak-to-peak,
+      // 171% of the mean. Clamping gain and locking AE removes it (p2p 150.5 -> 0.8)
+      // at the same mean brightness. Free-running capture is left untouched.
+      if (ae_lock_) {
+        auto* ireq_ac = interface_cast<IRequest>(requests_[i].get());
+        auto* iac = interface_cast<IAutoControlSettings>(ireq_ac->getAutoControlSettings());
+        if (iac) {
+          isrc->setGainRange(Range<float>(ae_gain_[0], ae_gain_[1]));
+          iac->setIspDigitalGainRange(Range<float>(ae_dgain_[0], ae_dgain_[1]));
+          iac->setAeLock(true);
+        } else {
+          RCLCPP_WARN(get_logger(), "cam idx %zu: no IAutoControlSettings — AE left free", i);
+        }
+      }
       isession->repeat(requests_[i].get());
     }
     return true;
+  }
+
+  // The frame's SENSOR timestamp — the kernel SOF time, i.e. when the sensor actually
+  // started this exposure. NOT IFrame::getTime(), which is the EGLStream frame time and
+  // therefore consumer-side: measured live, it put the four cameras ~7 ms apart in the
+  // order the capture loop happens to visit them (cam4 -7.0, cam1 0, cam2 +6.8,
+  // cam3 +13.8 ms), i.e. it was reporting this loop's own phase. On the free-running
+  // IMX219 rig that was invisible under 30-86 ms of real skew; on a rig triggered to
+  // 1 us it is the whole measurement. Sensor timestamps need setMetadataEnable(true).
+  uint64_t sensor_timestamp(EGLStream::Frame* frame, EGLStream::IFrame* iframe) {
+    if (auto* iacm = interface_cast<EGLStream::IArgusCaptureMetadata>(frame)) {
+      if (auto* imeta = interface_cast<ICaptureMetadata>(iacm->getMetadata()))
+        return imeta->getSensorTimestamp();
+    }
+    if (!warned_no_metadata_) {
+      RCLCPP_WARN(get_logger(), "no capture metadata — falling back to EGLStream frame time, "
+                  "which is consumer-side and NOT comparable across cameras");
+      warned_no_metadata_ = true;
+    }
+    return iframe->getTime();
+  }
+
+  // Inter-camera skew, measured the only way that means anything: by matching frames
+  // that came from the SAME trigger edge.
+  //
+  // One pass of the capture loop takes one frame from each camera, but each camera's
+  // EGLStream queue advances on its own, so a sweep can hand back frame k from one
+  // camera and frame k+1 from the next. Comparing them by loop position measures the
+  // loop's phase, not the rig's sync — it reported ~35 ms (one frame period at 30 Hz)
+  // on a rig whose V4L2-measured skew is 1.0 us. So keep a short history per camera and
+  // match each of camera 0's frames to the NEAREST frame from every other camera; the
+  // spread of a matched set is the real skew, and a set that cannot be matched within
+  // half a frame period is a genuinely broken set.
+  void measure_set_skew(const std::vector<uint64_t>& latest) {
+    for (size_t i = 0; i < n_; ++i) {
+      auto& h = ts_history_[i];
+      if (h.empty() || h.back() != latest[i]) h.push_back(latest[i]);
+      while (h.size() > kHistory) h.pop_front();
+    }
+    const uint64_t t0 = latest[0];
+    uint64_t lo = t0, hi = t0;
+    for (size_t i = 1; i < n_; ++i) {
+      uint64_t best = 0; int64_t best_d = INT64_MAX;
+      for (uint64_t t : ts_history_[i]) {
+        const int64_t d = std::llabs(static_cast<int64_t>(t) - static_cast<int64_t>(t0));
+        if (d < best_d) { best_d = d; best = t; }
+      }
+      if (best_d == INT64_MAX) return;             // nothing to match against yet
+      lo = std::min(lo, best);
+      hi = std::max(hi, best);
+      // Signed offset per camera: a constant one is a pipeline/phase offset, a wandering
+      // one is a sync problem. The two need different fixes, so report them apart.
+      off_us_[i] = (static_cast<int64_t>(best) - static_cast<int64_t>(t0)) / 1000;
+    }
+    const int64_t spread_us = static_cast<int64_t>(hi - lo) / 1000;
+    ++sets_;
+    if (spread_us > max_skew_us_) ++bad_sets_;
+    if (spread_us > worst_skew_us_) worst_skew_us_ = spread_us;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_report_ >= std::chrono::seconds(5)) {
+      std::string offs;
+      for (size_t i = 1; i < n_; ++i)
+        offs += " " + frame_ids_[i] + "=" + std::to_string(off_us_[i]) + "us";
+      RCLCPP_INFO(get_logger(), "sets %ld, worst skew %ld us in the last window "
+                  "(limit %d us), over-limit sets %ld total; offsets vs %s:%s",
+                  sets_, worst_skew_us_, max_skew_us_, bad_sets_,
+                  frame_ids_[0].c_str(), offs.c_str());
+      worst_skew_us_ = 0;  // worst per window, not since boot
+      last_report_ = now;
+    }
   }
 
   void capture_loop() {
@@ -149,8 +419,11 @@ class ArgusCaptureNode : public rclcpp::Node {
 
     std::vector<bool> first(n_, true);
     std::vector<int> timeouts(n_, 0);
+    std::vector<uint64_t> set_ts(n_, 0);
+    int empty_sweeps = 0;
     try {
       while (running_ && rclcpp::ok()) {
+        size_t got = 0;
         for (size_t i = 0; i < n_; ++i) {
           UniqueObj<EGLStream::Frame> frame(ifc[i]->acquireFrame(1000000000));  // 1s timeout
           auto* iframe = interface_cast<EGLStream::IFrame>(frame.get());
@@ -169,8 +442,27 @@ class ArgusCaptureNode : public rclcpp::Node {
             if (rc != 0 && timeouts[i]++ % 30 == 0)
               RCLCPP_WARN(get_logger(), "cam idx %zu: copyToNvBuffer rc=%d", i, rc);
           }
-          publish_y(i, iframe->getTime());
+          const uint64_t t_ns = sensor_timestamp(frame.get(), iframe);
+          set_ts[i] = t_ns;
+          ++got;
+          publish_y(i, t_ns);
           if (first[i]) { RCLCPP_INFO(get_logger(), "cam idx %zu: first frame published", i); first[i] = false; }
+        }
+
+        if (got == n_) {
+          empty_sweeps = 0;
+          measure_set_skew(set_ts);
+        } else if (got == 0) {
+          // Distinguish "the trigger stopped" from "a camera died": in trigger mode a
+          // sensor with no pulse produces no frames at all, and every camera goes quiet
+          // together because they share one edge.
+          if (++empty_sweeps % 5 == 1) {
+            if (trigger_active_)
+              RCLCPP_ERROR(get_logger(), "no frames from ANY camera while the driver is in "
+                           "external-trigger mode — is the pulse generator running?");
+            else
+              RCLCPP_ERROR(get_logger(), "no frames from any camera");
+          }
         }
       }
     } catch (const std::exception& e) {
@@ -212,8 +504,16 @@ class ArgusCaptureNode : public rclcpp::Node {
   }
 
   std::vector<int64_t> sensor_ids_;
-  std::vector<std::string> topics_, frame_ids_;
-  int width_, height_, fps_;
+  std::vector<std::string> ports_, families_, topics_, frame_ids_;
+  std::string ae_lock_mode_, calib_dir_;
+  std::vector<double> ae_gain_, ae_dgain_;
+  bool trigger_active_ = false, ae_lock_ = false, warned_no_metadata_ = false;
+  int width_, height_, fps_, max_skew_us_;
+  int64_t sets_ = 0, bad_sets_ = 0, worst_skew_us_ = 0;
+  static constexpr size_t kHistory = 8;                 // ~0.27 s at 30 Hz
+  std::vector<std::deque<uint64_t>> ts_history_;
+  std::vector<int64_t> off_us_;
+  std::chrono::steady_clock::time_point last_report_ = std::chrono::steady_clock::now();
   size_t n_;
   std::vector<rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr> pubs_;
   UniqueObj<CameraProvider> provider_;

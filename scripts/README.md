@@ -38,6 +38,7 @@ See [docs/extrinsic_calibration.md](../docs/extrinsic_calibration.md) for the fu
 | [port/grab_views.py](port/grab_views.py) | TX2 | grab frames from ROS 2 image topics and/or montage 4 cams + panorama |
 | [port/sync_check.py](port/sync_check.py) | TX2 | measure the timestamp spread across N camera topics |
 | [port/topic_rate.py](port/topic_rate.py) | TX2 | count messages on topics over a window and print the rate |
+| [port/luma_stability.py](port/luma_stability.py) | TX2 | brightness stability per camera (catches AE gain-hunting under external trigger) |
 
 ## stream/ — quick live camera preview (no ROS/docker)
 
