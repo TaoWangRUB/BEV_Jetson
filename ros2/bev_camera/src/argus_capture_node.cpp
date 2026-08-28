@@ -148,6 +148,16 @@ class ArgusCaptureNode : public rclcpp::Node {
     ae_lock_mode_ = declare_parameter<std::string>("ae_lock", "auto");
     ae_gain_ = declare_parameter<std::vector<double>>("ae_gain", {16.0, 16.0});
     ae_dgain_ = declare_parameter<std::vector<double>>("ae_dgain", {4.0, 4.0});
+    // Publish only every Nth frame. For a CALIBRATION recording: the solvers want ~4 Hz
+    // images, while four cameras at 30 Hz of 1456x1088 mono is ~190 MB/s, which the SD
+    // cannot absorb — and a bag that drops frames on its own drops them unevenly and
+    // without saying so. Decimating here is explicit and keeps whole synchronised sets:
+    // every camera skips the same trigger edges, so a published set is still a set.
+    // Timing metadata is published for EVERY frame regardless, so the frame-time fit and
+    // the drop accounting still see the full sequence.
+    publish_every_n_ = declare_parameter<int>("publish_every_n", 1);
+    if (publish_every_n_ < 1) throw std::runtime_error("publish_every_n must be >= 1");
+
     // Timestamp convention: exposure midpoint (what a VIO wants) vs raw SOF.
     stamp_midpoint_ = declare_parameter<bool>("stamp_exposure_midpoint", true);
     // 0 = use the exposure Argus reports. Set it to the trigger pulse width when the
@@ -196,9 +206,13 @@ class ArgusCaptureNode : public rclcpp::Node {
       throw std::runtime_error("Argus setup failed");
     running_ = true;
     worker_ = std::thread([this] { capture_loop(); });
-    RCLCPP_INFO(get_logger(), "Argus capture up: %zu cameras @ %dx%d, trigger %s, AE %s",
+    std::string decim;
+    if (publish_every_n_ > 1)
+      decim = ", images decimated 1/" + std::to_string(publish_every_n_) + " (~" +
+              std::to_string(fps_ / publish_every_n_) + " Hz); metadata stays full rate";
+    RCLCPP_INFO(get_logger(), "Argus capture up: %zu cameras @ %dx%d, trigger %s, AE %s%s",
                 n_, width_, height_, trigger_active_ ? "external" : "free-running",
-                ae_lock_ ? "locked" : "auto");
+                ae_lock_ ? "locked" : "auto", decim.c_str());
   }
 
   ~ArgusCaptureNode() override {
@@ -587,7 +601,11 @@ class ArgusCaptureNode : public rclcpp::Node {
           const FrameTiming ft = frame_timing(frame.get(), iframe);
           set_ts[i] = ft.stamp_ns;
           ++got;
-          publish_meta(i, ft, publish_y(i, ft.stamp_ns));
+          // Decimate on the frame NUMBER, not on a per-camera counter: all four cameras
+          // fire on the same trigger edge and carry the same number, so they skip the
+          // same edges and a published set stays a complete set.
+          const bool send = (publish_every_n_ == 1) || (ft.number % publish_every_n_ == 0);
+          publish_meta(i, ft, send && publish_y(i, ft.stamp_ns));
           if (first[i]) { RCLCPP_INFO(get_logger(), "cam idx %zu: first frame published", i); first[i] = false; }
         }
 
@@ -657,7 +675,7 @@ class ArgusCaptureNode : public rclcpp::Node {
   bool stamp_midpoint_ = true, logged_exposure_ = false;
   int exposure_us_ = 0;
   uint64_t rig_exposure_ns_ = 0;
-  int width_, height_, fps_, max_skew_us_;
+  int width_, height_, fps_, max_skew_us_, publish_every_n_ = 1;
   int64_t sets_ = 0, bad_sets_ = 0, worst_skew_us_ = 0;
   static constexpr size_t kHistory = 8;                 // ~0.27 s at 30 Hz
   std::vector<std::deque<uint64_t>> ts_history_;
