@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <deque>
 #include <fstream>
+#include <memory>
 #include <map>
 #include <sstream>
 #include <string>
@@ -40,6 +41,8 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
+
+#include <bev_camera/msg/frame_meta.hpp>
 
 #include <Argus/Argus.h>
 #include <EGLStream/ArgusCaptureMetadata.h>
@@ -150,6 +153,8 @@ class ArgusCaptureNode : public rclcpp::Node {
     // 0 = use the exposure Argus reports. Set it to the trigger pulse width when the
     // driver is in trigger mode and the commanded exposure is being ignored.
     exposure_us_ = declare_parameter<int>("exposure_us", 0);
+    // Directory for the per-camera frame-time CSVs. Empty = do not write them.
+    frame_log_dir_ = declare_parameter<std::string>("frame_log_dir", "");
     // Optional: refuse to publish under a calibration measured on another rig.
     calib_dir_ = declare_parameter<std::string>("calib_dir", "");
 
@@ -172,11 +177,20 @@ class ArgusCaptureNode : public rclcpp::Node {
                   ae_gain_[0], ae_gain_[1], ae_dgain_[0], ae_dgain_[1]);
 
     if (!calib_dir_.empty()) check_calibration();
+    if (!frame_log_dir_.empty()) open_frame_logs();
 
     // Best-effort sensor-data QoS: high-rate camera streams must never let a slow
     // reliable subscriber back-pressure (and block) the Argus capture thread.
-    for (size_t i = 0; i < n_; ++i)
+    for (size_t i = 0; i < n_; ++i) {
       pubs_.push_back(create_publisher<sensor_msgs::msg::Image>(topics_[i], rclcpp::SensorDataQoS()));
+      // /camN/image_raw -> /camN/frame_meta. Timing metadata travels as its own message
+      // rather than inside the image, so a bag keeps it even when images are throttled.
+      std::string base = topics_[i];
+      const auto slash = base.rfind('/');
+      base = (slash == std::string::npos) ? base : base.substr(0, slash);
+      meta_pubs_.push_back(create_publisher<bev_camera::msg::FrameMeta>(
+          base + "/frame_meta", rclcpp::SensorDataQoS()));
+    }
 
     if (!setup_argus())
       throw std::runtime_error("Argus setup failed");
@@ -190,6 +204,7 @@ class ArgusCaptureNode : public rclcpp::Node {
   ~ArgusCaptureNode() override {
     running_ = false;
     if (worker_.joinable()) worker_.join();
+    for (auto& f : frame_logs_) if (f) f->close();
     for (auto fd : dmabufs_) if (fd != -1) NvBufferDestroy(fd);
     if (egl_display_ != EGL_NO_DISPLAY) eglTerminate(egl_display_);
   }
@@ -350,6 +365,37 @@ class ArgusCaptureNode : public rclcpp::Node {
     return true;
   }
 
+  // Per-camera frame-time CSV, in the shape j106-record-sync.py writes (and
+  // j106-frametime.py fits): one row per frame, plus a header block stating what the
+  // numbers mean. A recording without that provenance cannot be re-interpreted later —
+  // which clock, which trigger rate, which exposure, and whether Delta was ever measured.
+  void open_frame_logs() {
+    frame_logs_.resize(n_);
+    for (size_t i = 0; i < n_; ++i) {
+      const std::string path = frame_log_dir_ + "/" + frame_ids_[i] + ".csv";
+      frame_logs_[i] = std::make_unique<std::ofstream>(path);
+      if (!frame_logs_[i]->is_open()) {
+        RCLCPP_ERROR(get_logger(), "cannot open %s — frame logging disabled", path.c_str());
+        frame_logs_.clear();
+        return;
+      }
+      *frame_logs_[i]
+          << "# " << frame_ids_[i] << " frame times — CLOCK_MONOTONIC, timestamp = "
+          << (stamp_midpoint_ ? "exposure midpoint (SOF - exposure/2)" : "SOF (start of readout)")
+          << "\n"
+          << "# port=" << ports_[i] << " sensor=" << families_[i]
+          << " resolution=" << width_ << "x" << height_
+          << " trigger=" << (trigger_active_ ? "external" : "FREE-RUNNING — UNSYNCHRONISED")
+          << " rate_hz=" << fps_ << "\n"
+          << "# exposure_source=" << (exposure_us_ > 0 ? "trigger pulse width (exposure_us param)"
+                                                       : "as reported by Argus — NOT the pulse width")
+          << "\n"
+          << "# delta_camera_imu = UNMEASURED (see README 4.7)\n"
+          << "#timestamp [ns],seq,capture_id,t_sof [ns],exposure [ns]\n";
+    }
+    RCLCPP_INFO(get_logger(), "writing frame-time CSVs to %s", frame_log_dir_.c_str());
+  }
+
   // The instant this frame corresponds to, on CLOCK_MONOTONIC.
   //
   // Two corrections, and both are needed:
@@ -376,12 +422,23 @@ class ArgusCaptureNode : public rclcpp::Node {
   // Under the hardware trigger the true exposure IS the trigger pulse width, and Argus
   // reports the value it commanded, which the driver may be ignoring — so exposure_us
   // overrides the reported value when the pulse width is known.
-  uint64_t frame_timestamp(EGLStream::Frame* frame, EGLStream::IFrame* iframe) {
+  struct FrameTiming {
+    uint64_t stamp_ns = 0;      // what the image and the metadata are stamped with
+    uint64_t sof_ns = 0;        // raw kernel SOF, kept so the correction stays undoable
+    uint64_t exposure_ns = 0;
+    uint32_t capture_id = 0;    // session-side: what Argus produced
+    uint64_t number = 0;        // consumer-side: what reached us
+  };
+
+  FrameTiming frame_timing(EGLStream::Frame* frame, EGLStream::IFrame* iframe) {
+    FrameTiming ft;
+    ft.number = iframe->getNumber();
     uint64_t sof = 0, exposure_ns = 0;
     if (auto* iacm = interface_cast<EGLStream::IArgusCaptureMetadata>(frame)) {
       if (auto* imeta = interface_cast<ICaptureMetadata>(iacm->getMetadata())) {
         sof = imeta->getSensorTimestamp();
         exposure_ns = imeta->getSensorExposureTime();
+        ft.capture_id = imeta->getCaptureId();
       }
     }
     if (sof == 0) {
@@ -390,7 +447,8 @@ class ArgusCaptureNode : public rclcpp::Node {
                     "which is consumer-side and NOT comparable across cameras or with the IMU");
         warned_no_metadata_ = true;
       }
-      return iframe->getTime();
+      ft.stamp_ns = iframe->getTime();
+      return ft;
     }
     // ONE exposure for the whole rig, not one per camera. All four expose on the same
     // trigger edge for the same pulse width, so the exposure is identical by
@@ -414,7 +472,33 @@ class ArgusCaptureNode : public rclcpp::Node {
                     "exposure_us to the pulse width once it is known");
       logged_exposure_ = true;
     }
-    return stamp_midpoint_ ? sof - exposure_ns / 2 : sof;
+    ft.sof_ns = sof;
+    ft.exposure_ns = exposure_ns;
+    ft.stamp_ns = stamp_midpoint_ ? sof - exposure_ns / 2 : sof;
+    return ft;
+  }
+
+  // The image and its timing metadata carry the SAME stamp, so a consumer can join them
+  // without guessing, and the CSV row is the same record in the form a frame-time fit
+  // wants. Both sequence counters are recorded: capture_id is what the Argus session
+  // produced, frame_number is what was delivered here — when they diverge, the gap says
+  // where the frame was lost.
+  void publish_meta(size_t i, const FrameTiming& ft) {
+    bev_camera::msg::FrameMeta m;
+    m.header.stamp = rclcpp::Time(static_cast<int64_t>(ft.stamp_ns));
+    m.header.frame_id = frame_ids_[i];
+    m.frame_number = ft.number;
+    m.capture_id = ft.capture_id;
+    m.sof_ns = ft.sof_ns;
+    m.exposure_ns = ft.exposure_ns;
+    meta_pubs_[i]->publish(m);
+
+    // Flush per row: the node is normally stopped with a signal, and an unflushed tail
+    // means a truncated last line — which a parser reports as corruption rather than as
+    // the missing frames it looks like. 120 small writes/s costs nothing.
+    if (i < frame_logs_.size() && frame_logs_[i])
+      *frame_logs_[i] << ft.stamp_ns << ',' << ft.number << ',' << ft.capture_id << ','
+                      << ft.sof_ns << ',' << ft.exposure_ns << std::endl;
   }
 
   // Inter-camera skew, measured the only way that means anything: by matching frames
@@ -498,10 +582,11 @@ class ArgusCaptureNode : public rclcpp::Node {
             if (rc != 0 && timeouts[i]++ % 30 == 0)
               RCLCPP_WARN(get_logger(), "cam idx %zu: copyToNvBuffer rc=%d", i, rc);
           }
-          const uint64_t t_ns = frame_timestamp(frame.get(), iframe);
-          set_ts[i] = t_ns;
+          const FrameTiming ft = frame_timing(frame.get(), iframe);
+          set_ts[i] = ft.stamp_ns;
           ++got;
-          publish_y(i, t_ns);
+          publish_y(i, ft.stamp_ns);
+          publish_meta(i, ft);
           if (first[i]) { RCLCPP_INFO(get_logger(), "cam idx %zu: first frame published", i); first[i] = false; }
         }
 
@@ -575,6 +660,9 @@ class ArgusCaptureNode : public rclcpp::Node {
   std::chrono::steady_clock::time_point last_report_ = std::chrono::steady_clock::now();
   size_t n_;
   std::vector<rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr> pubs_;
+  std::vector<rclcpp::Publisher<bev_camera::msg::FrameMeta>::SharedPtr> meta_pubs_;
+  std::string frame_log_dir_;
+  std::vector<std::unique_ptr<std::ofstream>> frame_logs_;
   UniqueObj<CameraProvider> provider_;
   std::vector<UniqueObj<CaptureSession>> sessions_;
   std::vector<UniqueObj<OutputStream>> streams_;

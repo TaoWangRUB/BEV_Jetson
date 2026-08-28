@@ -381,6 +381,38 @@ phase error falls as 1/√N. The slope `a` also absorbs the fact that the STM32 
 Tegra (−12.3 ppm de-slewed), which would otherwise make a once-calibrated offset go stale.
 `j106-frametime.py` and `j106-record-sync.py` in the J106 repo do this.
 
+#### What the capture node records
+
+Every frame is published twice: the pixels on `/camN/image_raw`, and its timing on
+`/camN/frame_meta` (`bev_camera/msg/FrameMeta`) under the **same stamp**, so a bag keeps the
+timing even when images are throttled or dropped for bandwidth. The message carries the exposure
+midpoint (`header.stamp`), the raw `sof_ns` so the correction stays undoable, the `exposure_ns` it
+was derived from, and **two** sequence counters:
+
+| field | side | what a gap in it means |
+|---|---|---|
+| `capture_id` | Argus session | the session did not produce that capture |
+| `frame_number` | consumer | it was produced but never reached us |
+
+Set `frame_log_dir` and the node also writes `camN.csv` per camera — the same rows in the shape
+`j106-frametime.py` fits, under a provenance header (clock, timestamp convention, port, sensor,
+resolution, trigger state and rate, exposure source, and Δ marked `UNMEASURED`):
+
+```
+#timestamp [ns],seq,capture_id,t_sof [ns],exposure [ns]
+11521506304000,355,355,11521508797000,4986000
+```
+
+Measured over 30 s with no subscribers: 859 frames per camera at 29.86–30.03/s, with **0–3 lost
+frames**, all in a single startup gap. In steady state `seq` advances exactly one per trigger edge
+(351 of 353 intervals in a shorter run), so it is a valid index for a frame-time fit — but the
+startup transient is not, so drop the leading rows or reject any row where `seq` disagrees with
+`round(Δt / period)`.
+
+⚠️ A subscriber can make it look far worse than it is: measuring with a Python node that decodes
+all four streams showed 55–211 gaps per 30 s. That loss is in delivery, not capture. Judge capture
+health from `frame_meta`/the CSV, not from what a consumer received.
+
 **4. Δ is stated, with provenance — or marked unmeasured.** After the fit, exactly one unknown is
 left: the offset between the camera timebase and the IMU timebase. It is **one constant for the whole
 rig**, not one per camera, because a shared trigger edge leaves no per-camera component. Two routes:
