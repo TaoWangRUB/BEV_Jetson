@@ -10,8 +10,14 @@ evidence to choose on:
               the solver has no way to know - it just fits worse.
   novelty     fifty frames of the target in the same place say little more than one.
               What a fisheye calibration needs is the PERIPHERY, so frames are picked
-              greedily for the coverage they ADD rather than for being sharp somewhere
-              already well covered.
+              for the coverage they ADD rather than for being sharp somewhere already
+              well covered.
+
+Coverage is counted against a QUOTA PER CELL, not merely "seen at least once". Selecting
+for cells-newly-covered stops caring about a cell the moment it holds one detection, and
+leaves cells with a single observation beside cells with a hundred - which reads as full
+coverage and is not: a distortion coefficient fitted from one view of a region is
+unconstrained there, and the periphery is where that bites.
 
 Solvers also need this: tartancalib on nine thousand frames is not a long run, it is
 an abandoned one. A few hundred well-spread frames is the working size.
@@ -65,6 +71,8 @@ def main():
     ap.add_argument("indir")
     ap.add_argument("--out", required=True)
     ap.add_argument("-n", "--count", type=int, default=150)
+    ap.add_argument("--quota", type=int, default=10,
+                    help="detections wanted per grid cell before it stops attracting frames")
     ap.add_argument("--min-sharp", type=float, default=0.0,
                     help="drop frames below this Laplacian variance (0 = keep all)")
     a = ap.parse_args()
@@ -82,15 +90,20 @@ def main():
         raise SystemExit("no frames had a detectable target")
     print("%d frames have >=4 tags (%.0f%%)" % (len(scored), 100 * len(scored) / len(files)))
 
-    # Greedy: repeatedly take the frame adding the most uncovered cells, breaking ties on
-    # sharpness. Once nothing new is left, fall back to the sharpest remaining, so the
-    # tail of the selection is at least high quality rather than arbitrary.
-    covered, picked = set(), []
-    pool = list(scored)
+    # Greedy against the per-cell DEFICIT: each frame is worth how much of the remaining
+    # shortfall it fills, so a cell keeps attracting frames until it has `quota` of them
+    # rather than dropping out after the first. Ties go to the sharper frame.
+    need = np.full((GRID, GRID), a.quota, dtype=int)
+    picked, pool = [], list(scored)
     while pool and len(picked) < a.count:
-        best = max(pool, key=lambda s: (len(s["cells"] - covered), s["sharp"]))
+        def value(s):
+            return (sum(min(1, need[r, c]) for (r, c) in s["cells"]), s["sharp"])
+        best = max(pool, key=value)
+        if value(best)[0] == 0:                # every cell satisfied: stop, do not pad
+            break
+        for (r, c) in best["cells"]:
+            need[r, c] = max(0, need[r, c] - 1)
         picked.append(best)
-        covered |= best["cells"]
         pool.remove(best)
 
     os.makedirs(a.out, exist_ok=True)
@@ -109,9 +122,16 @@ def main():
     for row in occ:
         print("  " + " ".join("%4d" % v for v in row))
     empty = int((occ == 0).sum())
-    print("\n%d/%d cells empty%s" % (empty, GRID * GRID,
-          "  <-- the target never went there; re-shoot rather than trust the edges"
-          if empty else "  (full coverage)"))
+    thin = int(((occ > 0) & (occ < a.quota)).sum())
+    print("\n%d/%d cells empty, %d thin (<%d detections)"
+          % (empty, GRID * GRID, thin, a.quota))
+    if empty:
+        print("  the target never reached those cells - re-shoot rather than trust the "
+              "fit there; the solver will still return a confident number")
+    elif thin:
+        print("  thin cells are under-constrained; more sweeps over them would help")
+    else:
+        print("  uniform coverage at the requested quota")
 
 
 if __name__ == "__main__":
