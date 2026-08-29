@@ -29,7 +29,8 @@ set(TEGRA_LIB_DIR "/usr/lib/aarch64-linux-gnu/tegra" CACHE PATH "tegra libs")
 add_executable(argus_capture_node src/argus_capture_node.cpp)
 target_include_directories(argus_capture_node PRIVATE
   "${MMAPI_ROOT}/argus/include"
-  "${MMAPI_ROOT}/include")
+  "${MMAPI_ROOT}/include"
+  include)
 target_link_directories(argus_capture_node PRIVATE "${TEGRA_LIB_DIR}")
 target_link_libraries(argus_capture_node
   nvargus_socketclient nveglstream_camconsumer nvbuf_utils
@@ -39,4 +40,8 @@ ament_target_dependencies(argus_capture_node rclcpp sensor_msgs std_msgs)
 rosidl_target_interfaces(argus_capture_node ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 install(TARGETS argus_capture_node DESTINATION lib/${PROJECT_NAME})
+# The port map and the frame-timing rule are shared with bev_cuvslam's fused node: one
+# definition, so the two cannot drift apart.
+install(DIRECTORY include/ DESTINATION include)
+ament_export_include_directories(include)
 ament_package()

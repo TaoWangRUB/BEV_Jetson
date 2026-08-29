@@ -6,14 +6,22 @@
 // extrinsics (rig_extrinsics.yaml), builds the cuVSLAM rig, synchronizes 4 image
 // topics, calls Track(), and publishes nav_msgs/Odometry + a TF.
 //
-// NOTE on sync: the IMX219 cameras have no hardware trigger and free-run at slightly
-// different rates (measured 4-cam spread ~30–86 ms). cuVSLAM wants <1 ms. We bundle the
-// latest frame per camera (driver = index 0 triggers Track) and feed the set one unified
-// timestamp so cuVSLAM accepts it. The cameras did NOT capture the same instant, so this
-// is the rig's main accuracy limiter under motion — real fix is hardware frame sync.
+// SYNC: the rig is hardware-triggered (4x IMX296 on one STM32 edge, measured skew 1 us),
+// so the cameras really do capture the same instant and each frame carries its own
+// exposure-midpoint timestamp (README 4.7). A set is four frames whose stamps span less
+// than max_skew_us — cuVSLAM's own Multicamera gate is 1 ms — and a set that fails is
+// DROPPED AND COUNTED, never re-stamped.
+//
+// The previous version had to bundle the latest frame per camera and hand cuVSLAM one
+// synthesised timestamp, because the free-running IMX219 rig could not produce a
+// coherent set at all. That workaround is gone: it threw away the per-frame time on the
+// one rig that has it, and it made an unsynchronised set look acceptable instead of
+// making it visible.
 
 #include <array>
+#include <chrono>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -84,23 +92,19 @@ class CuvslamMulticamNode : public rclcpp::Node {
         "image_topics", {"/cam1/image_raw", "/cam2/image_raw", "/cam3/image_raw", "/cam4/image_raw"});
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
-    // Staleness bound for the latest-frame bundler. The IMX219 rig free-runs with no HW
-    // trigger; measured 4-cam spread is ~30–86 ms (slowest cam ~14 Hz). 120 ms accepts
-    // most sets (~8 Hz odom; 80 ms gave ~5 Hz). Higher = more rate but more inter-camera
-    // skew (accuracy cost under motion). Lower it once frames are hardware-synced.
-    int slop_ms = declare_parameter<int>("sync_slop_ms", 120);
+    // A set whose frames span more than this is not a set. cuVSLAM's Multicamera gate is
+    // 1 ms; the triggered rig measures 1 us, so anything near the limit is a fault, not
+    // something to widen the window for.
+    max_skew_ns_ = static_cast<int64_t>(declare_parameter<int>("max_skew_us", 1000)) * 1000;
+    // How far back to look for a matching frame from the other cameras. A few frame
+    // periods is plenty when they share a trigger edge; more just delays noticing a fault.
+    history_ = static_cast<size_t>(declare_parameter<int>("match_history", 8));
 
     if (cams_.size() != 4 || topics_.size() != 4)
       throw std::runtime_error("this node is wired for exactly 4 cameras");
 
     build_tracker();
 
-    // Sync the 4 image streams (ApproximateTime: IMX219 has no hardware trigger).
-    // Latest-frame bundler (the IMX219 rig has no hardware trigger, and ApproximateTime
-    // can't reliably match 4 drifting, best-effort, different-rate streams). Cache the
-    // newest frame per camera; the driver camera (index 0) triggers a Track() using the
-    // most-recent frame from the others, as long as they're within max_stale_ns_.
-    max_stale_ns_ = static_cast<int64_t>(slop_ms) * 1000000;
     auto qos = rclcpp::SensorDataQoS();
     for (size_t i = 0; i < 4; ++i)
       subs_[i] = create_subscription<Img>(topics_[i], qos,
@@ -108,7 +112,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
 
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("cuvslam/odometry", 10);
     tf_bc_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
-    RCLCPP_INFO(get_logger(), "cuVSLAM multicam VO up: 4 cameras, mode=Multicamera (visual only).");
+    RCLCPP_INFO(get_logger(), "cuVSLAM multicam VO up: 4 cameras, mode=Multicamera (visual only), "
+                "sets gated at %.1f ms skew on real per-frame timestamps.", max_skew_ns_ / 1e6);
   }
 
  private:
@@ -138,43 +143,64 @@ class CuvslamMulticamNode : public rclcpp::Node {
     tracker_ = std::make_unique<cuvslam::Odometry>(rig, cfg);
   }
 
-  // Cache every frame; only the driver camera (index 0) triggers a Track().
+  // Keep a short history per camera; camera 0 arriving tries to form a set from it.
+  // Matching is by TIMESTAMP, never by arrival order — the streams are separate DDS
+  // subscriptions and their delivery order says nothing about which trigger edge a frame
+  // came from.
   void on_frame(size_t idx, const Img::ConstSharedPtr& m) {
-    {
-      std::lock_guard<std::mutex> lk(mtx_);
-      latest_[idx] = m;
-    }
-    if (idx != 0) return;
-
     std::array<Img::ConstSharedPtr, 4> msgs;
     {
       std::lock_guard<std::mutex> lk(mtx_);
-      msgs = latest_;
-    }
-    const int64_t t0 = rclcpp::Time(m->header.stamp).nanoseconds();
-    for (size_t i = 1; i < 4; ++i) {
-      if (!msgs[i]) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "no frame yet from %s", cams_[i].c_str());
-        return;
+      auto& h = hist_[idx];
+      h.push_back(m);
+      while (h.size() > history_) h.pop_front();
+      if (idx != 0) return;
+
+      const int64_t t0 = rclcpp::Time(m->header.stamp).nanoseconds();
+      msgs[0] = m;
+      int64_t lo = t0, hi = t0;
+      for (size_t i = 1; i < 4; ++i) {
+        int64_t best_d = INT64_MAX;
+        for (const auto& cand : hist_[i]) {
+          const int64_t t = rclcpp::Time(cand->header.stamp).nanoseconds();
+          if (std::llabs(t - t0) < best_d) { best_d = std::llabs(t - t0); msgs[i] = cand; }
+        }
+        if (!msgs[i]) {
+          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "no frame yet from %s",
+                               cams_[i].c_str());
+          return;
+        }
+        const int64_t t = rclcpp::Time(msgs[i]->header.stamp).nanoseconds();
+        lo = std::min(lo, t);
+        hi = std::max(hi, t);
       }
-      const int64_t dt = std::llabs(t0 - rclcpp::Time(msgs[i]->header.stamp).nanoseconds());
-      if (dt > max_stale_ns_) {
+      const int64_t skew = hi - lo;
+      ++sets_;
+      if (skew > max_skew_ns_) {
+        ++dropped_sets_;
+        // Do not widen the window and do not re-stamp: on a triggered rig this means the
+        // trigger, a camera, or the capture node is at fault, and the VO cannot fix it.
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-            "%s stale by %.0f ms (> %ld ms) — skipping set", cams_[i].c_str(), dt / 1e6, max_stale_ns_ / 1000000);
+            "set skew %.1f ms > %.1f ms — dropped (%ld of %ld). Is the trigger running?",
+            skew / 1e6, max_skew_ns_ / 1e6, dropped_sets_, sets_);
         return;
       }
+      if (skew > worst_skew_ns_) worst_skew_ns_ = skew;
     }
+    report();
     track_and_publish(msgs);
   }
 
+  void report() {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_report_ < std::chrono::seconds(5)) return;
+    RCLCPP_INFO(get_logger(), "sets %ld, worst skew %.0f us in the last window, %ld dropped total",
+                sets_, worst_skew_ns_ / 1e3, dropped_sets_);
+    worst_skew_ns_ = 0;
+    last_report_ = now;
+  }
+
   void track_and_publish(const std::array<Img::ConstSharedPtr, 4>& msgs) {
-    // The IMX219 rig has no hardware trigger, so ApproximateTime-matched frames are
-    // tens of ms apart — but cuVSLAM's Multicamera mode hard-rejects sets whose
-    // timestamps differ by >1 ms. Present the matched set under one unified timestamp
-    // (cam0's) so cuVSLAM accepts it. Caveat: the cameras did NOT capture the same
-    // instant, so cross-camera geometry is skewed under motion (degrades tracking).
-    // The real fix is hardware frame sync; this unblocks bring-up. See sync_slop_ms.
-    const int64_t base_ts = rclcpp::Time(msgs[0]->header.stamp).nanoseconds();
     std::vector<cv_bridge::CvImageConstPtr> holds(4);  // keep pixel buffers alive during Track()
     cuvslam::Odometry::ImageSet images;
     images.reserve(4);
@@ -189,7 +215,9 @@ class CuvslamMulticamNode : public rclcpp::Node {
       im.encoding = cuvslam::ImageData::Encoding::MONO;
       im.data_type = cuvslam::ImageData::DataType::UINT8;
       im.is_gpu_mem = false;
-      im.timestamp_ns = base_ts;  // unified per-set timestamp (see note above)
+      // Each image carries ITS OWN exposure-midpoint time. The set already passed the
+      // skew gate, so cuVSLAM's 1 ms check passes on the real timestamps.
+      im.timestamp_ns = rclcpp::Time(msgs[i]->header.stamp).nanoseconds();
       im.camera_index = i;
       images.push_back(im);
     }
@@ -244,9 +272,11 @@ class CuvslamMulticamNode : public rclcpp::Node {
   std::vector<std::string> cams_, topics_;
   std::unique_ptr<cuvslam::Odometry> tracker_;
   std::array<rclcpp::Subscription<Img>::SharedPtr, 4> subs_;
-  std::array<Img::ConstSharedPtr, 4> latest_;
+  std::array<std::deque<Img::ConstSharedPtr>, 4> hist_;
+  size_t history_ = 8;
+  int64_t max_skew_ns_ = 1000000, worst_skew_ns_ = 0, sets_ = 0, dropped_sets_ = 0;
+  std::chrono::steady_clock::time_point last_report_ = std::chrono::steady_clock::now();
   std::mutex mtx_;
-  int64_t max_stale_ns_{120000000};
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_bc_;
 };
