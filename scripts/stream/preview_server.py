@@ -20,6 +20,7 @@ Cells match the rig seen from above (config/rig/rig_layout.yaml):
   # then open http://<board>:8080/   (links there switch quality)
 """
 import argparse
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,9 +54,14 @@ _dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_APRILTAG_36h11)
 
 
 class Preview(Node):
-    def __init__(self, detect, show):
-        super().__init__("preview_server")
+    def __init__(self, detect, show, detect_every=1):
+        # Unique node name per process: this script gets killed and restarted often, and
+        # a fresh participant reusing a dead one's name is a way to end up with a node
+        # that exists, subscribes, and silently receives nothing.
+        super().__init__("preview_server_%d" % os.getpid())
         self.detect = detect
+        self.detect_every = max(1, detect_every)
+        self.frame_no = {}
         # Subscribe ONLY to what is displayed. On a 6-core TX2 already running capture,
         # the IMU and a bag recorder, deserialising and encoding four 1.58 MB streams
         # pushed load to 8 and starved the stream until the page appeared dead. One
@@ -148,7 +154,14 @@ PAGE = (b"<html><body style='margin:0;background:#111;color:#ccc;font:13px syste
         b"<a style='color:#6cf' href='/?scale=0.35&fps=6&q=70'>wifi</a> &middot; "
         b"<a style='color:#6cf' href='/?scale=0.6&fps=10&q=80'>ethernet</a> &middot; "
         b"<a style='color:#6cf' href='/?scale=1.0&fps=10&q=90'>full</a></div>"
-        b"<img src='/stream%s' style='width:100%%'></body></html>")
+        # Fit the VIEWPORT, not the window width: at width:100% a 4:3 frame overflows
+        # the height on a short screen and the coverage grid - which sits at the bottom
+        # of the cell and is the thing being watched - scrolls out of sight.
+        # height:93vh makes it FILL the viewport height (scaling up if the encoded
+        # frame is smaller); max-width keeps a wide frame from overflowing sideways.
+        # width:auto alone rendered it at its intrinsic size, i.e. tiny.
+        b"<img src='/stream%s' style='height:93vh;max-width:100vw;object-fit:contain;"
+        b"display:block;margin:0 auto'></body></html>")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -156,6 +169,30 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        # /reset clears the coverage grid. Coverage accumulated across takes is
+        # misleading: it shows cells filled by a sweep whose frames are in a bag that
+        # was discarded, so the operator stops early believing a region is covered when
+        # the CURRENT recording has never seen it.
+        if self.path.split("?")[0] == "/debug":
+            with lock:
+                info = {k: v.shape for k, v in latest.items()}
+                sq = state["seq"]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(("frames held: %s\nseq: %d\nshow: %s\n"
+                              % (info, sq, sorted(SHOW))).encode())
+            return
+        if self.path.split("?")[0] == "/reset":
+            with lock:
+                for v in coverage.values():
+                    v[:] = 0
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"coverage cleared\n")
+            return
+
         q = parse_qs(urlparse(self.path).query)
         f = lambda k, d: float(q.get(k, [d])[0])
         scale = max(0.1, min(1.0, f("scale", 0.4)))
@@ -201,6 +238,9 @@ class Server(ThreadingHTTPServer):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--detect-every", type=int, default=1,
+                    help="run tag detection on every Nth frame. Detection is the expensive "
+                         "part; the target does not move far in 100 ms")
     ap.add_argument("--detect", nargs="*", default=["cam1"],
                     help="cameras to run live tag detection on (the current stage's)")
     ap.add_argument("--show", nargs="*", default=None,
@@ -210,11 +250,30 @@ def main():
     global SHOW
     SHOW = set(a.show if a.show else a.detect)
     rclpy.init()
-    node = Preview(set(a.detect), SHOW)
-    threading.Thread(target=rclpy.spin, args=(node,), daemon=True).start()
+    node = Preview(set(a.detect), SHOW, a.detect_every)
+
+    # ROS spins on the MAIN thread and HTTP serves on a background one, not the other
+    # way round. With rclpy.spin in a side thread the subscriptions silently delivered
+    # nothing - the node existed, the topics were publishing, another process in the
+    # same container received them fine, and this one sat at seq 0 forever with no
+    # error anywhere. Serving HTTP from a thread has no such problem.
+    srv = Server(("0.0.0.0", a.port), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
     print("preview on http://0.0.0.0:%d/ showing %s, detecting on %s"
           % (a.port, ",".join(sorted(SHOW)), ",".join(a.detect)), flush=True)
-    Server(("0.0.0.0", a.port), Handler).serve_forever()
+    # A spin_once LOOP, not rclpy.spin(). Measured in this container: rclpy.spin()
+    # delivers zero callbacks while an identical node driven by spin_once receives
+    # normally - no error, no warning, the subscription simply never fires. Not worth
+    # root-causing mid-session when the loop is equivalent and works.
+    try:
+        while rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.2)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,23 @@
+# IMX296 intrinsics, solved 2026-08-29 with tartancalib (omni-radtan / Mei).
+#
+# MODEL CHOICE IS NOT FREE HERE. These lenses are 1.78 mm, D190/H160 on 1/3" - a genuine
+# >180 deg fisheye, confirmed three ways: the vendor spec, our fits (~192 deg diagonal),
+# and OmniNxt hard-coding fov=190 for the same class. The equidistant model
+# (pinhole-equi / Kannala-Brandt) CANNOT represent rays past 90 deg incidence and
+# diverged on every camera after hours of optimisation.
+#
+# Consequence: cuVSLAM cannot consume these cameras directly - its only fisheye model is
+# that same equidistant one. The virtual-stereo path (rectify to pinhole, feed cuVSLAM
+# plain Pinhole) is required, not preferred. See README 4.8.
+#
+# intrinsics = [xi, fx, fy, cx, cy]; distortion = radtan [k1, k2, p1, p2]
+#
+# cam2: port d, front_right.  reprojection error 0.30/0.36 px
+camera_model: omni
+distortion_model: radtan
+intrinsics: [2.110694404949495, 1647.1416980226434, 1644.720953438964, 716.072674641761, 550.7335046136295]
+distortion_coeffs: [-0.1029673343290885, 0.3623494139819643, -0.0006382309462123196, 0.003286437955499216]
+resolution: [1456, 1088]
+sensor: imx296
+port: d
+position: front_right

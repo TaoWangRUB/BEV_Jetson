@@ -1,0 +1,85 @@
+# Pairwise extrinsics for the 4x IMX296 rig, solved 2026-08-29.
+#
+# Each block is T_<b>_<a>: the pose of camera <a> expressed in camera <b>'s frame,
+# from simultaneous views of the AprilGrid. Solved with KALIBR's own AprilGrid detector
+# and pose estimate (GridDetector + observation.T_t_c) rather than a hand-rolled
+# correspondence - reimplementing the board model by hand plateaued at 11 px residual
+# and produced a metre of baseline error before that was abandoned.
+#
+# CONSISTENCY (the reason to trust these): four pairs solved independently, from
+# separate recordings, agree on baseline to 1.5 mm - 147.7, 148.7, 149.2, 149.2 mm -
+# and each rotation is within ~2 deg of the 90 deg a square rig demands.
+#
+# RING CLOSURE cam3 -> cam1 -> cam2 -> cam4 -> cam3:
+#   rotation    4.75 deg   (hops sum to 363.6 deg; the right pair at 92.2 deg is the
+#                           outlier and had the fewest poses, 105)
+#   translation 4.9 mm     over a ~0.6 m loop, i.e. 0.8%
+#
+# The rotation closure is the weak part. Treat these as good to ~1 deg per hop.
+
+left:            # cam3 expressed in cam1
+  from: cam3
+  to: cam1
+  simultaneous_poses: 153
+  angular_spread_deg: {median: 0.55, p90: 0.88}
+  baseline_m: 0.1478
+  T_to_from:
+    - [-0.0162, -0.0878, -0.996, -0.1006]
+    - [0.068, 0.9937, -0.0887, -0.011]
+    - [0.9976, -0.0692, -0.0102, -0.1077]
+    - [0.0, 0.0, 0.0, 1.0]
+
+front:            # cam1 expressed in cam2
+  from: cam1
+  to: cam2
+  simultaneous_poses: 161
+  angular_spread_deg: {median: 0.68, p90: 1.25}
+  baseline_m: 0.1487
+  T_to_from:
+    - [-0.0069, -0.0693, -0.9976, -0.1019]
+    - [0.0352, 0.997, -0.0695, -0.0034]
+    - [0.9994, -0.0356, -0.0044, -0.1082]
+    - [0.0, 0.0, 0.0, 1.0]
+
+right:            # cam2 expressed in cam4
+  from: cam2
+  to: cam4
+  simultaneous_poses: 105
+  angular_spread_deg: {median: 0.65, p90: 1.11}
+  baseline_m: 0.1491
+  T_to_from:
+    - [-0.038, -0.066, -0.9971, -0.1011]
+    - [0.0794, 0.9945, -0.0689, -0.0074]
+    - [0.9961, -0.0818, -0.0326, -0.1094]
+    - [0.0, 0.0, 0.0, 1.0]
+
+rear:            # cam4 expressed in cam3
+  from: cam4
+  to: cam3
+  simultaneous_poses: 150
+  angular_spread_deg: {median: 0.55, p90: 0.98}
+  baseline_m: 0.1491
+  T_to_from:
+    - [-0.0023, -0.0888, -0.996, -0.1047]
+    - [0.0576, 0.9944, -0.0888, -0.0092]
+    - [0.9983, -0.0576, 0.0029, -0.1058]
+    - [0.0, 0.0, 0.0, 1.0]
+
+camera_imu:
+  # cam1 <- IMU, from kalibr_calibrate_imu_camera over 911 images at 9.4 Hz and 19717
+  # IMU samples at 204 Hz (the IMU rebuilt from the node's CSV: the bag itself held only
+  # 43 Hz, rosbag2's writer having dropped the rest).
+  reference_camera: cam1
+  T_cam_imu:
+    - [-0.69512, 0.718663, -0.018196, 0.013997]
+    - [0.046069, 0.06979, 0.996497, -0.045506]
+    - [0.717416, 0.691847, -0.08162, -0.100174]
+    - [0.0, 0.0, 0.0, 1.0]
+  # DELTA, the camera<->IMU time offset. MEASURED, no longer 'UNMEASURED'.
+  timeshift_cam_imu_s: -0.008062483899950911
+  residuals: {reprojection_px: 0.366, gyro_rad_s: 0.00156, accel_m_s2: 0.0424}
+  # -8.06 ms is larger than our stamping discipline should leave. Two known unapplied
+  # terms sit in that direction: the MPU-9250's DLPF group delay (gyro 2.9 ms, accel
+  # 1.88 ms, logged but deliberately not applied) and any offset between what Argus
+  # reports as SOF and the true exposure start - note half the measured 16.1 ms readout
+  # is 8.05 ms, which is suspiciously close. Worth resolving before trusting VIO scale.
