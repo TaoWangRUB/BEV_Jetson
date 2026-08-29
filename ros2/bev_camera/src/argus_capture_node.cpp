@@ -601,10 +601,21 @@ class ArgusCaptureNode : public rclcpp::Node {
           const FrameTiming ft = frame_timing(frame.get(), iframe);
           set_ts[i] = ft.stamp_ns;
           ++got;
-          // Decimate on the frame NUMBER, not on a per-camera counter: all four cameras
-          // fire on the same trigger edge and carry the same number, so they skip the
-          // same edges and a published set stays a complete set.
-          const bool send = (publish_every_n_ == 1) || (ft.number % publish_every_n_ == 0);
+          // Decimate on the TRIGGER EDGE INDEX, derived from the frame's own SOF time -
+          // never on the per-camera frame number. Each camera's Argus counter starts
+          // when ITS session starts, so counters are offset between cameras: with
+          // every_n=3, cam1 published edges 0,3,6... while cam3 published 2,5,8...,
+          // and the two never published the same instant. Measured as a constant 66.7 ms
+          // (two edges) offset, which silently destroyed a whole pairwise-extrinsic
+          // recording - every frame simultaneous at the sensor, none simultaneous in the
+          // bag. All cameras share one trigger edge, so the edge index derived from SOF
+          // is identical across them to within the 1 us skew.
+          bool send = true;
+          if (publish_every_n_ > 1) {
+            const int64_t period_ns = 1000000000LL / std::max(1, fps_);
+            const int64_t edge = (static_cast<int64_t>(ft.sof_ns) + period_ns / 2) / period_ns;
+            send = (edge % publish_every_n_) == 0;
+          }
           publish_meta(i, ft, send && publish_y(i, ft.stamp_ns));
           if (first[i]) { RCLCPP_INFO(get_logger(), "cam idx %zu: first frame published", i); first[i] = false; }
         }
