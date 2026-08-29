@@ -1,3 +1,8 @@
+# cuVSLAM multicam VO on the hardware-triggered 4x IMX296 rig.
+#
+# The node subscribes to the four fisheyes and carves each into two virtual pinholes
+# before cuVSLAM sees anything - the raw cameras are ~192 deg and cuVSLAM's equidistant
+# model is capped below 180, so this is required rather than preferred. See README 4.8.
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
@@ -10,9 +15,12 @@ def generate_launch_description():
             name='cuvslam_multicam',
             output='screen',
             parameters=[{
-                # absolute paths recommended at runtime (these are repo-relative defaults)
-                'calib_dir': 'scripts/config/calib',
-                'rig_extrinsics': 'config/rig/rig_extrinsics_vo.yaml',  # calibrated + 180-deg roll folded in
+                # Absolute paths recommended at runtime; these are repo-relative defaults.
+                'calib_dir': 'config/calib/imx296_1456x1088',
+                # Ring-closed extrinsics. The node reads the rig_in_cam1 block, not the
+                # pairwise ones - a multi-camera solver wants one rigid rig.
+                'rig_extrinsics': 'config/rig/rig_extrinsics_imx296.yaml',
+                'virtual_stereo': 'config/rig/virtual_stereo_imx296.yaml',
                 'cameras': ['cam1', 'cam2', 'cam3', 'cam4'],
                 'image_topics': [
                     '/cam1/image_raw', '/cam2/image_raw',
@@ -20,7 +28,12 @@ def generate_launch_description():
                 ],
                 'odom_frame': 'odom',
                 'base_frame': 'base_link',
-                'sync_slop_ms': 20,   # IMX219 has no hw trigger -> generous slop
+                # A set whose frames span more than this is not a set. cuVSLAM's own
+                # Multicamera gate is 1 ms and the triggered rig measures 1 us, so
+                # anything near this limit is a trigger fault - do NOT widen it to make
+                # sets appear. The bundler that used to do exactly that is gone.
+                'max_skew_us': 1000,
+                'match_history': 8,
             }],
         ),
     ])
