@@ -78,8 +78,20 @@ camera_imu:
   # DELTA, the camera<->IMU time offset. MEASURED, no longer 'UNMEASURED'.
   timeshift_cam_imu_s: -0.008062483899950911
   residuals: {reprojection_px: 0.366, gyro_rad_s: 0.00156, accel_m_s2: 0.0424}
-  # -8.06 ms is larger than our stamping discipline should leave. Two known unapplied
-  # terms sit in that direction: the MPU-9250's DLPF group delay (gyro 2.9 ms, accel
-  # 1.88 ms, logged but deliberately not applied) and any offset between what Argus
-  # reports as SOF and the true exposure start - note half the measured 16.1 ms readout
-  # is 8.05 ms, which is suspiciously close. Worth resolving before trusting VIO scale.
+  # Delta VERIFIED as a real timestamp offset, not a fitting artifact: shifting every
+  # camera stamp by a known +10.000 ms moved the estimate by -10.000 ms (residual
+  # -1.2 us). Kalibr fits a continuous B-spline, so the offset is not quantised by the
+  # 200 Hz IMU rate - 8 ms is 1.6 samples and nothing about the rate forbids it.
+  #
+  # MECHANISM NOT YET ESTABLISHED. Half the J106-measured sensor readout is 8.05 ms
+  # against our 8.06 ms, which is a 10 us coincidence and the leading hypothesis: that
+  # Argus' getSensorTimestamp does not mark the instant we assume when computing the
+  # exposure midpoint. The MPU-9250's DLPF group delay (gyro 2.9 ms, logged and
+  # deliberately unapplied) is the other contributor.
+  #
+  # Why the mechanism matters rather than just the number: if it is the readout, the
+  # offset is CONSTANT and applying Delta fixes it for good. If it is mis-modelled
+  # exposure, it MOVES whenever the trigger pulse width changes - and the pulse width is
+  # the exposure on this rig. Settling it needs the trigger echo into a GPIO
+  # (auvidea-j106-tx2, hw-trigger/WIRING.md 4.4), which measures SOF against the trigger
+  # edge directly.
