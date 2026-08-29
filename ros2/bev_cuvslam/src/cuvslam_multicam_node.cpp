@@ -38,6 +38,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "cuvslam/cuvslam2.h"
+#include "bev_cuvslam/virtual_pinhole.hpp"
 
 namespace {
 
@@ -55,19 +56,37 @@ YAML::Node load_yaml(const std::string& path) {
   return YAML::Load(ss.str());
 }
 
-// Build a cuVSLAM Camera (intrinsics + fisheye distortion) from a KANNALA_BRANDT yaml.
-cuvslam::Camera load_intrinsics(const std::string& path) {
-  YAML::Node y = load_yaml(path);
-  cuvslam::Camera c;
-  c.size = {y["image_width"].as<int>(), y["image_height"].as<int>()};
-  YAML::Node pp = y["projection_parameters"];
-  c.focal = {pp["mu"].as<float>(), pp["mv"].as<float>()};
-  c.principal = {pp["u0"].as<float>(), pp["v0"].as<float>()};
-  YAML::Node dp = y["distortion_parameters"];
-  c.distortion.model = cuvslam::Distortion::Model::Fisheye;  // 4-coeff equidistant = OpenCV fisheye
-  c.distortion.parameters = {dp["k2"].as<float>(), dp["k3"].as<float>(),
-                             dp["k4"].as<float>(), dp["k5"].as<float>()};
-  return c;
+// 4x4 row-major matrix from yaml (rig_in_cam1 blocks).
+cv::Matx44d load_matrix4(const YAML::Node& n) {
+  cv::Matx44d M;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j) M(i, j) = n[i][j].as<double>();
+  return M;
+}
+
+// cuVSLAM Pose (quaternion xyzw + translation) from a 4x4. cuVSLAM uses the OpenCV
+// convention - x right, y down, z forward - which is what our extrinsics are already in.
+cuvslam::Pose pose_from_matrix(const cv::Matx44d& M) {
+  cuvslam::Pose p;
+  p.translation = {static_cast<float>(M(0,3)), static_cast<float>(M(1,3)), static_cast<float>(M(2,3))};
+  const double tr = M(0,0) + M(1,1) + M(2,2);
+  double q[4];  // w, x, y, z
+  if (tr > 0) {
+    const double t = std::sqrt(tr + 1.0) * 2.0;
+    q[0] = 0.25*t; q[1] = (M(2,1)-M(1,2))/t; q[2] = (M(0,2)-M(2,0))/t; q[3] = (M(1,0)-M(0,1))/t;
+  } else if (M(0,0) > M(1,1) && M(0,0) > M(2,2)) {
+    const double t = std::sqrt(1.0 + M(0,0) - M(1,1) - M(2,2)) * 2.0;
+    q[0] = (M(2,1)-M(1,2))/t; q[1] = 0.25*t; q[2] = (M(0,1)+M(1,0))/t; q[3] = (M(0,2)+M(2,0))/t;
+  } else if (M(1,1) > M(2,2)) {
+    const double t = std::sqrt(1.0 + M(1,1) - M(0,0) - M(2,2)) * 2.0;
+    q[0] = (M(0,2)-M(2,0))/t; q[1] = (M(0,1)+M(1,0))/t; q[2] = 0.25*t; q[3] = (M(1,2)+M(2,1))/t;
+  } else {
+    const double t = std::sqrt(1.0 + M(2,2) - M(0,0) - M(1,1)) * 2.0;
+    q[0] = (M(1,0)-M(0,1))/t; q[1] = (M(0,2)+M(2,0))/t; q[2] = (M(1,2)+M(2,1))/t; q[3] = 0.25*t;
+  }
+  p.rotation = {static_cast<float>(q[1]), static_cast<float>(q[2]),
+                static_cast<float>(q[3]), static_cast<float>(q[0])};  // x, y, z, w
+  return p;
 }
 
 // rig_from_<frame> pose from a node with t_xyz_m + q_wxyz (yaml is wxyz; cuVSLAM wants xyzw).
@@ -85,8 +104,9 @@ cuvslam::Pose load_pose(const YAML::Node& n) {
 class CuvslamMulticamNode : public rclcpp::Node {
  public:
   CuvslamMulticamNode() : Node("cuvslam_multicam") {
-    calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/calib");
-    rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics_vo.yaml");
+    calib_dir_ = declare_parameter<std::string>("calib_dir", "config/calib/imx296_1456x1088");
+    rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics_imx296.yaml");
+    vstereo_path_ = declare_parameter<std::string>("virtual_stereo", "config/rig/virtual_stereo_imx296.yaml");
     cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
     topics_ = declare_parameter<std::vector<std::string>>(
         "image_topics", {"/cam1/image_raw", "/cam2/image_raw", "/cam3/image_raw", "/cam4/image_raw"});
@@ -112,8 +132,9 @@ class CuvslamMulticamNode : public rclcpp::Node {
 
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("cuvslam/odometry", 10);
     tf_bc_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
-    RCLCPP_INFO(get_logger(), "cuVSLAM multicam VO up: 4 cameras, mode=Multicamera (visual only), "
-                "sets gated at %.1f ms skew on real per-frame timestamps.", max_skew_ns_ / 1e6);
+    RCLCPP_INFO(get_logger(), "cuVSLAM multicam VO up: 4 fisheyes -> %zu virtual pinholes, "
+                "mode=Multicamera (visual only), sets gated at %.1f ms skew on real per-frame "
+                "timestamps.", vpin_.size(), max_skew_ns_ / 1e6);
   }
 
  private:
@@ -125,14 +146,43 @@ class CuvslamMulticamNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "cuVSLAM %d.%d.%d — warming up GPU...", major, minor, patch);
     cuvslam::WarmUpGPU();
 
-    YAML::Node rig_y = load_yaml(rig_path_);
+    // Carve each fisheye into two virtual pinholes. cuVSLAM cannot consume the raw
+    // cameras at all: its only fisheye model is equidistant, capped below 180 deg, and
+    // these lenses fit ~192 deg. See virtual_pinhole.hpp.
+    const YAML::Node rig_y = load_yaml(rig_path_);
+    const YAML::Node vs_y = load_yaml(vstereo_path_);
+    const YAML::Node vp_y = vs_y["virtual_pinhole"];
+    const int vw = vp_y["width"].as<int>(), vh = vp_y["height"].as<int>();
+    const double vfov = vp_y["fov_deg"].as<double>();
+
     cuvslam::Rig rig;
     for (size_t i = 0; i < 4; ++i) {
-      cuvslam::Camera cam = load_intrinsics(calib_dir_ + "/" + cams_[i] + ".yaml");
-      cam.rig_from_camera = load_pose(rig_y["cameras"][cams_[i]]);
-      rig.cameras.push_back(cam);
-      RCLCPP_INFO(get_logger(), "  %s: %dx%d f=(%.1f,%.1f) c=(%.1f,%.1f)", cams_[i].c_str(),
-                  cam.size[0], cam.size[1], cam.focal[0], cam.focal[1], cam.principal[0], cam.principal[1]);
+      const auto omni = bev_cuvslam::LoadOmni(calib_dir_ + "/" + cams_[i] + ".yaml");
+      if (omni.width != vp_y["source_width"].as<int>(omni.width))
+        RCLCPP_WARN(get_logger(), "%s calibrated at %dx%d - check it matches the live rig",
+                    cams_[i].c_str(), omni.width, omni.height);
+      // rig frame IS cam1's frame, which is how rig_in_cam1 is expressed.
+      const cv::Matx44d rig_from_fisheye = load_matrix4(rig_y["rig_in_cam1"][cams_[i]]);
+      for (int k = 0; k < 2; ++k) {
+        const double yaw = (k == 0 ? -1.0 : +1.0) * CV_PI / 4.0;
+        vpin_.push_back(bev_cuvslam::BuildVirtualPinhole(omni, yaw, vw, vh, vfov));
+        const double c = std::cos(yaw), sn = std::sin(yaw);
+        const cv::Matx44d Ry(c,0,sn,0,  0,1,0,0,  -sn,0,c,0,  0,0,0,1);
+        cuvslam::Camera cam;
+        cam.size = {vw, vh};
+        cam.focal = {static_cast<float>(vpin_.back().focal), static_cast<float>(vpin_.back().focal)};
+        cam.principal = {static_cast<float>(vpin_.back().cx), static_cast<float>(vpin_.back().cy)};
+        // Pinhole with NO distortion: the remap already removed it. Anything else here
+        // would be applying the correction twice.
+        cam.distortion.model = cuvslam::Distortion::Model::Pinhole;
+        cam.distortion.parameters = {};
+        cam.rig_from_camera = pose_from_matrix(rig_from_fisheye * Ry);
+        rig.cameras.push_back(cam);
+        vsrc_.push_back(i);
+        RCLCPP_INFO(get_logger(), "  vcam %zu = %s %+.0f deg: %dx%d f=%.1f",
+                    vpin_.size() - 1, cams_[i].c_str(), yaw * 180.0 / CV_PI, vw, vh,
+                    vpin_.back().focal);
+      }
     }
     // No IMU in multicam mode (cuVSLAM v15 limitation).
 
@@ -140,6 +190,11 @@ class CuvslamMulticamNode : public rclcpp::Node {
     cfg.odometry_mode = cuvslam::Odometry::OdometryMode::Multicamera;
     cfg.multicam_mode = cuvslam::Odometry::MulticameraMode::Precision;
     cfg.use_gpu = true;
+    // Leave rectified_stereo_camera FALSE. Setting it swaps in the horizontal-only
+    // tracker, which cannot move vertically, and demands that paired cameras have
+    // identical rotation matrices to 1e-6 - our facing pinholes sit 1.0-1.4 deg apart.
+    // The default 2D LK tracker absorbs that residual instead.
+    cfg.rectified_stereo_camera = false;
     tracker_ = std::make_unique<cuvslam::Odometry>(rig, cfg);
   }
 
@@ -194,33 +249,41 @@ class CuvslamMulticamNode : public rclcpp::Node {
   void report() {
     const auto now = std::chrono::steady_clock::now();
     if (now - last_report_ < std::chrono::seconds(5)) return;
-    RCLCPP_INFO(get_logger(), "sets %ld, worst skew %.0f us in the last window, %ld dropped total",
-                sets_, worst_skew_ns_ / 1e3, dropped_sets_);
+    RCLCPP_INFO(get_logger(), "sets %ld, worst skew %.0f us in the last window, %ld dropped total, "
+                "remap %ld us for %zu virtual cameras",
+                sets_, worst_skew_ns_ / 1e3, dropped_sets_, remap_us_, vpin_.size());
     worst_skew_ns_ = 0;
     last_report_ = now;
   }
 
   void track_and_publish(const std::array<Img::ConstSharedPtr, 4>& msgs) {
-    std::vector<cv_bridge::CvImageConstPtr> holds(4);  // keep pixel buffers alive during Track()
+    std::vector<cv_bridge::CvImageConstPtr> holds(4);  // keep source buffers alive
+    for (uint32_t i = 0; i < 4; ++i) holds[i] = cv_bridge::toCvShare(msgs[i], "mono8");
+
+    // Remap each fisheye into its two virtual pinholes. The maps are built once at
+    // startup; this is a fixed-point bilinear gather, the cheapest form of remap.
+    const auto t_remap = std::chrono::steady_clock::now();
     cuvslam::Odometry::ImageSet images;
-    images.reserve(4);
-    for (uint32_t i = 0; i < 4; ++i) {
-      holds[i] = cv_bridge::toCvShare(msgs[i], "mono8");
-      const cv::Mat& g = holds[i]->image;
+    images.reserve(vpin_.size());
+    for (size_t k = 0; k < vpin_.size(); ++k) {
+      cv::remap(holds[vsrc_[k]]->image, vimg_[k], vpin_[k].map1, vpin_[k].map2, cv::INTER_LINEAR);
       cuvslam::Image im{};
-      im.pixels = g.data;
-      im.width = g.cols;
-      im.height = g.rows;
-      im.pitch = static_cast<int32_t>(g.step);
+      im.pixels = vimg_[k].data;
+      im.width = vimg_[k].cols;
+      im.height = vimg_[k].rows;
+      im.pitch = static_cast<int32_t>(vimg_[k].step);
       im.encoding = cuvslam::ImageData::Encoding::MONO;
       im.data_type = cuvslam::ImageData::DataType::UINT8;
       im.is_gpu_mem = false;
-      // Each image carries ITS OWN exposure-midpoint time. The set already passed the
-      // skew gate, so cuVSLAM's 1 ms check passes on the real timestamps.
-      im.timestamp_ns = rclcpp::Time(msgs[i]->header.stamp).nanoseconds();
-      im.camera_index = i;
+      // Each virtual camera inherits the exposure-midpoint stamp of the fisheye it was
+      // carved from. The set already passed the skew gate, so cuVSLAM's own 1 ms check
+      // passes on the real timestamps rather than on a synthesised one.
+      im.timestamp_ns = rclcpp::Time(msgs[vsrc_[k]]->header.stamp).nanoseconds();
+      im.camera_index = static_cast<uint32_t>(k);
       images.push_back(im);
     }
+    remap_us_ = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - t_remap).count();
 
     cuvslam::PoseEstimate est;
     try {
@@ -273,6 +336,11 @@ class CuvslamMulticamNode : public rclcpp::Node {
   std::unique_ptr<cuvslam::Odometry> tracker_;
   std::array<rclcpp::Subscription<Img>::SharedPtr, 4> subs_;
   std::array<std::deque<Img::ConstSharedPtr>, 4> hist_;
+  std::vector<bev_cuvslam::VirtualPinhole> vpin_;   // 8: two per fisheye
+  std::vector<size_t> vsrc_;                        // which fisheye feeds each virtual cam
+  std::array<cv::Mat, 8> vimg_;                     // remap destinations, reused each set
+  int64_t remap_us_ = 0;
+  std::string vstereo_path_;
   size_t history_ = 8;
   int64_t max_skew_ns_ = 1000000, worst_skew_ns_ = 0, sets_ = 0, dropped_sets_ = 0;
   std::chrono::steady_clock::time_point last_report_ = std::chrono::steady_clock::now();

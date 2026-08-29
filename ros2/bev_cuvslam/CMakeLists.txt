@@ -31,7 +31,7 @@ message(STATUS "cuVSLAM lib:    ${CUVSLAM_LIB}")
 
 add_executable(cuvslam_multicam_node src/cuvslam_multicam_node.cpp)
 target_include_directories(cuvslam_multicam_node PRIVATE
-  "${CUVSLAM_INCLUDE_DIR}/.." ${OpenCV_INCLUDE_DIRS})
+  "${CUVSLAM_INCLUDE_DIR}/.." ${OpenCV_INCLUDE_DIRS} include)
 target_link_libraries(cuvslam_multicam_node ${CUVSLAM_LIB} ${OpenCV_LIBS} yaml-cpp)
 ament_target_dependencies(cuvslam_multicam_node
   rclcpp sensor_msgs nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs
