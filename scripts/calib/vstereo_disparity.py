@@ -4,7 +4,7 @@ Epipolar residual only says rows line up. Disparity says whether the pair resolv
 Search range comes from the geometry, not a guess: d = f*B/Z, so f=548, B~0.149 m and a
 nearest range of 0.35 m needs ~230 px.
 """
-import sys, numpy as np, cv2, yaml, rosbag
+import os, sys, numpy as np, cv2, yaml, rosbag
 from cv_bridge import CvBridge
 
 W, H, FOV = 768, 576, 160.0
@@ -13,7 +13,7 @@ K = np.array([[focal,0,W/2.],[0,focal,H/2.],[0,0,1]]); D = np.zeros(5)
 def rot_y(a):
     c,s=np.cos(a),np.sin(a); return np.array([[c,0,s],[0,1,0],[-s,0,c]])
 
-ext = yaml.safe_load(open("sys.argv[1] if len(sys.argv)>1 else "/data/ext.yaml""))
+ext = yaml.safe_load(open(sys.argv[1]))
 sgbm = cv2.StereoSGBM_create(
     minDisparity=16, numDisparities=256, blockSize=5,
     P1=8*5*5, P2=32*5*5, disp12MaxDiff=1, uniquenessRatio=10,
@@ -29,7 +29,7 @@ for name in ("left","front","right","rear"):
     m2 = cv2.initUndistortRectifyMap(K,D,R2,P2,(W,H),cv2.CV_32FC1)
     base = abs(P2[0,3]/P2[0,0])
     frames = {}
-    for topic, msg, _ in rosbag.Bag("/data/ros1/v160_%s.bag" % name).read_messages():
+    for topic, msg, _ in rosbag.Bag(os.environ.get("VS_BAGS","/data/ros1/vclosed_%s.bag") % name).read_messages():
         frames.setdefault(topic, []).append(br.imgmsg_to_cv2(msg, "mono8"))
     A, B = frames["/vcam_a/image_raw"], frames["/vcam_b/image_raw"]
     i = len(A)//2
@@ -60,5 +60,5 @@ grid = cv2.vconcat([cv2.hconcat([tiles[0],tiles[1]]), cv2.hconcat([tiles[2],tile
 bar = np.zeros((34, grid.shape[1], 3), np.uint8); bar[:] = (18,18,18)
 cv2.putText(bar, "fov 160 / 768x576 / f=548 px   left: rectified   right: disparity (turbo, near=red -> far=blue, grey=no match)",
             (12,22), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (200,200,200), 1, cv2.LINE_AA)
-cv2.imwrite("/data/disparity_4pairs_fov160.png", cv2.vconcat([bar, grid]))
+cv2.imwrite(os.environ.get("VS_OUT","/data/disparity_4pairs_fov160.png"), cv2.vconcat([bar, grid]))
 print("wrote disparity_4pairs_fov160.png")

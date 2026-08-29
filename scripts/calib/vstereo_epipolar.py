@@ -7,11 +7,13 @@ about the rig. An AprilTag corner carries its own identity: tag 17's top-left co
 one view IS tag 17's top-left corner in the other. Any residual vertical offset after
 rectification is then geometry, not mismatching.
 """
-import sys, numpy as np, cv2, yaml, rosbag
+import os, sys, numpy as np, cv2, yaml, rosbag
 from cv_bridge import CvBridge
 
 bag, ext_yaml, pair = sys.argv[1], sys.argv[2], sys.argv[3]
-W, H, FOV = 1280, 960, 190.0
+W   = int(os.environ.get("VS_W", 1280))
+H   = int(os.environ.get("VS_H", 960))
+FOV = float(os.environ.get("VS_FOV", 190.0))
 focal = W / 2.0 / np.tan(np.radians(FOV - 90) / 2.0)
 K = np.array([[focal,0,W/2.0],[0,focal,H/2.0],[0,0,1]]); D = np.zeros(5)
 def rot_y(a):

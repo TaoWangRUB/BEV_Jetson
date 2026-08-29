@@ -19,7 +19,8 @@ import numpy as np, cv2, yaml, rosbag, rospy
 from cv_bridge import CvBridge
 
 def load_omni(path):
-    d = yaml.safe_load(open(path))["cam0"]
+    d = yaml.safe_load(open(path))
+    d = d.get("cam0", d)          # kalibr writes cam0:; our config/ is flat
     xi = float(d["intrinsics"][0])
     fx, fy, cx, cy = [float(v) for v in d["intrinsics"][1:5]]
     K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], np.float64)

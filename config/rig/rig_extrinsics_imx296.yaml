@@ -1,69 +1,147 @@
-# Pairwise extrinsics for the 4x IMX296 rig, solved 2026-08-29.
+# Extrinsics for the 4x IMX296 rig, solved 2026-08-29, ring-closed 2026-08-29.
 #
-# Each block is T_<b>_<a>: the pose of camera <a> expressed in camera <b>'s frame,
-# from simultaneous views of the AprilGrid. Solved with KALIBR's own AprilGrid detector
-# and pose estimate (GridDetector + observation.T_t_c) rather than a hand-rolled
-# correspondence - reimplementing the board model by hand plateaued at 11 px residual
-# and produced a metre of baseline error before that was abandoned.
+# Each pair was solved from its own recording with KALIBR's AprilGrid detector and pose
+# estimate (GridDetector + observation.T_t_c) - reimplementing the board model by hand
+# plateaued at 11 px residual and a metre of baseline error before that was abandoned.
 #
-# CONSISTENCY (the reason to trust these): four pairs solved independently, from
-# separate recordings, agree on baseline to 1.5 mm - 147.7, 148.7, 149.2, 149.2 mm -
-# and each rotation is within ~2 deg of the 90 deg a square rig demands.
+# WHY THESE ARE CLOSED, AND WHAT IT COST.
+# Four independent solves had nothing forcing them to agree. Composed around the ring
+# cam1 -> cam2 -> cam4 -> cam3 -> cam1 they left 3.63 deg and 9.2 mm of residual: the rig
+# they described was not rigid. cuVSLAM Multicamera carries features between pairs, so it
+# would have been handed four sub-frustums disagreeing about where they sit - 3.63 deg is
+# 35 px at the image edge, an order of magnitude past the rectification error.
 #
-# RING CLOSURE cam3 -> cam1 -> cam2 -> cam4 -> cam3:
-#   rotation    4.75 deg   (hops sum to 363.6 deg; the right pair at 92.2 deg is the
-#                           outlier and had the fewest poses, 105)
-#   translation 4.9 mm     over a ~0.6 m loop, i.e. 0.8%
+# T_to_from below is the CLOSED rig (scripts/calib/close_rig_ring.py, Levenberg-Marquardt
+# over three camera poses in cam1's frame, 18 dof instead of 24). T_to_from_measured keeps
+# what each recording actually said. Loop residual is now 0.0000 deg / 0.043 mm.
 #
-# The rotation closure is the weak part. Treat these as good to ~1 deg per hop.
+# THIS DID NOT MAKE THE CALIBRATION MORE ACCURATE. A Monte-Carlo over each pair's reported
+# spread says random per-pose error would leave only ~0.5 deg of loop residual, so the
+# 3.63 deg was systematic bias inside each recording, and averaging biases redistributes
+# rather than cancels them. Measured directly, per-pair epipolar residual after closure:
+#
+#            median |dy|        rms          <- open rig in brackets
+#   left      0.45 px (0.81)   3.15 (3.08)
+#   front     1.79 px (1.42)   3.15 (2.89)
+#   right     2.55 px (0.62)   4.07 (3.83)
+#   rear      0.66 px (0.83)   1.88 (1.95)
+#   mean      1.36 px (0.92)   3.06 (2.94)
+#
+# So rigidity costs ~4% in rms and moves the error between pairs. That is the right trade
+# against a 3.63 deg inconsistency, but it is a trade, not a free win.
+#
+# Weighting by each pair's MEASURED epipolar residual instead of its internal angular
+# spread was tried and is worse (mean rms 3.45): it protects the best pair but pushes more
+# translation onto the others. Pass a virtual_stereo yaml as argv[3] to reproduce it.
+#
+# THE REAL FIX is a recording where three or more cameras see the board simultaneously,
+# which makes the per-recording bias observable instead of absorbed. More frames in the
+# existing recordings will not help - averaging is already saturated.
 
 left:            # cam3 expressed in cam1
   from: cam3
   to: cam1
   simultaneous_poses: 153
   angular_spread_deg: {median: 0.55, p90: 0.88}
-  baseline_m: 0.1478
+  baseline_m: 0.1471
+  baseline_measured_m: 0.1478
+  closure_correction: {rot_deg: 0.57, t_mm: 0.76}
+  epipolar_after_closure: {median_px: 0.45, p90_px: 4.91, rms_px: 3.15, signed_median_px: +0.16}
   T_to_from:
-    - [-0.0162, -0.0878, -0.996, -0.1006]
-    - [0.068, 0.9937, -0.0887, -0.011]
-    - [0.9976, -0.0692, -0.0102, -0.1077]
-    - [0.0, 0.0, 0.0, 1.0]
+    - [-0.006540, -0.085678, -0.996318, -0.100274]
+    - [0.066298, 0.994195, -0.085913, -0.011322]
+    - [0.997737, -0.066615, -0.000983, -0.107095]
+    - [0.000000, 0.000000, 0.000000, 1.000000]
+  T_to_from_measured:
+    - [-0.016200, -0.087800, -0.996000, -0.100600]
+    - [0.068000, 0.993700, -0.088700, -0.011000]
+    - [0.997600, -0.069200, -0.010200, -0.107700]
+    - [0.000000, 0.000000, 0.000000, 1.000000]
 
 front:            # cam1 expressed in cam2
   from: cam1
   to: cam2
   simultaneous_poses: 161
   angular_spread_deg: {median: 0.68, p90: 1.25}
-  baseline_m: 0.1487
+  baseline_m: 0.1488
+  baseline_measured_m: 0.1487
+  closure_correction: {rot_deg: 0.95, t_mm: 0.76}
+  epipolar_after_closure: {median_px: 1.79, p90_px: 5.53, rms_px: 3.15, signed_median_px: +1.47}
   T_to_from:
-    - [-0.0069, -0.0693, -0.9976, -0.1019]
-    - [0.0352, 0.997, -0.0695, -0.0034]
-    - [0.9994, -0.0356, -0.0044, -0.1082]
-    - [0.0, 0.0, 0.0, 1.0]
+    - [0.009740, -0.068543, -0.997628, -0.102479]
+    - [0.035078, 0.997097, -0.068162, -0.003751]
+    - [0.999381, -0.034335, 0.012155, -0.107855]
+    - [0.000000, 0.000000, 0.000000, 1.000000]
+  T_to_from_measured:
+    - [-0.006900, -0.069300, -0.997600, -0.101900]
+    - [0.035200, 0.997000, -0.069500, -0.003400]
+    - [0.999400, -0.035600, -0.004400, -0.108200]
+    - [0.000000, 0.000000, 0.000000, 1.000000]
 
 right:            # cam2 expressed in cam4
   from: cam2
   to: cam4
   simultaneous_poses: 105
   angular_spread_deg: {median: 0.65, p90: 1.11}
-  baseline_m: 0.1491
+  baseline_m: 0.1498
+  baseline_measured_m: 0.1491
+  closure_correction: {rot_deg: 1.31, t_mm: 0.76}
+  epipolar_after_closure: {median_px: 2.55, p90_px: 7.73, rms_px: 4.07, signed_median_px: -2.13}
   T_to_from:
-    - [-0.038, -0.066, -0.9971, -0.1011]
-    - [0.0794, 0.9945, -0.0689, -0.0074]
-    - [0.9961, -0.0818, -0.0326, -0.1094]
-    - [0.0, 0.0, 0.0, 1.0]
+    - [-0.015494, -0.063095, -0.997980, -0.101412]
+    - [0.082250, 0.994660, -0.064233, -0.007819]
+    - [0.996527, -0.083091, -0.010346, -0.109951]
+    - [0.000000, 0.000000, 0.000000, 1.000000]
+  T_to_from_measured:
+    - [-0.038000, -0.066000, -0.997100, -0.101100]
+    - [0.079400, 0.994500, -0.068900, -0.007400]
+    - [0.996100, -0.081800, -0.032600, -0.109400]
+    - [0.000000, 0.000000, 0.000000, 1.000000]
 
 rear:            # cam4 expressed in cam3
   from: cam4
   to: cam3
   simultaneous_poses: 150
   angular_spread_deg: {median: 0.55, p90: 0.98}
-  baseline_m: 0.1491
+  baseline_m: 0.1490
+  baseline_measured_m: 0.1491
+  closure_correction: {rot_deg: 0.88, t_mm: 0.76}
+  epipolar_after_closure: {median_px: 0.66, p90_px: 3.29, rms_px: 1.88, signed_median_px: -0.44}
   T_to_from:
-    - [-0.0023, -0.0888, -0.996, -0.1047]
-    - [0.0576, 0.9944, -0.0888, -0.0092]
-    - [0.9983, -0.0576, 0.0029, -0.1058]
-    - [0.0, 0.0, 0.0, 1.0]
+    - [0.012357, -0.084576, -0.996307, -0.104120]
+    - [0.057709, 0.995000, -0.083759, -0.009589]
+    - [0.998322, -0.056374, 0.017423, -0.106098]
+    - [0.000000, 0.000000, 0.000000, 1.000000]
+  T_to_from_measured:
+    - [-0.002300, -0.088800, -0.996000, -0.104700]
+    - [0.057600, 0.994400, -0.088800, -0.009200]
+    - [0.998300, -0.057600, 0.002900, -0.105800]
+    - [0.000000, 0.000000, 0.000000, 1.000000]
+
+
+# Canonical rig: each camera's pose expressed in cam1's frame. This is what a
+# multi-camera solver should be given - the pairwise blocks above are derived from it.
+rig_in_cam1:
+  cam1:
+    - [1.000000, 0.000000, 0.000000, 0.000000]
+    - [0.000000, 1.000000, 0.000000, 0.000000]
+    - [0.000000, 0.000000, 1.000000, 0.000000]
+    - [0.000000, 0.000000, 0.000000, 1.000000]
+  cam2:
+    - [0.009740, 0.035078, 0.999381, 0.108913]
+    - [-0.068543, 0.997097, -0.034335, -0.006986]
+    - [-0.997628, -0.068162, 0.012155, -0.101179]
+    - [0.000000, 0.000000, 0.000000, 1.000000]
+  cam4:
+    - [-0.999640, -0.028487, -0.003509, 0.006949]
+    - [-0.027588, 0.988262, -0.150789, -0.018639]
+    - [0.007667, -0.150623, -0.988570, -0.210261]
+    - [0.000000, 0.000000, 0.000000, 1.000000]
+  cam3:
+    - [-0.006540, -0.085678, -0.996318, -0.100274]
+    - [0.066298, 0.994195, -0.085913, -0.011322]
+    - [0.997737, -0.066615, -0.000983, -0.107095]
+    - [0.000000, 0.000000, 0.000000, 1.000000]
 
 camera_imu:
   # cam1 <- IMU, from kalibr_calibrate_imu_camera over 911 images at 9.4 Hz and 19717
