@@ -110,17 +110,26 @@
 
 ## 4. Remove the sync workaround
 
-- [ ] 4.1 `cuvslam_multicam_node.cpp`: delete the latest-frame bundler and `sync_slop_ms`; form sets from frames whose timestamps span < `max_skew_us` (default 1000), pass each image its own `timestamp_ns`, drop and count what fails (D2).
-- [ ] 4.2 `bev_cuvslam_fused_node.cpp`: stamp each image with its own `iframe->getTime()` instead of `ts0`, and apply the same skew gate to the lock-step set.
-- [ ] 4.3 Report the drop counter and recent worst-case skew from both nodes; make a stopped trigger diagnosable as a trigger fault, not a camera failure (spec: *A stopped trigger is diagnosable*).
-- [ ] 4.4 Update `fused_vo_params.yaml`, `run_vo_tx2.sh`, `run_vo_fused_tx2.sh` for the new parameters and resolution; remove references to the bundler from comments and docs.
+- [x] 4.1 **Done.** Bundler and `sync_slop_ms` gone; sets formed by timestamp over a per-camera history (never by arrival order - separate DDS subscriptions say nothing about which trigger edge a frame came from), gated at `max_skew_us` (default 1000), each image carrying its own exposure-midpoint stamp, failures dropped and counted.
+- [x] 4.1b **Rescoped and done: the node feeds cuVSLAM EIGHT VIRTUAL PINHOLES, not four fisheyes.** Task 2.9 closed the direct route - the lenses fit ~192 deg and cuVSLAM's only fisheye model is equidistant, capped below 180 - so the carve moved from an offline analysis step into the node. 8-camera Pinhole rig, remap tables built once at startup, `rectified_stereo_camera` left false on purpose (its horizontal-only tracker cannot move vertically and demands paired cameras share a rotation matrix to 1e-6, against our 1.0-1.4 deg).
+
+  Verified without a board, since none of it can be run here: the hand-written Mei projection matches `cv2.omnidir.projectPoints` to 5e-13 px over 4000 rays and the built map is bit-identical at 25 sampled pixels; the quaternion conversion round-trips 20000 random rotations through all four trace branches to 1.6e-7; and `scripts/vo/verify_rig_build.sh` re-runs cuVSLAM's own frustum test on the poses the C++ emits, reproducing 0.939/0.951/0.926/0.949 with all 8 cameras paired. That last check exists because a sign error in `rig_from_fisheye * Ry` still yields a valid rig that cuVSLAM would accept while finding no stereo pairs at all - it drops the pairing to ~0.03.
+
+  **NOT compiled.** The ROS 2 wiring needs an environment this host does not have.
+- [ ] 4.2 **Deliberately deferred, and the reason is not effort.** The fused node exists to avoid a CPU round-trip (NVMM Y plane straight to CUDA). Adding the virtual-pinhole carve to it means a CUDA remap on the NVMM buffer - a CPU remap would negate the node's entire purpose. Until 4.5/section 5 show the modular path is too slow, the fused node has no justification to be rewritten twice. Note the stamping fix it needs is the same one 4.1 made; `iframe->getTime()` is the WRONG source (consumer-side - it reported cameras ~7 ms apart in capture-loop order), so this task's original wording is superseded by README 4.7.
+- [~] 4.3 Done for the modular node (sets / worst skew / drops / remap time every 5 s); pending for the fused node with 4.2. Report the drop counter and recent worst-case skew from both nodes; make a stopped trigger diagnosable as a trigger fault, not a camera failure (spec: *A stopped trigger is diagnosable*).
+- [~] 4.4 `bev_cuvslam.launch.py` retargeted (ring-closed extrinsics, virtual-stereo config, skew gate, no `sync_slop_ms`). `fused_vo_params.yaml` and the fused run scripts wait on 4.2.
 - [ ] 4.5 Run both nodes on the board: confirm zero dropped sets with the trigger live, worst-case skew < 1 ms, and `/cuvslam/odometry` tracking with no "tracking lost".
 
 ## 5. Motion test (closes bring-up-end-to-end-vo 3.4 / 3.6)
 
+Tooling ready: `scripts/vo/run_motion_test.sh` (board; refuses to record unless
+`trigger_mode` is 1) and `scripts/vo/analyze_motion.py` (host). Needs the rig powered and
+physically moved - the remaining items are not doable from here.
+
 - [ ] 5.1 Move the rig a measured straight-line distance; record `/cuvslam/odometry` + `/tf` and compare reported translation against the tape measure (spec: *Translation is recovered at true scale*, 5 %).
 - [ ] 5.2 Return the rig to its starting pose and check the trajectory returns near the origin; record the drift.
-- [ ] 5.3 Determine whether cross-camera stereo links actually form (cuVSLAM's 0.5 frustum-overlap gate). If none do, make the node report that it is running unscaled, and record the evidence — it is the input to the OpenMAVIS/D2SLAM decision.
+- [~] 5.3 **Answered offline, pending live confirmation.** cuVSLAM does not take declared stereo pairs: it samples a grid per camera, back-projects to 2 m and 4 m, and connects pairs exceeding 0.5 (`frustum_intersection_graph.cpp:33`). Re-running that on our ring-closed rig gives **0.939 / 0.951 / 0.926 / 0.949** against a 0.961 ceiling, all 8 virtual cameras paired, no spurious edges. The links form with room to spare and the `CUVSLAM_FRUSTUM_THRESHOLD` patch is not needed for the pinholes. Still to confirm on the live pipeline.
 - [ ] 5.4 Compare against the old rig's ~8.5 Hz bundled odometry: rate, drift, and whether tracking survives motion that previously broke it.
 
 ## 6. Wrap-up
