@@ -382,7 +382,7 @@ index 0bb5547..f9f11c7 100644
 -}  // namespace cuvslam::imu
 +}}  // namespace cuvslam::imu
 diff --git a/libs/common/log.cpp b/libs/common/log.cpp
-index e542222..1091f3e 100644
+index e542222..34651f5 100644
 --- a/libs/common/log.cpp
 +++ b/libs/common/log.cpp
 @@ -23,7 +23,7 @@
@@ -399,9 +399,9 @@ index e542222..1091f3e 100644
  Verbosity GetVerbosity() { return global_verbosity; }
  
 -}  // end namespace cuvslam::Trace
-+}}  // namespace cuvslam::Trace
++}}  // end namespace cuvslam::Trace
 diff --git a/libs/common/log.h b/libs/common/log.h
-index 4e9e409..2ee1bad 100644
+index 4e9e409..a54814b 100644
 --- a/libs/common/log.h
 +++ b/libs/common/log.h
 @@ -40,7 +40,7 @@ using LogDebug = cuvslam::Log::Enable<log_root>;  // for trace
@@ -418,7 +418,7 @@ index 4e9e409..2ee1bad 100644
    return detail::Prefixes[static_cast<std::underlying_type_t<Verbosity> >(verbosity)];
  }
 -}  // end namespace cuvslam::Trace
-+}}  // namespace cuvslam::Trace
++}}  // end namespace cuvslam::Trace
  
  // Implementation macro, use other Trace* macros instead
  #define TraceImpl(V, ...)                                             \
@@ -505,7 +505,7 @@ index ce63665..8d5df15 100644
 -}  // namespace cuvslam::common
 +}}  // namespace cuvslam::common
 diff --git a/libs/common/thread_name.h b/libs/common/thread_name.h
-index efcaf64..11bdca3 100644
+index efcaf64..4345a4c 100644
 --- a/libs/common/thread_name.h
 +++ b/libs/common/thread_name.h
 @@ -19,7 +19,7 @@
@@ -522,7 +522,7 @@ index efcaf64..11bdca3 100644
  };
  
 -}  // end namespace cuvslam::Trace
-+}}  // namespace cuvslam::Trace
++}}  // end namespace cuvslam::Trace
 diff --git a/libs/cuda_modules/box_prefilter.cpp b/libs/cuda_modules/box_prefilter.cpp
 index bbfed3e..e62dde7 100644
 --- a/libs/cuda_modules/box_prefilter.cpp
@@ -2614,7 +2614,7 @@ index ccaaba8..b50b2ae 100644
 -}  // namespace cuvslam::sba_imu
 +}}  // namespace cuvslam::sba_imu
 diff --git a/libs/imu/test/imu_pnp_test.cpp b/libs/imu/test/imu_pnp_test.cpp
-index edfa005..bfac67f 100644
+index edfa005..d134088 100644
 --- a/libs/imu/test/imu_pnp_test.cpp
 +++ b/libs/imu/test/imu_pnp_test.cpp
 @@ -632,7 +632,7 @@ void run_test(
@@ -2631,7 +2631,7 @@ index edfa005..bfac67f 100644
  }
  
 -} // namespace test::sba_imu
-+}}  // namespace test::sba_imu
++}} // namespace test::sba_imu
  
  #endif
 diff --git a/libs/launcher/base_launcher.cpp b/libs/launcher/base_launcher.cpp
@@ -7882,7 +7882,7 @@ index 7a3cf65..caf0f9f 100644
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/sof_mono_interface.h b/libs/sof/sof_mono_interface.h
-index 51eb985..9061421 100644
+index 51eb985..8bdb322 100644
 --- a/libs/sof/sof_mono_interface.h
 +++ b/libs/sof/sof_mono_interface.h
 @@ -25,11 +25,11 @@
@@ -7892,7 +7892,8 @@ index 51eb985..9061421 100644
 -namespace cuvslam::odom {
 +namespace cuvslam { namespace odom {
  struct KeyFrameSettings;
- }
+-}
++}}
  
 -namespace cuvslam::sof {
 +namespace cuvslam { namespace sof {
