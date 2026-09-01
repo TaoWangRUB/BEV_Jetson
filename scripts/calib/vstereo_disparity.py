@@ -21,9 +21,24 @@ sgbm = cv2.StereoSGBM_create(
 
 tiles, br, rows = [], CvBridge(), []
 for name in ("left","front","right","rear"):
-    T = np.array(ext[name]["T_to_from"])
-    R = rot_y(-np.pi/4).T @ T[:3,:3] @ rot_y(+np.pi/4)
-    t = rot_y(-np.pi/4).T @ T[:3,3]
+    # Same rule as gen_virtual_stereo.py: the carve combination is CHOSEN from the
+    # extrinsic, and which virtual camera is the LEFT one follows from the baseline sign.
+    # Hardcoding either produced a rectification that kept 35% of the image, or negative
+    # disparities that minDisparity=16 then discarded - both of which look like bad data.
+    T = np.array(ext[name]["T_to_from"]); R_ba = T[:3,:3]
+    best = None
+    for sa in (-1, +1):
+        for sb in (-1, +1):
+            za = R_ba @ rot_y(sa*np.pi/4) @ np.array([0,0,1.0])
+            zb = rot_y(sb*np.pi/4) @ np.array([0,0,1.0])
+            ang = np.degrees(np.arccos(np.clip(za @ zb, -1, 1)))
+            if best is None or ang < best[0]: best = (ang, sa, sb)
+    ang, sa, sb = best
+    Ra, Rb = rot_y(sa*np.pi/4), rot_y(sb*np.pi/4)
+    R = Rb.T @ R_ba @ Ra
+    t = Rb.T @ T[:3,3]
+    swap_ab = t[0] > 0
+    if swap_ab: R, t = R.T, -R.T @ t
     R1,R2,P1,P2,Q,_,_ = cv2.stereoRectify(K,D,K,D,(W,H),R,t,flags=cv2.CALIB_ZERO_DISPARITY,alpha=0)
     m1 = cv2.initUndistortRectifyMap(K,D,R1,P1,(W,H),cv2.CV_32FC1)
     m2 = cv2.initUndistortRectifyMap(K,D,R2,P2,(W,H),cv2.CV_32FC1)
@@ -32,6 +47,7 @@ for name in ("left","front","right","rear"):
     for topic, msg, _ in rosbag.Bag(os.environ.get("VS_BAGS","/data/ros1/vclosed_%s.bag") % name).read_messages():
         frames.setdefault(topic, []).append(br.imgmsg_to_cv2(msg, "mono8"))
     A, B = frames["/vcam_a/image_raw"], frames["/vcam_b/image_raw"]
+    if swap_ab: A, B = B, A
     i = len(A)//2
     ra = cv2.remap(A[i], m1[0], m1[1], cv2.INTER_LINEAR)
     rb = cv2.remap(B[i], m2[0], m2[1], cv2.INTER_LINEAR)

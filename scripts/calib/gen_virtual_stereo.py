@@ -75,6 +75,21 @@ for ia, sa in ((0, -1), (1, +1)):
 ang, sa, sb, ia, ib = best
 print("-> facing pair: A[%d] / B[%d], optical axes %.1f deg apart" % (ia, ib, ang))
 
+# Write down what was chosen. The epipolar checker used to RE-DERIVE this from the same
+# extrinsic and got the composition order wrong (transpose on the wrong side), which put the
+# virtual pair 180 deg apart and made a correct bag look like bad data. One source of truth.
+_Ra, _Rb = rot_y(sa * np.pi / 4), rot_y(sb * np.pi / 4)
+yaml.safe_dump({"pair": a.pair, "width": a.width, "height": a.height,
+                "fov_deg": a.fov - 90.0, "focal_px": float(focal),
+                "carve": {"a_index": int(ia), "b_index": int(ib),
+                          "a_sign": int(sa), "b_sign": int(sb),
+                          "axes_apart_deg": float(ang)},
+                # virtual-A -> virtual-B, i.e. what cv2.stereoRectify wants as (R, T)
+                "R_vb_va": (_Rb.T @ R_ba @ _Ra).tolist(),
+                "t_vb": (_Rb.T @ T[:3, 3]).tolist()},
+               open(a.out + ".yaml", "w"), sort_keys=False, default_flow_style=None)
+print("   wrote pair geometry to %s.yaml" % a.out)
+
 mapax, mapay = undist_map(Ka, Da, xia, rot_y(sa * np.pi / 4), focal, a.width, a.height)
 mapbx, mapby = undist_map(Kb, Db, xib, rot_y(sb * np.pi / 4), focal, a.width, a.height)
 

@@ -18,9 +18,43 @@ focal = W / 2.0 / np.tan(np.radians(FOV - 90) / 2.0)
 K = np.array([[focal,0,W/2.0],[0,focal,H/2.0],[0,0,1]]); D = np.zeros(5)
 def rot_y(a):
     c,s = np.cos(a), np.sin(a); return np.array([[c,0,s],[0,1,0],[-s,0,c]])
-T = np.array(yaml.safe_load(open(ext_yaml))[pair]["T_to_from"])
-R = rot_y(-np.pi/4).T @ T[:3,:3] @ rot_y(+np.pi/4)
-t = rot_y(-np.pi/4).T @ T[:3,3]
+# Prefer the geometry gen_virtual_stereo.py wrote alongside the bag. Re-deriving it here is
+# how this tool broke twice: the carve combination is CHOSEN from the extrinsic, not fixed,
+# and the composition order is easy to get backwards - both failures produced "0 corner
+# correspondences", which reads as bad data rather than as a bug in the measurement.
+side = bag + ".yaml"
+if os.path.exists(side):
+    g = yaml.safe_load(open(side))
+    R = np.array(g["R_vb_va"]); t = np.array(g["t_vb"])
+    print("pair geometry from %s: carve A[%+d45]/B[%+d45], axes %.2f deg apart"
+          % (side, g["carve"]["a_sign"], g["carve"]["b_sign"], g["carve"]["axes_apart_deg"]))
+else:
+    T = np.array(yaml.safe_load(open(ext_yaml))[pair]["T_to_from"])
+    R_ba = T[:3, :3]
+    best = None
+    for sa in (-1, +1):
+        for sb in (-1, +1):
+            za = R_ba @ rot_y(sa * np.pi / 4) @ np.array([0, 0, 1.0])
+            zb = rot_y(sb * np.pi / 4) @ np.array([0, 0, 1.0])
+            ang = np.degrees(np.arccos(np.clip(za @ zb, -1, 1)))
+            if best is None or ang < best[0]:
+                best = (ang, sa, sb)
+    ang, sa, sb = best
+    Ra, Rb = rot_y(sa * np.pi / 4), rot_y(sb * np.pi / 4)
+    R = Rb.T @ R_ba @ Ra          # virtual-A -> virtual-B, matching the generator
+    t = Rb.T @ T[:3, 3]
+    print("derived: carve A[%+d45]/B[%+d45], axes %.2f deg apart" % (sa, sb, ang))
+
+# WHICH virtual camera is the LEFT one is geometry, not argument order. cv2.stereoRectify
+# expects camera 2 to sit to the right of camera 1 (T_x < 0); fed the other way it still
+# rectifies, but every disparity comes out negative and the implied depth with it - which is
+# how this reported a physically impossible -0.35 m while the MAGNITUDE was right. Order the
+# pair by the sign of the baseline and swap the images to match.
+swap_ab = t[0] > 0
+if swap_ab:
+    R, t = R.T, -R.T @ t
+    print("pair ordered by geometry: virtual-B is the LEFT camera (images swapped)")
+
 R1,R2,P1,P2,Q,_,_ = cv2.stereoRectify(K,D,K,D,(W,H),R,t,flags=cv2.CALIB_ZERO_DISPARITY,alpha=0)
 m1 = cv2.initUndistortRectifyMap(K,D,R1,P1,(W,H),cv2.CV_32FC1)
 m2 = cv2.initUndistortRectifyMap(K,D,R2,P2,(W,H),cv2.CV_32FC1)
@@ -35,6 +69,8 @@ br, frames = CvBridge(), {}
 for topic, msg, _ in rosbag.Bag(bag).read_messages():
     frames.setdefault(topic, []).append(br.imgmsg_to_cv2(msg, "mono8"))
 A, B = frames["/vcam_a/image_raw"], frames["/vcam_b/image_raw"]
+if swap_ab:
+    A, B = B, A
 
 dys, dxs, nframes = [], [], 0
 for ia, ib in zip(A, B):
