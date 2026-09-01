@@ -234,21 +234,41 @@ class CuvslamMulticamNode : public rclcpp::Node {
       auto& h = hist_[idx];
       h.push_back(m);
       while (h.size() > history_) h.pop_front();
-      if (idx != 0) return;
 
-      const int64_t t0 = rclcpp::Time(m->header.stamp).nanoseconds();
-      msgs[0] = m;
+      // ANCHOR ON CAM1'S OLDEST BUFFERED FRAME, NOT ON CAM1'S ARRIVAL.
+      //
+      // This matched on arrival until 2026-09-01 (`if (idx != 0) return;` and t0 from the
+      // just-received message), which races DDS delivery order: when cam1's frame for a
+      // trigger edge lands first, the SAME-EDGE frames from cam2..4 have not been
+      // delivered yet, so the nearest candidate in their history is the PREVIOUS edge.
+      // Every set was then rejected at exactly one frame period - 33.3 ms at 30 Hz -
+      // while the capture node reported 8 us of real skew on the very same frames. The
+      // gate was right and the hardware was right; the matching was wrong, and it looked
+      // exactly like a dead trigger.
+      //
+      // So: take the OLDEST cam1 frame as the anchor, and only match once every other
+      // camera has delivered a frame at or after it. That is the proof that no better
+      // candidate can still arrive. The anchor is consumed either way, matched or
+      // dropped, so a genuinely unpaired frame cannot wedge the queue.
+      if (hist_[0].empty()) return;
+      const int64_t t0 = rclcpp::Time(hist_[0].front()->header.stamp).nanoseconds();
+      for (size_t i = 1; i < 4; ++i) {
+        if (hist_[i].empty()) {
+          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "no frame yet from %s",
+                               cams_[i].c_str());
+          return;
+        }
+        if (rclcpp::Time(hist_[i].back()->header.stamp).nanoseconds() < t0) return;
+      }
+
+      msgs[0] = hist_[0].front();
+      hist_[0].pop_front();
       int64_t lo = t0, hi = t0;
       for (size_t i = 1; i < 4; ++i) {
         int64_t best_d = INT64_MAX;
         for (const auto& cand : hist_[i]) {
           const int64_t t = rclcpp::Time(cand->header.stamp).nanoseconds();
           if (std::llabs(t - t0) < best_d) { best_d = std::llabs(t - t0); msgs[i] = cand; }
-        }
-        if (!msgs[i]) {
-          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "no frame yet from %s",
-                               cams_[i].c_str());
-          return;
         }
         const int64_t t = rclcpp::Time(msgs[i]->header.stamp).nanoseconds();
         lo = std::min(lo, t);
