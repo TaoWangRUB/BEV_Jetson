@@ -95,31 +95,25 @@ echo "  5.2 return-to-origin: go out and come back to the SAME pose"
 [ "$RECORD_IMAGES" = 1 ] && echo "  recording IMAGES too - keep this run short (~30 s)"
 echo
 
+# NOT `docker compose ... | tee ... &`: in a pipeline $! is the PID of the LAST element
+# (tee), so the SIGINT trap would signal tee and leave the container running with the
+# recorder holding an open bag. Redirect to the log and tail it for the live view, so
+# $! is the compose process the trap needs to reach.
 if [ "$RECORD_IMAGES" = 1 ]; then
-  MOTION_LABEL="$LABEL" RECORD_IMAGES=1 EXPOSURE_US="$EXPOSURE_US" \
-    PUBLISH_EVERY_N="${PUBLISH_EVERY_N:-1}" \
-    # NOT `... | tee ... &`: in a pipeline $! is the PID of the LAST element (tee), so the
-    # trap would signal tee and leave the container running. Redirect, and tail for a live view.
-    docker compose run --rm motion > "$OUT/vo.log" 2>&1 &
-    COMPOSE_PID=$!
-    tail -f "$OUT/vo.log" & TAIL_PID=$!
-    wait $COMPOSE_PID || true
-    kill $TAIL_PID 2>/dev/null || true
-  sudo mv bags/motion_${LABEL}_* "$OUT/" 2>/dev/null || true
+  export MOTION_LABEL="$LABEL" RECORD_IMAGES=1 EXPOSURE_US PUBLISH_EVERY_N="${PUBLISH_EVERY_N:-1}"
+  docker compose run --rm motion > "$OUT/vo.log" 2>&1 &
 else
   # Fused zero-copy + RECORD=1: bags /cuvslam/odometry and /tf from inside the same
   # container. Both are RELIABLE publishers, so no QoS override is needed here - unlike the
   # image topics, which are best_effort and silently record nothing without one.
-  RECORD=1 EXPOSURE_US="$EXPOSURE_US" \
-    # NOT `... | tee ... &`: in a pipeline $! is the PID of the LAST element (tee), so the
-    # trap would signal tee and leave the container running. Redirect, and tail for a live view.
-    docker compose run --rm fused > "$OUT/vo.log" 2>&1 &
-    COMPOSE_PID=$!
-    tail -f "$OUT/vo.log" & TAIL_PID=$!
-    wait $COMPOSE_PID || true
-    kill $TAIL_PID 2>/dev/null || true
-  sudo mv bags/fused_* "$OUT/" 2>/dev/null || true
+  export RECORD=1 EXPOSURE_US
+  docker compose run --rm fused > "$OUT/vo.log" 2>&1 &
 fi
+COMPOSE_PID=$!
+tail -f "$OUT/vo.log" & TAIL_PID=$!
+wait "$COMPOSE_PID" || true
+kill "$TAIL_PID" 2>/dev/null || true
+sudo mv bags/fused_* bags/motion_${LABEL}_* "$OUT/" 2>/dev/null || true
 
 echo; echo "=== rate / timing / drops, from the node's own reporting ==="
 grep -E "avg/|sets |dropped|tracking lost" "$OUT/vo.log" | tail -8
