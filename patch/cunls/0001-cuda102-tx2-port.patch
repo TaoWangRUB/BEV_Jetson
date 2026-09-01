@@ -1,6 +1,6 @@
 diff -ruN orig/CMakeLists.txt cuNLS-Release_07_13_2026/CMakeLists.txt
---- a/CMakeLists.txt	2026-09-01 23:12:14.425579044 +0200
-+++ b/CMakeLists.txt	2026-09-01 23:12:14.455438414 +0200
+--- a/CMakeLists.txt	2026-09-01 23:28:50.471484072 +0200
++++ b/CMakeLists.txt	2026-09-01 23:28:50.502204326 +0200
 @@ -1,11 +1,23 @@
  cmake_minimum_required(VERSION 3.24)
 -set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89)
@@ -59,8 +59,8 @@ diff -ruN orig/CMakeLists.txt cuNLS-Release_07_13_2026/CMakeLists.txt
  
  # C++ library install targets (skipped when only building Python wheel)
 diff -ruN orig/cunls/common/CMakeLists.txt cuNLS-Release_07_13_2026/cunls/common/CMakeLists.txt
---- a/cunls/common/CMakeLists.txt	2026-09-01 23:12:14.425863334 +0200
-+++ b/cunls/common/CMakeLists.txt	2026-09-01 23:12:14.455540805 +0200
+--- a/cunls/common/CMakeLists.txt	2026-09-01 23:28:50.471759095 +0200
++++ b/cunls/common/CMakeLists.txt	2026-09-01 23:28:50.502313270 +0200
 @@ -1,7 +1,6 @@
  add_library(cunls_common OBJECT
    cublas_helper.cpp
@@ -78,9 +78,50 @@ diff -ruN orig/cunls/common/CMakeLists.txt cuNLS-Release_07_13_2026/cunls/common
  
  if(ENABLE_PROFILING)
    target_link_libraries(cunls_common PRIVATE nvtx3-cpp)
+diff -ruN orig/cunls/common/cusolver_helper.cpp cuNLS-Release_07_13_2026/cunls/common/cusolver_helper.cpp
+--- a/cunls/common/cusolver_helper.cpp	2026-09-01 23:28:50.471869047 +0200
++++ b/cunls/common/cusolver_helper.cpp	2026-09-01 23:28:50.503385459 +0200
+@@ -15,6 +15,7 @@
+  * limitations under the License.
+  */
+ 
++#include <cuda_runtime_api.h>
+ #include <cusolverDn.h>
+ 
+ #include "cunls/common/cusolver_helper.h"
+@@ -52,12 +53,14 @@
+     return "CUSOLVER_STATUS_IRS_PARAMS_NOT_INITIALIZED";
+   } else if (s == CUSOLVER_STATUS_IRS_PARAMS_INVALID) {
+     return "CUSOLVER_STATUS_IRS_PARAMS_INVALID";
++#if CUDART_VERSION >= 11000
+   } else if (s == CUSOLVER_STATUS_IRS_PARAMS_INVALID_PREC) {
+     return "CUSOLVER_STATUS_IRS_PARAMS_INVALID_PREC";
+   } else if (s == CUSOLVER_STATUS_IRS_PARAMS_INVALID_REFINE) {
+     return "CUSOLVER_STATUS_IRS_PARAMS_INVALID_REFINE";
+   } else if (s == CUSOLVER_STATUS_IRS_PARAMS_INVALID_MAXITER) {
+     return "CUSOLVER_STATUS_IRS_PARAMS_INVALID_MAXITER";
++#endif
+   } else if (s == CUSOLVER_STATUS_IRS_INTERNAL_ERROR) {
+     return "CUSOLVER_STATUS_IRS_INTERNAL_ERROR";
+   } else if (s == CUSOLVER_STATUS_IRS_NOT_SUPPORTED) {
+@@ -68,12 +71,14 @@
+     return "CUSOLVER_STATUS_IRS_NRHS_NOT_SUPPORTED_FOR_REFINE_GMRES";
+   } else if (s == CUSOLVER_STATUS_IRS_INFOS_NOT_INITIALIZED) {
+     return "CUSOLVER_STATUS_IRS_INFOS_NOT_INITIALIZED";
++#if CUDART_VERSION >= 11000
+   } else if (s == CUSOLVER_STATUS_IRS_INFOS_NOT_DESTROYED) {
+     return "CUSOLVER_STATUS_IRS_INFOS_NOT_DESTROYED";
+   } else if (s == CUSOLVER_STATUS_IRS_MATRIX_SINGULAR) {
+     return "CUSOLVER_STATUS_IRS_MATRIX_SINGULAR";
+   } else if (s == CUSOLVER_STATUS_INVALID_WORKSPACE) {
+     return "CUSOLVER_STATUS_INVALID_WORKSPACE";
++#endif
+   }
+   return "Unspecified cuSolver error";
+ }
 diff -ruN orig/cunls/common/cusparse_helper.cpp cuNLS-Release_07_13_2026/cunls/common/cusparse_helper.cpp
---- a/cunls/common/cusparse_helper.cpp	2026-09-01 23:12:14.426008435 +0200
-+++ b/cunls/common/cusparse_helper.cpp	2026-09-01 23:12:14.462092778 +0200
+--- a/cunls/common/cusparse_helper.cpp	2026-09-01 23:28:50.471900448 +0200
++++ b/cunls/common/cusparse_helper.cpp	2026-09-01 23:28:50.507404210 +0200
 @@ -74,6 +74,8 @@
    }
  
@@ -133,8 +174,8 @@ diff -ruN orig/cunls/common/cusparse_helper.cpp cuNLS-Release_07_13_2026/cunls/c
  
  /** @copydoc cuSPARSEMatrixDescription::GetDescription */
 diff -ruN orig/cunls/common/cusparse_helper.h cuNLS-Release_07_13_2026/cunls/common/cusparse_helper.h
---- a/cunls/common/cusparse_helper.h	2026-09-01 23:12:14.426025269 +0200
-+++ b/cunls/common/cusparse_helper.h	2026-09-01 23:12:14.462027089 +0200
+--- a/cunls/common/cusparse_helper.h	2026-09-01 23:28:50.471919813 +0200
++++ b/cunls/common/cusparse_helper.h	2026-09-01 23:28:50.507343744 +0200
 @@ -18,6 +18,14 @@
  #pragma once
  
@@ -160,8 +201,8 @@ diff -ruN orig/cunls/common/cusparse_helper.h cuNLS-Release_07_13_2026/cunls/com
  
  /**
 diff -ruN orig/cunls/common/helper.h cuNLS-Release_07_13_2026/cunls/common/helper.h
---- a/cunls/common/helper.h	2026-09-01 23:12:14.426059373 +0200
-+++ b/cunls/common/helper.h	2026-09-01 23:12:14.456213481 +0200
+--- a/cunls/common/helper.h	2026-09-01 23:28:50.471954687 +0200
++++ b/cunls/common/helper.h	2026-09-01 23:28:50.503058855 +0200
 @@ -46,7 +46,7 @@
        msg << "[CUDA] error " << (to_string_fn)(ret) << "(" << ret << ")";      \
        msg << " in " << LOCATION << std::endl;                                  \
@@ -172,8 +213,8 @@ diff -ruN orig/cunls/common/helper.h cuNLS-Release_07_13_2026/cunls/common/helpe
        }                                                                        \
      }                                                                          \
 diff -ruN orig/cunls/common/log.cpp cuNLS-Release_07_13_2026/cunls/common/log.cpp
---- a/cunls/common/log.cpp	2026-09-01 23:12:14.426088421 +0200
-+++ b/cunls/common/log.cpp	2026-09-01 23:12:14.460708432 +0200
+--- a/cunls/common/log.cpp	2026-09-01 23:28:50.471982132 +0200
++++ b/cunls/common/log.cpp	2026-09-01 23:28:50.503324108 +0200
 @@ -103,7 +103,7 @@
   * Lazily initializes the logger with Silent verbosity if it hasn't been
   * configured yet via SetLoggerOptions.
@@ -208,8 +249,8 @@ diff -ruN orig/cunls/common/log.cpp cuNLS-Release_07_13_2026/cunls/common/log.cp
 +void LogDebug(const std::string & msg) { Log(Verbosity::Debug, msg); }
  } // namespace cunls
 diff -ruN orig/cunls/common/log.h cuNLS-Release_07_13_2026/cunls/common/log.h
---- a/cunls/common/log.h	2026-09-01 23:12:14.426102660 +0200
-+++ b/cunls/common/log.h	2026-09-01 23:12:14.462437036 +0200
+--- a/cunls/common/log.h	2026-09-01 23:28:50.471996314 +0200
++++ b/cunls/common/log.h	2026-09-01 23:28:50.507715583 +0200
 @@ -18,7 +18,6 @@
  #pragma once
  #include <sstream>
@@ -340,8 +381,8 @@ diff -ruN orig/cunls/common/log.h cuNLS-Release_07_13_2026/cunls/common/log.h
  }
  } // namespace cunls
 diff -ruN orig/cunls/common/profiler.cpp cuNLS-Release_07_13_2026/cunls/common/profiler.cpp
---- a/cunls/common/profiler.cpp	2026-09-01 23:12:14.426137060 +0200
-+++ b/cunls/common/profiler.cpp	2026-09-01 23:12:14.460149755 +0200
+--- a/cunls/common/profiler.cpp	2026-09-01 23:28:50.472029445 +0200
++++ b/cunls/common/profiler.cpp	2026-09-01 23:28:50.503214120 +0200
 @@ -23,7 +23,7 @@
  #include <nvtx3/nvtx3.hpp>
  #endif
@@ -358,8 +399,8 @@ diff -ruN orig/cunls/common/profiler.cpp cuNLS-Release_07_13_2026/cunls/common/p
 -} // namespace cunls::profiler
 +}} // namespace cunls::profiler
 diff -ruN orig/cunls/common/profiler.h cuNLS-Release_07_13_2026/cunls/common/profiler.h
---- a/cunls/common/profiler.h	2026-09-01 23:12:14.426153334 +0200
-+++ b/cunls/common/profiler.h	2026-09-01 23:12:14.462365852 +0200
+--- a/cunls/common/profiler.h	2026-09-01 23:28:50.472044350 +0200
++++ b/cunls/common/profiler.h	2026-09-01 23:28:50.507657705 +0200
 @@ -18,8 +18,9 @@
  #pragma once
  #include <cstdint>
@@ -391,7 +432,7 @@ diff -ruN orig/cunls/common/profiler.h cuNLS-Release_07_13_2026/cunls/common/pro
 +}} // namespace cunls::profiler
 diff -ruN orig/cunls/common/thrust_compat.h cuNLS-Release_07_13_2026/cunls/common/thrust_compat.h
 --- a/cunls/common/thrust_compat.h	1970-01-01 01:00:00.000000000 +0100
-+++ b/cunls/common/thrust_compat.h	2026-09-01 23:12:14.460784832 +0200
++++ b/cunls/common/thrust_compat.h	2026-09-01 23:28:50.503447132 +0200
 @@ -0,0 +1,17 @@
 +/*
 + * CUDA-10.2 / TX2 port shim -- not part of upstream cuNLS.
@@ -411,8 +452,8 @@ diff -ruN orig/cunls/common/thrust_compat.h cuNLS-Release_07_13_2026/cunls/commo
 +#define CUNLS_PAR_NOSYNC thrust::cuda::par
 +#endif
 diff -ruN orig/cunls/common/types.h cuNLS-Release_07_13_2026/cunls/common/types.h
---- a/cunls/common/types.h	2026-09-01 23:12:14.426183842 +0200
-+++ b/cunls/common/types.h	2026-09-01 23:12:14.455695685 +0200
+--- a/cunls/common/types.h	2026-09-01 23:28:50.472074352 +0200
++++ b/cunls/common/types.h	2026-09-01 23:28:50.502483263 +0200
 @@ -17,7 +17,6 @@
  
  #pragma once
@@ -464,8 +505,8 @@ diff -ruN orig/cunls/common/types.h cuNLS-Release_07_13_2026/cunls/common/types.
  /**
   * @brief SE(3) transformation matrix representation.
 diff -ruN orig/cunls/factor/information_factor_batch.cpp cuNLS-Release_07_13_2026/cunls/factor/information_factor_batch.cpp
---- a/cunls/factor/information_factor_batch.cpp	2026-09-01 23:12:14.426316968 +0200
-+++ b/cunls/factor/information_factor_batch.cpp	2026-09-01 23:12:14.462257945 +0200
+--- a/cunls/factor/information_factor_batch.cpp	2026-09-01 23:28:50.472203965 +0200
++++ b/cunls/factor/information_factor_batch.cpp	2026-09-01 23:28:50.507556704 +0200
 @@ -29,12 +29,17 @@
    constexpr float alpha = 1.0f;
    constexpr float beta = 0.0f;
@@ -490,8 +531,8 @@ diff -ruN orig/cunls/factor/information_factor_batch.cpp cuNLS-Release_07_13_202
  
  void ApplyInformationToJacobians(void *cublas_handle,
 diff -ruN orig/cunls/factor/point_to_plane_factor_batch.h cuNLS-Release_07_13_2026/cunls/factor/point_to_plane_factor_batch.h
---- a/cunls/factor/point_to_plane_factor_batch.h	2026-09-01 23:12:14.426421025 +0200
-+++ b/cunls/factor/point_to_plane_factor_batch.h	2026-09-01 23:12:14.455796571 +0200
+--- a/cunls/factor/point_to_plane_factor_batch.h	2026-09-01 23:28:50.472298306 +0200
++++ b/cunls/factor/point_to_plane_factor_batch.h	2026-09-01 23:28:50.502617931 +0200
 @@ -17,7 +17,6 @@
  
  #pragma once
@@ -501,8 +542,8 @@ diff -ruN orig/cunls/factor/point_to_plane_factor_batch.h cuNLS-Release_07_13_20
  #include "cunls/common/helper.h"
  #include "cunls/common/types.h"
 diff -ruN orig/cunls/factor/point_to_point_factor_batch.h cuNLS-Release_07_13_2026/cunls/factor/point_to_point_factor_batch.h
---- a/cunls/factor/point_to_point_factor_batch.h	2026-09-01 23:12:14.426456661 +0200
-+++ b/cunls/factor/point_to_point_factor_batch.h	2026-09-01 23:12:14.455748407 +0200
+--- a/cunls/factor/point_to_point_factor_batch.h	2026-09-01 23:28:50.472330139 +0200
++++ b/cunls/factor/point_to_point_factor_batch.h	2026-09-01 23:28:50.502560035 +0200
 @@ -17,7 +17,6 @@
  
  #pragma once
@@ -512,8 +553,8 @@ diff -ruN orig/cunls/factor/point_to_point_factor_batch.h cuNLS-Release_07_13_20
  #include "cunls/common/helper.h"
  #include "cunls/common/types.h"
 diff -ruN orig/cunls/factor/prior_vector_factor_batch.h cuNLS-Release_07_13_2026/cunls/factor/prior_vector_factor_batch.h
---- a/cunls/factor/prior_vector_factor_batch.h	2026-09-01 23:12:14.426494370 +0200
-+++ b/cunls/factor/prior_vector_factor_batch.h	2026-09-01 23:12:14.455889334 +0200
+--- a/cunls/factor/prior_vector_factor_batch.h	2026-09-01 23:28:50.472359337 +0200
++++ b/cunls/factor/prior_vector_factor_batch.h	2026-09-01 23:28:50.502717019 +0200
 @@ -17,7 +17,6 @@
  
  #pragma once
@@ -523,8 +564,8 @@ diff -ruN orig/cunls/factor/prior_vector_factor_batch.h cuNLS-Release_07_13_2026
  #include "cunls/common/helper.h"
  #include "cunls/common/types.h"
 diff -ruN orig/cunls/factor/symmetric_point_to_plane_factor_batch.h cuNLS-Release_07_13_2026/cunls/factor/symmetric_point_to_plane_factor_batch.h
---- a/cunls/factor/symmetric_point_to_plane_factor_batch.h	2026-09-01 23:12:14.427043468 +0200
-+++ b/cunls/factor/symmetric_point_to_plane_factor_batch.h	2026-09-01 23:12:14.455843706 +0200
+--- a/cunls/factor/symmetric_point_to_plane_factor_batch.h	2026-09-01 23:28:50.472903611 +0200
++++ b/cunls/factor/symmetric_point_to_plane_factor_batch.h	2026-09-01 23:28:50.502668921 +0200
 @@ -17,7 +17,6 @@
  
  #pragma once
@@ -534,8 +575,8 @@ diff -ruN orig/cunls/factor/symmetric_point_to_plane_factor_batch.h cuNLS-Releas
  #include "cunls/common/helper.h"
  #include "cunls/common/types.h"
 diff -ruN orig/cunls/linear_solver/block_sparse_pcg_solver.cu cuNLS-Release_07_13_2026/cunls/linear_solver/block_sparse_pcg_solver.cu
---- a/cunls/linear_solver/block_sparse_pcg_solver.cu	2026-09-01 23:12:14.427172141 +0200
-+++ b/cunls/linear_solver/block_sparse_pcg_solver.cu	2026-09-01 23:12:14.461865295 +0200
+--- a/cunls/linear_solver/block_sparse_pcg_solver.cu	2026-09-01 23:28:50.473035228 +0200
++++ b/cunls/linear_solver/block_sparse_pcg_solver.cu	2026-09-01 23:28:50.507195190 +0200
 @@ -956,7 +956,10 @@
    int row_cursor = 0;
    int block_cursor = 0;
@@ -562,8 +603,8 @@ diff -ruN orig/cunls/linear_solver/block_sparse_pcg_solver.cu cuNLS-Release_07_1
    WARN_ON_CUSPARSE_ERROR(cusparseDestroyDnVec(vecY));
    return true;
 diff -ruN orig/cunls/linear_solver/CMakeLists.txt cuNLS-Release_07_13_2026/cunls/linear_solver/CMakeLists.txt
---- a/cunls/linear_solver/CMakeLists.txt	2026-09-01 23:12:14.427151652 +0200
-+++ b/cunls/linear_solver/CMakeLists.txt	2026-09-01 23:12:14.455593297 +0200
+--- a/cunls/linear_solver/CMakeLists.txt	2026-09-01 23:28:50.473015582 +0200
++++ b/cunls/linear_solver/CMakeLists.txt	2026-09-01 23:28:50.502369988 +0200
 @@ -1,10 +1,8 @@
  add_library(cunls_linear_solver OBJECT
    block_sparse_pcg_solver.cu
@@ -576,8 +617,8 @@ diff -ruN orig/cunls/linear_solver/CMakeLists.txt cuNLS-Release_07_13_2026/cunls
  
 -target_link_libraries(cunls_linear_solver PRIVATE cudss)
 diff -ruN orig/cunls/linear_solver/sparse_linear_solver.cpp cuNLS-Release_07_13_2026/cunls/linear_solver/sparse_linear_solver.cpp
---- a/cunls/linear_solver/sparse_linear_solver.cpp	2026-09-01 23:12:14.427380518 +0200
-+++ b/cunls/linear_solver/sparse_linear_solver.cpp	2026-09-01 23:12:14.455640924 +0200
+--- a/cunls/linear_solver/sparse_linear_solver.cpp	2026-09-01 23:28:50.473242945 +0200
++++ b/cunls/linear_solver/sparse_linear_solver.cpp	2026-09-01 23:28:50.502419386 +0200
 @@ -16,7 +16,6 @@
   */
  
@@ -599,8 +640,8 @@ diff -ruN orig/cunls/linear_solver/sparse_linear_solver.cpp cuNLS-Release_07_13_
      return std::make_unique<DenseLDLTSolver>();
    case SparseLinearSolverType::DenseCholesky:
 diff -ruN orig/cunls/math/dense_matrix_ops.cu cuNLS-Release_07_13_2026/cunls/math/dense_matrix_ops.cu
---- a/cunls/math/dense_matrix_ops.cu	2026-09-01 23:12:14.427469706 +0200
-+++ b/cunls/math/dense_matrix_ops.cu	2026-09-01 23:12:14.460844421 +0200
+--- a/cunls/math/dense_matrix_ops.cu	2026-09-01 23:28:50.473329995 +0200
++++ b/cunls/math/dense_matrix_ops.cu	2026-09-01 23:28:50.503512417 +0200
 @@ -22,6 +22,7 @@
  
  #include <cmath>
@@ -619,8 +660,8 @@ diff -ruN orig/cunls/math/dense_matrix_ops.cu cuNLS-Release_07_13_2026/cunls/mat
    // Step 1: Compute eigenvalue decomposition A = Q * D * Q^T
    // Query workspace size
 diff -ruN orig/cunls/minimizer/CMakeLists.txt cuNLS-Release_07_13_2026/cunls/minimizer/CMakeLists.txt
---- a/cunls/minimizer/CMakeLists.txt	2026-09-01 23:12:14.427669515 +0200
-+++ b/cunls/minimizer/CMakeLists.txt	2026-09-01 23:12:14.462152191 +0200
+--- a/cunls/minimizer/CMakeLists.txt	2026-09-01 23:28:50.473523908 +0200
++++ b/cunls/minimizer/CMakeLists.txt	2026-09-01 23:28:50.507457245 +0200
 @@ -7,7 +7,6 @@
    problem.cpp
    residual_batch.cu
@@ -630,8 +671,8 @@ diff -ruN orig/cunls/minimizer/CMakeLists.txt cuNLS-Release_07_13_2026/cunls/min
    fast_matrix_multiplier.cu
  )
 diff -ruN orig/cunls/minimizer/device_reduction.cu cuNLS-Release_07_13_2026/cunls/minimizer/device_reduction.cu
---- a/cunls/minimizer/device_reduction.cu	2026-09-01 23:12:14.427718487 +0200
-+++ b/cunls/minimizer/device_reduction.cu	2026-09-01 23:12:14.456263494 +0200
+--- a/cunls/minimizer/device_reduction.cu	2026-09-01 23:28:50.473576674 +0200
++++ b/cunls/minimizer/device_reduction.cu	2026-09-01 23:28:50.503111167 +0200
 @@ -49,9 +49,9 @@
  
    float sum = 0.0f;
@@ -645,8 +686,8 @@ diff -ruN orig/cunls/minimizer/device_reduction.cu cuNLS-Release_07_13_2026/cunl
      } else {
        sum += a[i] * w[i] * b[i];
 diff -ruN orig/cunls/minimizer/fast_matrix_multiplier.cu cuNLS-Release_07_13_2026/cunls/minimizer/fast_matrix_multiplier.cu
---- a/cunls/minimizer/fast_matrix_multiplier.cu	2026-09-01 23:12:14.427747977 +0200
-+++ b/cunls/minimizer/fast_matrix_multiplier.cu	2026-09-01 23:12:14.461206144 +0200
+--- a/cunls/minimizer/fast_matrix_multiplier.cu	2026-09-01 23:28:50.473606599 +0200
++++ b/cunls/minimizer/fast_matrix_multiplier.cu	2026-09-01 23:28:50.506615105 +0200
 @@ -24,6 +24,7 @@
  #include <unordered_set>
  #include <vector>
@@ -665,8 +706,8 @@ diff -ruN orig/cunls/minimizer/fast_matrix_multiplier.cu cuNLS-Release_07_13_202
      thrust::device_ptr<int> offsets_ptr(output.row_offsets.data());
      thrust::inclusive_scan(stream_policy, counts_ptr, counts_ptr + num_cols,
 diff -ruN orig/cunls/minimizer/jacobian_ops.cu cuNLS-Release_07_13_2026/cunls/minimizer/jacobian_ops.cu
---- a/cunls/minimizer/jacobian_ops.cu	2026-09-01 23:12:14.427831351 +0200
-+++ b/cunls/minimizer/jacobian_ops.cu	2026-09-01 23:12:14.461431205 +0200
+--- a/cunls/minimizer/jacobian_ops.cu	2026-09-01 23:28:50.473677111 +0200
++++ b/cunls/minimizer/jacobian_ops.cu	2026-09-01 23:28:50.506809177 +0200
 @@ -26,6 +26,7 @@
  #include <unordered_set>
  #include <vector>
@@ -694,8 +735,8 @@ diff -ruN orig/cunls/minimizer/jacobian_ops.cu cuNLS-Release_07_13_2026/cunls/mi
    // Set all the column indices to be invalid, i.e. -1
    thrust::device_ptr<int> col_ids_ptr(col_ids.data());
 diff -ruN orig/cunls/minimizer/minimizer_state.cu cuNLS-Release_07_13_2026/cunls/minimizer/minimizer_state.cu
---- a/cunls/minimizer/minimizer_state.cu	2026-09-01 23:12:14.427896700 +0200
-+++ b/cunls/minimizer/minimizer_state.cu	2026-09-01 23:12:14.461014188 +0200
+--- a/cunls/minimizer/minimizer_state.cu	2026-09-01 23:28:50.473743142 +0200
++++ b/cunls/minimizer/minimizer_state.cu	2026-09-01 23:28:50.506394110 +0200
 @@ -18,6 +18,7 @@
  #include <thrust/copy.h>
  #include <thrust/device_ptr.h>
@@ -732,8 +773,8 @@ diff -ruN orig/cunls/minimizer/minimizer_state.cu cuNLS-Release_07_13_2026/cunls
    auto &state_batches = problem.GetStateBatches();
    const auto &state_values = state.GetStates();
 diff -ruN orig/cunls/minimizer/sparse_matrix.cu cuNLS-Release_07_13_2026/cunls/minimizer/sparse_matrix.cu
---- a/cunls/minimizer/sparse_matrix.cu	2026-09-01 23:12:14.427993956 +0200
-+++ b/cunls/minimizer/sparse_matrix.cu	2026-09-01 23:12:14.461956626 +0200
+--- a/cunls/minimizer/sparse_matrix.cu	2026-09-01 23:28:50.473854793 +0200
++++ b/cunls/minimizer/sparse_matrix.cu	2026-09-01 23:28:50.507276220 +0200
 @@ -29,6 +29,7 @@
  
  #include <cassert>
@@ -783,8 +824,8 @@ diff -ruN orig/cunls/minimizer/sparse_matrix.cu cuNLS-Release_07_13_2026/cunls/m
    const auto &col_ids = structure.col_ids;
    const auto &row_ids = structure.row_ids;
 diff -ruN orig/cunls/minimizer/sparse_matrix_multiplier.cpp cuNLS-Release_07_13_2026/cunls/minimizer/sparse_matrix_multiplier.cpp
---- a/cunls/minimizer/sparse_matrix_multiplier.cpp	2026-09-01 23:12:14.428034089 +0200
-+++ b/cunls/minimizer/sparse_matrix_multiplier.cpp	2026-09-01 23:12:14.462205367 +0200
+--- a/cunls/minimizer/sparse_matrix_multiplier.cpp	2026-09-01 23:28:50.473893156 +0200
++++ b/cunls/minimizer/sparse_matrix_multiplier.cpp	2026-09-01 23:28:50.507508954 +0200
 @@ -19,7 +19,6 @@
  
  #include <stdexcept>
@@ -807,8 +848,8 @@ diff -ruN orig/cunls/minimizer/sparse_matrix_multiplier.cpp cuNLS-Release_07_13_
      return std::make_unique<FastSparseMatrixMultiplier>();
    default:
 diff -ruN orig/cunls/robustifier/arctan_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/arctan_loss_function_batch.cu
---- a/cunls/robustifier/arctan_loss_function_batch.cu	2026-09-01 23:12:14.428110647 +0200
-+++ b/cunls/robustifier/arctan_loss_function_batch.cu	2026-09-01 23:12:14.455937042 +0200
+--- a/cunls/robustifier/arctan_loss_function_batch.cu	2026-09-01 23:28:50.473966124 +0200
++++ b/cunls/robustifier/arctan_loss_function_batch.cu	2026-09-01 23:28:50.502766101 +0200
 @@ -15,7 +15,7 @@
   * limitations under the License.
   */
@@ -828,8 +869,8 @@ diff -ruN orig/cunls/robustifier/arctan_loss_function_batch.cu cuNLS-Release_07_
  }
  
 diff -ruN orig/cunls/robustifier/cauchy_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/cauchy_loss_function_batch.cu
---- a/cunls/robustifier/cauchy_loss_function_batch.cu	2026-09-01 23:12:14.428137122 +0200
-+++ b/cunls/robustifier/cauchy_loss_function_batch.cu	2026-09-01 23:12:14.456110917 +0200
+--- a/cunls/robustifier/cauchy_loss_function_batch.cu	2026-09-01 23:28:50.473995927 +0200
++++ b/cunls/robustifier/cauchy_loss_function_batch.cu	2026-09-01 23:28:50.502949474 +0200
 @@ -15,7 +15,7 @@
   * limitations under the License.
   */
@@ -849,8 +890,8 @@ diff -ruN orig/cunls/robustifier/cauchy_loss_function_batch.cu cuNLS-Release_07_
  }
  
 diff -ruN orig/cunls/robustifier/huber_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/huber_loss_function_batch.cu
---- a/cunls/robustifier/huber_loss_function_batch.cu	2026-09-01 23:12:14.428164140 +0200
-+++ b/cunls/robustifier/huber_loss_function_batch.cu	2026-09-01 23:12:14.455983353 +0200
+--- a/cunls/robustifier/huber_loss_function_batch.cu	2026-09-01 23:28:50.474024111 +0200
++++ b/cunls/robustifier/huber_loss_function_batch.cu	2026-09-01 23:28:50.502815992 +0200
 @@ -17,7 +17,7 @@
  
  #include <stdint.h>
@@ -870,8 +911,8 @@ diff -ruN orig/cunls/robustifier/huber_loss_function_batch.cu cuNLS-Release_07_1
    } else {
      // Inlier region.
 diff -ruN orig/cunls/robustifier/scaled_loss_function_batch.h cuNLS-Release_07_13_2026/cunls/robustifier/scaled_loss_function_batch.h
---- a/cunls/robustifier/scaled_loss_function_batch.h	2026-09-01 23:12:14.428232089 +0200
-+++ b/cunls/robustifier/scaled_loss_function_batch.h	2026-09-01 23:12:14.462310117 +0200
+--- a/cunls/robustifier/scaled_loss_function_batch.h	2026-09-01 23:28:50.474093806 +0200
++++ b/cunls/robustifier/scaled_loss_function_batch.h	2026-09-01 23:28:50.507606315 +0200
 @@ -58,7 +58,7 @@
   *       InformationFactorBatch.
   */
@@ -882,8 +923,8 @@ diff -ruN orig/cunls/robustifier/scaled_loss_function_batch.h cuNLS-Release_07_1
  public:
    /**
 diff -ruN orig/cunls/robustifier/soft_lone_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/soft_lone_loss_function_batch.cu
---- a/cunls/robustifier/soft_lone_loss_function_batch.cu	2026-09-01 23:12:14.428246205 +0200
-+++ b/cunls/robustifier/soft_lone_loss_function_batch.cu	2026-09-01 23:12:14.456069113 +0200
+--- a/cunls/robustifier/soft_lone_loss_function_batch.cu	2026-09-01 23:28:50.474108226 +0200
++++ b/cunls/robustifier/soft_lone_loss_function_batch.cu	2026-09-01 23:28:50.502908311 +0200
 @@ -15,7 +15,7 @@
   * limitations under the License.
   */
@@ -903,8 +944,8 @@ diff -ruN orig/cunls/robustifier/soft_lone_loss_function_batch.cu cuNLS-Release_
  }
  
 diff -ruN orig/cunls/robustifier/tolerant_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/tolerant_loss_function_batch.cu
---- a/cunls/robustifier/tolerant_loss_function_batch.cu	2026-09-01 23:12:14.428274093 +0200
-+++ b/cunls/robustifier/tolerant_loss_function_batch.cu	2026-09-01 23:12:14.456027456 +0200
+--- a/cunls/robustifier/tolerant_loss_function_batch.cu	2026-09-01 23:28:50.474137556 +0200
++++ b/cunls/robustifier/tolerant_loss_function_batch.cu	2026-09-01 23:28:50.502863367 +0200
 @@ -15,7 +15,7 @@
   * limitations under the License.
   */
@@ -924,8 +965,8 @@ diff -ruN orig/cunls/robustifier/tolerant_loss_function_batch.cu cuNLS-Release_0
    }
  }
 diff -ruN orig/cunls/state/state_batch_ops.cu cuNLS-Release_07_13_2026/cunls/state/state_batch_ops.cu
---- a/cunls/state/state_batch_ops.cu	2026-09-01 23:12:14.428772124 +0200
-+++ b/cunls/state/state_batch_ops.cu	2026-09-01 23:12:14.460934371 +0200
+--- a/cunls/state/state_batch_ops.cu	2026-09-01 23:28:50.474539266 +0200
++++ b/cunls/state/state_batch_ops.cu	2026-09-01 23:28:50.506240711 +0200
 @@ -24,6 +24,7 @@
  
  #include <cassert>

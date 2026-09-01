@@ -149,6 +149,30 @@ for f in ["cunls/common/log.h", "cunls/common/log.cpp"]:
     edit(f, lambda s: s
          .replace("#include <string_view>\n", "")
          .replace("std::string_view", "const std::string &"))
+#  cuSOLVER's IRS status enums are CUDA-11 additions; CUDA 10.2 has neither the
+#  refinement solvers nor their status codes. Guard the else-if branches that name
+#  them. CUDART_VERSION is not reachable through <cusolverDn.h> on 10.2 (verified in
+#  the Foxy image), so <cuda_runtime_api.h> is included for it. cuVSLAM's own copy of
+#  this table is handled the same way by fix 5 of the cuVSLAM port.
+def _guard(s, first, names):
+    block = ""
+    for n in names:
+        block += '  }} else if (s == {0}) {{\n    return "{0}";\n'.format(n)
+    assert s.count(block) == 1, "cuSOLVER IRS block not found: " + first
+    return s.replace(block, "#if CUDART_VERSION >= 11000\n" + block + "#endif\n", 1)
+
+def cusolver(s):
+    s = s.replace("#include <cusolverDn.h>",
+                  "#include <cuda_runtime_api.h>\n#include <cusolverDn.h>", 1)
+    s = _guard(s, "PREC", ["CUSOLVER_STATUS_IRS_PARAMS_INVALID_PREC",
+                           "CUSOLVER_STATUS_IRS_PARAMS_INVALID_REFINE",
+                           "CUSOLVER_STATUS_IRS_PARAMS_INVALID_MAXITER"])
+    s = _guard(s, "INFOS_NOT_DESTROYED", ["CUSOLVER_STATUS_IRS_INFOS_NOT_DESTROYED",
+                                          "CUSOLVER_STATUS_IRS_MATRIX_SINGULAR",
+                                          "CUSOLVER_STATUS_INVALID_WORKSPACE"])
+    return s
+edit("cunls/common/cusolver_helper.cpp", cusolver)
+
 #  Thrust gained thrust::cuda::par_nosync in 1.16 (CUDA 11.6); CUDA 10.2 ships
 #  Thrust 1.9.7. par is the same policy with a stream sync after each algorithm --
 #  correct, marginally slower. A dedicated compat header keeps the Thrust CUDA
