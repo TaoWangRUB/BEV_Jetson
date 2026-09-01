@@ -116,7 +116,9 @@ services:
   # Ports (not sensor-ids) are resolved at runtime; exposure_us is the trigger generator's
   # MEASURED pulse width, which in Fast Trigger mode IS the exposure. Read it back with
   #   j106-trigctl.py --port /dev/ttyACM0 status      -> chN_exposure_us / pulse_ns
-  # (F401 since 2026-08-31, USB CDC; the dead H7 was UART-only on /dev/ttyTHS1).
+  # (F401 since 2026-08-31. It answers on BOTH /dev/ttyACM0 (USB CDC) and /dev/ttyTHS1
+  # (UART) - verified 2026-09-01, identical status from each. Earlier comments here implied
+  # ttyTHS1 belonged only to the superseded H7; it does not.)
   #
   # There is deliberately NO default. The stamp is SOF - exposure/2, so a stale value does
   # not fail, it silently biases every timestamp by half its error - and the two generators

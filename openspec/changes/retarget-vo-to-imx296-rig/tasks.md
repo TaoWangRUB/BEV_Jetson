@@ -813,10 +813,15 @@ physically moved - the remaining items are not doable from here.
   `scripts/vo/run_motion_test.sh <label> <tape_m> [--record-images]`, driving a new
   `motion` compose service that runs capture + VO + recorder in one container.
 
-  Two things it could not have done before. It launched `bev_cuvslam.launch.py`, which starts
-  the **VO node only** — no capture — so it would have recorded an empty run; and it was the
-  last script still on `/dev/ttyTHS1`, the dead H7's port, so its trigger check silently
-  warned and carried on, which is precisely the failure it exists to prevent.
+  One real fault it had before: it launched `bev_cuvslam.launch.py`, which starts the **VO
+  node only** — no capture node — so it would have recorded an empty run.
+
+  *(An earlier version of this entry also blamed its use of `/dev/ttyTHS1`, calling that the
+  superseded H7's port. That was wrong, and the operator corrected it: the F401 answers on
+  **both** `/dev/ttyACM0` (USB CDC) and `/dev/ttyTHS1` (UART) — verified 2026-09-01, identical
+  status from each. Its trigger check would have worked. Comments across `record_calib_session.sh`,
+  `trigger_probe.py` and `docker-compose.yml` implied ttyTHS1 belonged only to the dead H7 and
+  have been corrected too, since they are what led to the wrong conclusion.)*
 
   The preflight now **gates rather than warns**: `trigger_mode=1`, generator running,
   `polarity=active_low`, and it reads `pulse_ns` back to derive `exposure_us` instead of

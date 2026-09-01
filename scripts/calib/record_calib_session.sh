@@ -19,7 +19,8 @@ OUT="${1:-bags/calib_$(date +%Y%m%d_%H%M%S)}"
 EXPOSURE_US="${EXPOSURE_US:-}"        # default: read from the trigger generator
 EVERY_N="${EVERY_N:-8}"               # 30 Hz / 8 = 3.75 Hz images; solvers want ~4 Hz
 TRIGCTL="${TRIGCTL:-/home/nvidia/tools/j106-trigctl.py}"
-TRIG_PORT="${TRIG_PORT:-/dev/ttyACM0}"   # F401 (USB CDC) since 2026-08-31; the H7 was /dev/ttyTHS1
+TRIG_PORT="${TRIG_PORT:-/dev/ttyACM0}"
+# F401: reachable on BOTH /dev/ttyACM0 (USB CDC) and /dev/ttyTHS1 (UART) - verified 2026-09-01, same generator on both. ACM0 is the default only for consistency.
 SUDO="echo nvidia | sudo -S"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }

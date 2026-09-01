@@ -27,7 +27,8 @@ TAPE=${2:?give the tape-measured distance in metres, even for a return-to-origin
 RECORD_IMAGES=0
 [ "${3:-}" = "--record-images" ] && RECORD_IMAGES=1
 
-TRIG_PORT="${TRIG_PORT:-/dev/ttyACM0}"   # F401 (USB CDC) since 2026-08-31; the H7 was /dev/ttyTHS1
+TRIG_PORT="${TRIG_PORT:-/dev/ttyACM0}"
+# F401: reachable on BOTH /dev/ttyACM0 (USB CDC) and /dev/ttyTHS1 (UART) - verified 2026-09-01, same generator on both. ACM0 is the default only for consistency.
 TRIGCTL="${TRIGCTL:-/home/nvidia/tools/j106-trigctl.py}"
 fail() { echo "REFUSING: $*" >&2; exit 1; }
 

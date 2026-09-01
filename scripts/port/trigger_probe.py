@@ -43,7 +43,8 @@ import time
 import numpy as np
 
 TRIGCTL = os.environ.get("TRIGCTL", "/home/nvidia/tools/j106-trigctl.py")
-TRIG_PORT = os.environ.get("TRIG_PORT", "/dev/ttyACM0")   # F401 (USB CDC); the H7 was /dev/ttyTHS1
+TRIG_PORT = os.environ.get("TRIG_PORT", "/dev/ttyACM0")
+# F401: reachable on BOTH /dev/ttyACM0 (USB CDC) and /dev/ttyTHS1 (UART) - verified 2026-09-01, same generator on both. ACM0 is the default only for consistency.
 W, H = 1456, 1088
 
 
