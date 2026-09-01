@@ -73,8 +73,17 @@ services:
         # rosbag2 checkpoints and writes metadata.yaml only on a clean SIGINT.
         ros2 launch bev_cuvslam bev_cuvslam_fused.launch.py &
         VO=$$!
-        stop() { [ -n "$$REC" ] && kill -INT $$REC 2>/dev/null; kill -INT $$VO 2>/dev/null;
-                 [ -n "$$REC" ] && wait $$REC 2>/dev/null; wait $$VO 2>/dev/null; }
+        # ORDER MATTERS, and only the recorder's exit is worth waiting for. rosbag2 must
+        # checkpoint and write metadata.yaml or the bag is unreadable; the VO has nothing to
+        # flush and `ros2 launch` is slow to leave (it escalates INT -> TERM -> KILL on its
+        # own child), so waiting on it just hangs the container with the bag already safe.
+        stop() {
+          if [ -n "$$REC" ]; then kill -INT $$REC 2>/dev/null; wait $$REC 2>/dev/null; fi
+          kill -INT $$VO 2>/dev/null
+          for i in 1 2 3 4 5 6; do kill -0 $$VO 2>/dev/null || break; sleep 1; done
+          kill -KILL $$VO 2>/dev/null
+          exit 0
+        }
         trap stop INT TERM
         # MOTION_SECONDS makes a run a DEFINED EXPERIMENT rather than an open-ended one that
         # depends on a signal arriving intact. Ctrl-C still works; this just does not need it.
