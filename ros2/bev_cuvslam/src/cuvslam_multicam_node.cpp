@@ -331,7 +331,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
   std::array<rclcpp::Subscription<Img>::SharedPtr, 4> subs_;
   std::array<std::deque<Img::ConstSharedPtr>, 4> hist_;
   std::vector<bev_cuvslam::VirtualPinhole> vpin_;   // 8: two per fisheye
-  std::vector<size_t> vsrc_;                        // which fisheye feeds each virtual cam
+  std::vector<int> vsrc_;                           // which fisheye feeds each virtual cam
   std::array<cv::Mat, 8> vimg_;                     // remap destinations, reused each set
   int64_t remap_us_ = 0;
   std::string vstereo_path_;

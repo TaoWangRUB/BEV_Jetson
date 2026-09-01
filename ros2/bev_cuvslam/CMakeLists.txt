@@ -62,10 +62,10 @@ set_target_properties(bev_cuvslam_fused_node PROPERTIES CUDA_ARCHITECTURES 62)
 target_include_directories(bev_cuvslam_fused_node PRIVATE
   "${CUVSLAM_INCLUDE_DIR}/.."
   "${MMAPI_ROOT}/argus/include" "${MMAPI_ROOT}/include"
-  "${CUDA_DIR}/include")
+  "${CUDA_DIR}/include" ${OpenCV_INCLUDE_DIRS} include)
 target_link_directories(bev_cuvslam_fused_node PRIVATE "${TEGRA_LIB_DIR}" "${CUDA_DIR}/lib64")
 target_link_libraries(bev_cuvslam_fused_node
-  ${CUVSLAM_LIB} yaml-cpp
+  ${CUVSLAM_LIB} yaml-cpp ${OpenCV_LIBS}
   nvargus_socketclient nveglstream_camconsumer nvbuf_utils EGL GLESv2
   cuda cudart pthread)
 ament_target_dependencies(bev_cuvslam_fused_node
