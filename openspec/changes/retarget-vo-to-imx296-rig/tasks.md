@@ -650,7 +650,21 @@ done during A, in parallel, since it needs no calibration.
   Verified without a board, since none of it can be run here: the hand-written Mei projection matches `cv2.omnidir.projectPoints` to 5e-13 px over 4000 rays and the built map is bit-identical at 25 sampled pixels; the quaternion conversion round-trips 20000 random rotations through all four trace branches to 1.6e-7; and `scripts/vo/verify_rig_build.sh` re-runs cuVSLAM's own frustum test on the poses the C++ emits, reproducing 0.939/0.951/0.926/0.949 with all 8 cameras paired. That last check exists because a sign error in `rig_from_fisheye * Ry` still yields a valid rig that cuVSLAM would accept while finding no stereo pairs at all - it drops the pairing to ~0.03.
 
   **NOT compiled.** The ROS 2 wiring needs an environment this host does not have.
-- [ ] 4.2 **Deliberately deferred, and the reason is not effort.** The fused node exists to avoid a CPU round-trip (NVMM Y plane straight to CUDA). Adding the virtual-pinhole carve to it means a CUDA remap on the NVMM buffer - a CPU remap would negate the node's entire purpose. Until 4.5/section 5 show the modular path is too slow, the fused node has no justification to be rewritten twice. Note the stamping fix it needs is the same one 4.1 made; `iframe->getTime()` is the WRONG source (consumer-side - it reported cameras ~7 ms apart in capture-loop order), so this task's original wording is superseded by README 4.7.
+- [ ] 4.2 **GATE CONDITION NOW MET (2026-09-01) — this is the next piece of work.** The deferral below
+  was conditional on the modular path proving too slow, and 4.5/4.5b have now shown exactly that:
+  ~30 ms of CPU remap per set, half the sets dropped at 30 Hz and a third at 15 Hz, and both
+  resolution axes measured to be bad trades. The images are also going out over DDS —
+  4 × 1456×1088 mono8, ~95 MB/s at 15 Hz, plus a cv_bridge conversion on each side — which the fused
+  node removes entirely by never leaving the GPU.
+
+  The node itself is written and, as of today, **builds**: Argus NVMM Y-plane → CUDA device pointer
+  via `NvEGLImageFromFd` + `cuGraphicsEGLRegisterImage`, publishing only `/cuvslam/odometry` + TF,
+  with the bridge already validated against the CPU path by `scripts/port/egl_cuda_spike.cpp`.
+  What it still needs is stated below: the virtual-pinhole carve as a **CUDA** remap on the NVMM
+  buffer, plus 4.1's stamping fix. Note that ROS 2 Foxy has no practical loaned-message/shared-memory
+  path, so single-process fusion is the right answer here rather than a DDS transport trick.
+
+  Original text: **Deliberately deferred, and the reason is not effort.** The fused node exists to avoid a CPU round-trip (NVMM Y plane straight to CUDA). Adding the virtual-pinhole carve to it means a CUDA remap on the NVMM buffer - a CPU remap would negate the node's entire purpose. Until 4.5/section 5 show the modular path is too slow, the fused node has no justification to be rewritten twice. Note the stamping fix it needs is the same one 4.1 made; `iframe->getTime()` is the WRONG source (consumer-side - it reported cameras ~7 ms apart in capture-loop order), so this task's original wording is superseded by README 4.7.
 - [~] 4.3 Done for the modular node (sets / worst skew / drops / remap time every 5 s); pending for the fused node with 4.2. Report the drop counter and recent worst-case skew from both nodes; make a stopped trigger diagnosable as a trigger fault, not a camera failure (spec: *A stopped trigger is diagnosable*).
 - [~] 4.4 `bev_cuvslam.launch.py` retargeted (ring-closed extrinsics, virtual-stereo config, skew gate, no `sync_slop_ms`). `fused_vo_params.yaml` and the fused run scripts wait on 4.2.
 - [~] 4.5 **FIRST BUILD AND FIRST LIVE RUN, 2026-09-01.** `bev_cuvslam` had never been compiled;
@@ -701,6 +715,15 @@ done during A, in parallel, since it needs no calibration.
 
   Also: repeated runs leak an Argus session — one run died with `Argus setup failed` until
   `sudo systemctl restart nvargus-daemon`. Compose warns about it; worth automating.
+
+  **THE RIG PRODUCED ODOMETRY, 2026-09-01.** `/cuvslam/odometry` publishing live, `frame_id: odom`,
+  `child_frame_id: cam1_optical_frame` (3R.16b's rename visible on the wire), real pose and a
+  populated covariance, **zero "tracking lost" warnings** across the run. cuVSLAM is tracking on the
+  promoted round-2 calibration. This is the first odometry this rig has ever produced.
+
+  **At 15 Hz (`PUBLISH_EVERY_N=2`):** source anomalies **13.8% → 3.0%** (70 over-limit of 2358),
+  VO acceptance **48% → 64%**, worst skew still **1 µs**. Better, not fixed — and the remap is
+  still 26-39 ms per set, so the CPU is near saturation even with the budget doubled to 66 ms.
 
   Original text: blocked on §3R (the rig is uncalibrated as it stands). Run both nodes on the board: confirm zero dropped sets with the trigger live, worst-case skew < 1 ms, and `/cuvslam/odometry` tracking with no "tracking lost".
 
