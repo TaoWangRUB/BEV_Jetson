@@ -28,12 +28,15 @@ mkdir -p "${REPO_ROOT}/build"
 # Regenerate after a submodule bump: scripts/port/regen_cuvslam_patch.sh
 # (see patch/cuvslam/README.md).
 #
-# USE_CUNLS: v17 flipped this option's default OFF -> ON. cuNLS is the CUDA nonlinear
-# least-squares backend behind the new OdometryMode::Multisensor; its CMake downloads a
-# prebuilt cuDSS archive at configure time and requires a modern CUDA. Neither exists for
-# CUDA 10.2 / sm_62, so it must be forced OFF here or the configure step fails. Turning it
-# off also means Multisensor mode is unavailable on the TX2 (it throws without cuNLS) --
-# Multicamera stays the mode this board uses.
+# USE_CUNLS (default ON here; override with USE_CUNLS=OFF): cuNLS is the CUDA nonlinear
+# least-squares backend behind v17's OdometryMode::Multisensor. Upstream targets CUDA 12 /
+# sm_75+ and its CMake downloads a prebuilt cuDSS archive, which NVIDIA publishes for
+# CUDA 12/13 ONLY -- no CUDA 10.2 build, no Tegra build, and no source to compile. cuVSLAM
+# never actually selects cuDSS (multisensor_pose_estimator asks for DenseQR; cuNLS's own
+# default is BlockSparsePCG), so patch/cunls/0001-cuda102-tx2-port.patch removes that
+# backend outright along with the C++17/sm_75 assumptions. The source is pre-populated and
+# patched below, then handed to cuVSLAM's FetchContent via FETCHCONTENT_SOURCE_DIR_CUNLS
+# so no download or upstream PATCH_COMMAND runs.
 PATCH="${REPO_ROOT}/patch/cuvslam/0001-cuda102-tx2-port.patch"
 if patch -p1 -d "${SRC}" --dry-run --reverse --force <"${PATCH}" >/dev/null 2>&1; then
     echo "cuVSLAM CUDA-10.2 port patch already applied."
@@ -46,14 +49,44 @@ else
     exit 1
 fi
 
-echo "Configuring cuVSLAM GPU for CUDA 10.2 / sm_62 / gcc-8 / C++14 ..."
+# --- cuNLS: pre-populate + patch, so FetchContent neither downloads nor fetches cuDSS ---
+USE_CUNLS="${USE_CUNLS:-ON}"
+CUNLS_ARGS=(-DUSE_CUNLS=OFF)
+if [[ "${USE_CUNLS}" == "ON" ]]; then
+    CUNLS_VER="${CUNLS_VERSION:-Release_07_13_2026}"
+    CUNLS_TAR="${REPO_ROOT}/build/cunls-${CUNLS_VER}.tar.gz"
+    CUNLS_SRC="${REPO_ROOT}/build/cuNLS-${CUNLS_VER}"
+    CUNLS_PATCH="${REPO_ROOT}/patch/cunls/0001-cuda102-tx2-port.patch"
+    if [[ ! -f "${CUNLS_TAR}" ]]; then
+        echo "Downloading cuNLS ${CUNLS_VER} ..."
+        curl -sSL -o "${CUNLS_TAR}" \
+          "https://github.com/nvidia-isaac/cuNLS/archive/refs/tags/${CUNLS_VER}.tar.gz" || {
+            echo "ERROR: cuNLS download failed; re-run with USE_CUNLS=OFF to skip it." >&2; exit 1; }
+    fi
+    if [[ ! -d "${CUNLS_SRC}" ]]; then
+        tar xzf "${CUNLS_TAR}" -C "${REPO_ROOT}/build"
+    fi
+    if patch -p1 -d "${CUNLS_SRC}" --dry-run --reverse --force <"${CUNLS_PATCH}" >/dev/null 2>&1; then
+        echo "cuNLS CUDA-10.2 port patch already applied."
+    elif patch -p1 -d "${CUNLS_SRC}" --dry-run --force <"${CUNLS_PATCH}" >/dev/null 2>&1; then
+        patch -p1 -d "${CUNLS_SRC}" --force <"${CUNLS_PATCH}"
+        echo "Applied cuNLS CUDA-10.2 port patch."
+    else
+        echo "ERROR: cuNLS port patch neither applies cleanly nor is already applied" >&2
+        echo "       — regenerate with scripts/port/regen_cunls_patch.sh" >&2
+        exit 1
+    fi
+    CUNLS_ARGS=(-DUSE_CUNLS=ON "-DFETCHCONTENT_SOURCE_DIR_CUNLS=${CUNLS_SRC}")
+fi
+
+echo "Configuring cuVSLAM GPU for CUDA 10.2 / sm_62 / gcc-8 / C++14 (USE_CUNLS=${USE_CUNLS}) ..."
 cmake -S "${SRC}" -B "${BUILD}" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_ARCHITECTURES=62 \
     -DCMAKE_C_COMPILER=gcc-8 -DCMAKE_CXX_COMPILER=g++-8 \
     -DCMAKE_CUDA_HOST_COMPILER=g++-8 \
     -DCMAKE_CXX_STANDARD_LIBRARIES=-lstdc++fs \
     -DUSE_RERUN=OFF -DUSE_CERES=OFF -DUSE_NVTX=OFF \
-    -DUSE_CUNLS=OFF 2>&1 | tee "${LOG}"
+    "${CUNLS_ARGS[@]}" 2>&1 | tee "${LOG}"
 
 # --- known fix #7: the fetched dense_hash_map dep defines an unconditional
 #     std::pmr alias; gcc-8's libstdc++ has no std::pmr (added in gcc-9). cuVSLAM

@@ -22,3 +22,6 @@ config/rig/rig_extrinsics_tuned.yaml
 # The SOLVER OUTPUTS are preserved under config/calib/archive/ instead - see its README.
 datasets/
 cyclonedds.log
+# cuNLS release tarball + extracted tree, fetched by scripts/build_cuvslam_tx2gpu.sh
+build/cunls-*.tar.gz
+build/cuNLS-*/

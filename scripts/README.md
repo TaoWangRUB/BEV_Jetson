@@ -51,6 +51,7 @@ See [docs/extrinsic_calibration.md](../docs/extrinsic_calibration.md) for the fu
 | [port/egl_cuda_spike.cpp](port/egl_cuda_spike.cpp) | TX2 | EGL→CUDA zero-copy bridge spike (validates the NVMM→CUDA device pointer) |
 | [port/downgrade_cuvslam_cpp17.py](port/downgrade_cuvslam_cpp17.py) | TX2 | downgrade cuVSLAM C++17 device syntax to C++14 for nvcc 10.2 |
 | [port/regen_cuvslam_patch.sh](port/regen_cuvslam_patch.sh) | host | regenerate patch/cuvslam/0001-cuda102-tx2-port.patch after a cuVSLAM submodule bump |
+| [port/regen_cunls_patch.sh](port/regen_cunls_patch.sh) | host | regenerate patch/cunls/0001-cuda102-tx2-port.patch (cuNLS, needed for USE_CUNLS/Multisensor) |
 | [port/grab_views.py](port/grab_views.py) | TX2 | grab frames from ROS 2 image topics and/or montage 4 cams + panorama |
 | [port/sync_check.py](port/sync_check.py) | TX2 | measure the timestamp spread across N camera topics |
 | [port/topic_rate.py](port/topic_rate.py) | TX2 | count messages on topics over a window and print the rate |

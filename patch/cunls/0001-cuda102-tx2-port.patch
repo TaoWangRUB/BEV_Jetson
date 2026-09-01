@@ -1,0 +1,588 @@
+diff -ruN orig/CMakeLists.txt cuNLS-Release_07_13_2026/CMakeLists.txt
+--- a/CMakeLists.txt	2026-09-01 22:47:40.156637048 +0200
++++ b/CMakeLists.txt	2026-09-01 22:47:40.187327493 +0200
+@@ -1,11 +1,23 @@
+ cmake_minimum_required(VERSION 3.24)
+-set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89)
+-set(CMAKE_CUDA_COMPILER /usr/local/cuda/bin/nvcc)
++# TX2 port: never override what the parent project already chose. cuVSLAM sets
++# sm_62 and its own nvcc; hard-coding sm_75+ here breaks the Jetson TX2 build.
++if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
++  set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89)
++endif()
++if(NOT DEFINED CMAKE_CUDA_COMPILER)
++  set(CMAKE_CUDA_COMPILER /usr/local/cuda/bin/nvcc)
++endif()
+ 
+ project(cunls LANGUAGES CXX CUDA)
+ 
+ set(CMAKE_CXX_STANDARD 17)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
++# nvcc 10.2 cannot compile C++17 device code; the .cu sources and every header
++# they pull in are downgraded to C++14 by this patch.
++if(NOT DEFINED CMAKE_CUDA_STANDARD)
++  set(CMAKE_CUDA_STANDARD 14)
++  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
++endif()
+ option(BUILD_TESTING OFF)
+ option(BUILD_SHARED_LIBS "Build shared library (OFF for static)" ON)
+ 
+@@ -15,16 +27,15 @@
+ 
+ include(FetchContent)
+ include(cmake/AddSpdlog.cmake)
+-include(cmake/AddCUDSS.cmake)
+ include(cmake/BundleStaticDeps.cmake)
+ 
+ add_spdlog()
+-# cuDSS is fetched as a prebuilt archive. Default to 0.8.0.10; 0.7.1.4 is still
+-# supported via -DCUDSS_VERSION=0.7.1.4.
+-set(CUDSS_VERSION "0.8.0.10" CACHE STRING "cuDSS version to download")
+-add_cudss(VERSION "${CUDSS_VERSION}")
++# cuDSS REMOVED for the TX2 port: it ships only as a prebuilt binary, and NVIDIA
++# publishes it for CUDA 12/13 only -- no CUDA 10.2 and no Tegra build exists, and
++# there is no source to compile. cuVSLAM never selects it (it asks for DenseQR;
++# cuNLS's own default is BlockSparsePCG), so the backend is dropped outright.
+ 
+-set(CUNLS_LIBS spdlog::spdlog CUDA::cusparse CUDA::cublas CUDA::cusolver cudss)
++set(CUNLS_LIBS spdlog::spdlog CUDA::cusparse CUDA::cublas CUDA::cusolver)
+ 
+ option(ENABLE_PROFILING "Enable profiling" OFF)
+ if(ENABLE_PROFILING)
+@@ -91,7 +102,7 @@
+ else()
+   set_target_properties(cunls PROPERTIES
+       ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+-  bundle_static_dependencies(cunls spdlog::spdlog cudss)
++  bundle_static_dependencies(cunls spdlog::spdlog)
+ endif()
+ 
+ # C++ library install targets (skipped when only building Python wheel)
+diff -ruN orig/cunls/common/CMakeLists.txt cuNLS-Release_07_13_2026/cunls/common/CMakeLists.txt
+--- a/cunls/common/CMakeLists.txt	2026-09-01 22:47:40.156943751 +0200
++++ b/cunls/common/CMakeLists.txt	2026-09-01 22:47:40.187427977 +0200
+@@ -1,7 +1,6 @@
+ add_library(cunls_common OBJECT
+   cublas_helper.cpp
+   cuda_stream.cpp
+-  cudss_helper.cpp
+   cusolver_helper.cpp
+   cusparse_helper.cpp
+   log.cpp
+@@ -9,7 +8,7 @@
+   utils.cpp
+ )
+ 
+-target_link_libraries(cunls_common PRIVATE spdlog::spdlog cudss)
++target_link_libraries(cunls_common PRIVATE spdlog::spdlog)
+ 
+ if(ENABLE_PROFILING)
+   target_link_libraries(cunls_common PRIVATE nvtx3-cpp)
+diff -ruN orig/cunls/common/helper.h cuNLS-Release_07_13_2026/cunls/common/helper.h
+--- a/cunls/common/helper.h	2026-09-01 22:47:40.157186816 +0200
++++ b/cunls/common/helper.h	2026-09-01 22:47:40.188126227 +0200
+@@ -46,7 +46,7 @@
+       msg << "[CUDA] error " << (to_string_fn)(ret) << "(" << ret << ")";      \
+       msg << " in " << LOCATION << std::endl;                                  \
+       LogError(msg.str());                                                     \
+-      if constexpr (is_throw) {                                                \
++      if (is_throw) {                                                \
+         throw std::runtime_error(msg.str());                                   \
+       }                                                                        \
+     }                                                                          \
+diff -ruN orig/cunls/common/log.cpp cuNLS-Release_07_13_2026/cunls/common/log.cpp
+--- a/cunls/common/log.cpp	2026-09-01 22:47:40.157215943 +0200
++++ b/cunls/common/log.cpp	2026-09-01 22:47:40.191470008 +0200
+@@ -103,7 +103,7 @@
+  * Lazily initializes the logger with Silent verbosity if it hasn't been
+  * configured yet via SetLoggerOptions.
+  */
+-void Log(Verbosity verbosity, std::string_view msg) {
++void Log(Verbosity verbosity, const std::string & msg) {
+   if (!is_logger_initialized.load(std::memory_order_acquire)) {
+     SetLoggerOptions(Verbosity::Silent);
+     is_logger_initialized.store(true, std::memory_order_release);
+@@ -113,15 +113,15 @@
+   spdlog::log(log_level, msg);
+ }
+ 
+-/** @copydoc LogError(std::string_view) */
+-void LogError(std::string_view msg) { Log(Verbosity::Error, msg); }
++/** @copydoc LogError(const std::string &) */
++void LogError(const std::string & msg) { Log(Verbosity::Error, msg); }
+ 
+-/** @copydoc LogWarning(std::string_view) */
+-void LogWarning(std::string_view msg) { Log(Verbosity::Warning, msg); }
++/** @copydoc LogWarning(const std::string &) */
++void LogWarning(const std::string & msg) { Log(Verbosity::Warning, msg); }
+ 
+-/** @copydoc LogMessage(std::string_view) */
+-void LogMessage(std::string_view msg) { Log(Verbosity::Message, msg); }
++/** @copydoc LogMessage(const std::string &) */
++void LogMessage(const std::string & msg) { Log(Verbosity::Message, msg); }
+ 
+-/** @copydoc LogDebug(std::string_view) */
+-void LogDebug(std::string_view msg) { Log(Verbosity::Debug, msg); }
++/** @copydoc LogDebug(const std::string &) */
++void LogDebug(const std::string & msg) { Log(Verbosity::Debug, msg); }
+ } // namespace cunls
+diff -ruN orig/cunls/common/log.h cuNLS-Release_07_13_2026/cunls/common/log.h
+--- a/cunls/common/log.h	2026-09-01 22:47:40.157231278 +0200
++++ b/cunls/common/log.h	2026-09-01 22:47:40.191626081 +0200
+@@ -18,7 +18,6 @@
+ #pragma once
+ #include <sstream>
+ #include <string>
+-#include <string_view>
+ #include <tuple>
+ 
+ // Check for C++20 support
+@@ -56,31 +55,31 @@
+  * @param verbosity The severity level of this message.
+  * @param msg       The message string to log.
+  */
+-void Log(Verbosity verbosity, std::string_view msg);
++void Log(Verbosity verbosity, const std::string & msg);
+ 
+ /**
+  * @brief Logs a message at Error verbosity.
+  * @param msg The error message to log.
+  */
+-void LogError(std::string_view msg);
++void LogError(const std::string & msg);
+ 
+ /**
+  * @brief Logs a message at Warning verbosity.
+  * @param msg The warning message to log.
+  */
+-void LogWarning(std::string_view msg);
++void LogWarning(const std::string & msg);
+ 
+ /**
+  * @brief Logs a message at Message (informational) verbosity.
+  * @param msg The informational message to log.
+  */
+-void LogMessage(std::string_view msg);
++void LogMessage(const std::string & msg);
+ 
+ /**
+  * @brief Logs a message at Debug verbosity.
+  * @param msg The debug message to log.
+  */
+-void LogDebug(std::string_view msg);
++void LogDebug(const std::string & msg);
+ 
+ #ifdef CPP_20_OR_GREATER
+ /**
+@@ -95,7 +94,7 @@
+  * @param args      Values to substitute into the format string.
+  */
+ template <typename... Args>
+-inline void Log(Verbosity verbosity, std::string_view fmt, Args &&...args) {
++inline void Log(Verbosity verbosity, const std::string & fmt, Args &&...args) {
+   std::string buf;
+   std::vformat_to(std::back_inserter(buf), fmt, std::make_format_args(args...));
+   Log(verbosity, buf);
+@@ -117,7 +116,7 @@
+ template <size_t Index, typename Tuple>
+ void format_arg_at_index(std::ostringstream &oss, const Tuple &args,
+                          size_t target_index) {
+-  if (Index == target_index && Index < std::tuple_size_v<Tuple>) {
++  if (Index == target_index && Index < std::tuple_size<Tuple>::value) {
+     oss << std::get<Index>(args);
+   }
+ }
+@@ -137,7 +136,10 @@
+ void format_arg_recursive(std::ostringstream &oss, const Tuple &args,
+                           size_t target_index,
+                           std::index_sequence<Indices...>) {
+-  (format_arg_at_index<Indices>(oss, args, target_index), ...);
++  // C++14 has no fold expressions; expand through an initialiser list, whose
++  // elements are sequenced left-to-right just like the fold was.
++  int expand[] = {0, (format_arg_at_index<Indices>(oss, args, target_index), 0)...};
++  (void)expand;
+ }
+ 
+ /**
+@@ -152,7 +154,7 @@
+  * @return Formatted string with all placeholders replaced.
+  */
+ template <typename... Args>
+-std::string vformat_to(std::string_view fmt_str, Args &&...args) {
++std::string vformat_to(const std::string & fmt_str, Args &&...args) {
+   std::ostringstream result;
+   std::string fmt(fmt_str);
+   auto args_tuple = std::forward_as_tuple(std::forward<Args>(args)...);
+@@ -228,7 +230,7 @@
+  * @param args      Values to substitute into the format string.
+  */
+ template <typename... Args>
+-inline void Log(Verbosity verbosity, std::string_view fmt, Args &&...args) {
++inline void Log(Verbosity verbosity, const std::string & fmt, Args &&...args) {
+   std::string buf = vformat_to(fmt, std::forward<Args>(args)...);
+   Log(verbosity, buf);
+ }
+@@ -242,7 +244,7 @@
+  * @param args Values to substitute into the format string.
+  */
+ template <typename... Args>
+-inline void LogError(std::string_view fmt, Args &&...args) {
++inline void LogError(const std::string & fmt, Args &&...args) {
+   Log(Verbosity::Error, fmt, std::forward<Args>(args)...);
+ }
+ 
+@@ -254,7 +256,7 @@
+  * @param args Values to substitute into the format string.
+  */
+ template <typename... Args>
+-inline void LogWarning(std::string_view fmt, Args &&...args) {
++inline void LogWarning(const std::string & fmt, Args &&...args) {
+   Log(Verbosity::Warning, fmt, std::forward<Args>(args)...);
+ }
+ 
+@@ -266,7 +268,7 @@
+  * @param args Values to substitute into the format string.
+  */
+ template <typename... Args>
+-inline void LogMessage(std::string_view fmt, Args &&...args) {
++inline void LogMessage(const std::string & fmt, Args &&...args) {
+   Log(Verbosity::Message, fmt, std::forward<Args>(args)...);
+ }
+ 
+@@ -278,7 +280,7 @@
+  * @param args Values to substitute into the format string.
+  */
+ template <typename... Args>
+-inline void LogDebug(std::string_view fmt, Args &&...args) {
++inline void LogDebug(const std::string & fmt, Args &&...args) {
+   Log(Verbosity::Debug, fmt, std::forward<Args>(args)...);
+ }
+ } // namespace cunls
+diff -ruN orig/cunls/common/profiler.cpp cuNLS-Release_07_13_2026/cunls/common/profiler.cpp
+--- a/cunls/common/profiler.cpp	2026-09-01 22:47:40.157274974 +0200
++++ b/cunls/common/profiler.cpp	2026-09-01 22:47:40.191347020 +0200
+@@ -23,7 +23,7 @@
+ #include <nvtx3/nvtx3.hpp>
+ #endif
+ 
+-namespace cunls::profiler {
++namespace cunls { namespace profiler {
+ #ifdef ENABLE_PROFILING
+ 
+ namespace internal {
+@@ -141,4 +141,4 @@
+ }
+ 
+ #endif
+-} // namespace cunls::profiler
++}} // namespace cunls::profiler
+diff -ruN orig/cunls/common/profiler.h cuNLS-Release_07_13_2026/cunls/common/profiler.h
+--- a/cunls/common/profiler.h	2026-09-01 22:47:40.157290583 +0200
++++ b/cunls/common/profiler.h	2026-09-01 22:47:40.191569520 +0200
+@@ -18,8 +18,9 @@
+ #pragma once
+ #include <cstdint>
+ #include <string>
++#include <utility>
+ 
+-namespace cunls::profiler {
++namespace cunls { namespace profiler {
+ 
+ /**
+  * @brief RAII wrapper for an NVTX range used for profiling.
+@@ -63,7 +64,10 @@
+ public:
+   DomainRange(const DomainRange &) = delete;
+   DomainRange &operator=(const DomainRange &) = delete;
+-  DomainRange(DomainRange &&) = delete;
++  DomainRange(DomainRange &&other) noexcept
++      : handle_(other.handle_), name_(std::move(other.name_)) {
++    other.handle_ = nullptr;
++  }
+   DomainRange &operator=(DomainRange &&) = delete;
+ 
+   /**
+@@ -131,4 +135,4 @@
+   void *handle_ = nullptr; ///< Handle to the NVTX domain.
+   uint32_t color_ = 0;     ///< Current color counter for range cycling.
+ };
+-} // namespace cunls::profiler
++}} // namespace cunls::profiler
+diff -ruN orig/cunls/common/types.h cuNLS-Release_07_13_2026/cunls/common/types.h
+--- a/cunls/common/types.h	2026-09-01 22:47:40.157330394 +0200
++++ b/cunls/common/types.h	2026-09-01 22:47:40.187595523 +0200
+@@ -17,7 +17,6 @@
+ 
+ #pragma once
+ 
+-#include <cuda/std/array>
+ #include <vector>
+ 
+ #include "device_vector.h"
+@@ -25,6 +24,23 @@
+ 
+ namespace cunls {
+ 
++// CUDA 10.2 ships libcu++ 1.0, which has no <cuda/std/array> (it provides only
++// atomic, cassert, cfloat, climits, cstddef, cstdint, type_traits, version).
++// DeviceArray is a minimal stand-in with the same aggregate layout and the subset
++// of the std::array interface cuNLS uses, usable from host and device.
++template <typename T, int N> struct DeviceArray {
++  T _elems[N];
++  __host__ __device__ T &operator[](int i) { return _elems[i]; }
++  __host__ __device__ constexpr const T &operator[](int i) const { return _elems[i]; }
++  __host__ __device__ constexpr int size() const { return N; }
++  __host__ __device__ T *data() { return _elems; }
++  __host__ __device__ constexpr const T *data() const { return _elems; }
++  __host__ __device__ T *begin() { return _elems; }
++  __host__ __device__ constexpr const T *begin() const { return _elems; }
++  __host__ __device__ T *end() { return _elems + N; }
++  __host__ __device__ constexpr const T *end() const { return _elems + N; }
++};
++
+ /**
+  * @brief Fixed-size vector of floats stored as a cuda::std::array.
+  *
+@@ -33,7 +49,7 @@
+  *
+  * @tparam Dim Number of elements in the vector.
+  */
+-template <int Dim> using Vector = cuda::std::array<float, Dim>;
++template <int Dim> using Vector = DeviceArray<float, Dim>;
+ 
+ /**
+  * @brief Fixed-size square matrix of floats stored in row-major order.
+@@ -43,7 +59,7 @@
+  *
+  * @tparam Dim Number of rows (and columns) in the square matrix.
+  */
+-template <int Dim> using Matrix = cuda::std::array<float, Dim * Dim>;
++template <int Dim> using Matrix = DeviceArray<float, Dim * Dim>;
+ 
+ /**
+  * @brief SE(3) transformation matrix representation.
+diff -ruN orig/cunls/factor/point_to_plane_factor_batch.h cuNLS-Release_07_13_2026/cunls/factor/point_to_plane_factor_batch.h
+--- a/cunls/factor/point_to_plane_factor_batch.h	2026-09-01 22:47:40.157578888 +0200
++++ b/cunls/factor/point_to_plane_factor_batch.h	2026-09-01 22:47:40.187698201 +0200
+@@ -17,7 +17,6 @@
+ 
+ #pragma once
+ 
+-#include <cuda/std/array>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/common/types.h"
+diff -ruN orig/cunls/factor/point_to_point_factor_batch.h cuNLS-Release_07_13_2026/cunls/factor/point_to_point_factor_batch.h
+--- a/cunls/factor/point_to_point_factor_batch.h	2026-09-01 22:47:40.157630959 +0200
++++ b/cunls/factor/point_to_point_factor_batch.h	2026-09-01 22:47:40.187649001 +0200
+@@ -17,7 +17,6 @@
+ 
+ #pragma once
+ 
+-#include <cuda/std/array>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/common/types.h"
+diff -ruN orig/cunls/factor/prior_vector_factor_batch.h cuNLS-Release_07_13_2026/cunls/factor/prior_vector_factor_batch.h
+--- a/cunls/factor/prior_vector_factor_batch.h	2026-09-01 22:47:40.157659979 +0200
++++ b/cunls/factor/prior_vector_factor_batch.h	2026-09-01 22:47:40.187797306 +0200
+@@ -17,7 +17,6 @@
+ 
+ #pragma once
+ 
+-#include <cuda/std/array>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/common/types.h"
+diff -ruN orig/cunls/factor/symmetric_point_to_plane_factor_batch.h cuNLS-Release_07_13_2026/cunls/factor/symmetric_point_to_plane_factor_batch.h
+--- a/cunls/factor/symmetric_point_to_plane_factor_batch.h	2026-09-01 22:47:40.158178874 +0200
++++ b/cunls/factor/symmetric_point_to_plane_factor_batch.h	2026-09-01 22:47:40.187749330 +0200
+@@ -17,7 +17,6 @@
+ 
+ #pragma once
+ 
+-#include <cuda/std/array>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/common/types.h"
+diff -ruN orig/cunls/linear_solver/CMakeLists.txt cuNLS-Release_07_13_2026/cunls/linear_solver/CMakeLists.txt
+--- a/cunls/linear_solver/CMakeLists.txt	2026-09-01 22:47:40.158285980 +0200
++++ b/cunls/linear_solver/CMakeLists.txt	2026-09-01 22:47:40.187487600 +0200
+@@ -1,10 +1,8 @@
+ add_library(cunls_linear_solver OBJECT
+   block_sparse_pcg_solver.cu
+-  cudss_sparse_linear_solver.cpp
+   dense_cholesky_solver.cu
+   dense_linear_solver.cu
+   dense_qr_solver.cu
+   sparse_linear_solver.cpp
+ )
+ 
+-target_link_libraries(cunls_linear_solver PRIVATE cudss)
+diff -ruN orig/cunls/linear_solver/sparse_linear_solver.cpp cuNLS-Release_07_13_2026/cunls/linear_solver/sparse_linear_solver.cpp
+--- a/cunls/linear_solver/sparse_linear_solver.cpp	2026-09-01 22:47:40.158533166 +0200
++++ b/cunls/linear_solver/sparse_linear_solver.cpp	2026-09-01 22:47:40.187537796 +0200
+@@ -16,7 +16,6 @@
+  */
+ 
+ #include "cunls/linear_solver/sparse_linear_solver.h"
+-#include "cunls/common/cudss_helper.h"
+ 
+ namespace cunls {
+ 
+@@ -28,7 +27,10 @@
+                             const SparseLinearSolverConfig &config) {
+   switch (type) {
+   case SparseLinearSolverType::cuDSS:
+-    return std::make_unique<cuDSSLinearSolver>(config.cudss_solver_options);
++    // Removed in the CUDA-10.2 / TX2 port: cuDSS has no build for this toolkit.
++    throw std::invalid_argument(
++        "cuDSS solver unavailable in this build (CUDA-10.2 TX2 port); "
++        "use DenseQR or BlockSparsePCG");
+   case SparseLinearSolverType::DenseLDLT:
+     return std::make_unique<DenseLDLTSolver>();
+   case SparseLinearSolverType::DenseCholesky:
+diff -ruN orig/cunls/minimizer/device_reduction.cu cuNLS-Release_07_13_2026/cunls/minimizer/device_reduction.cu
+--- a/cunls/minimizer/device_reduction.cu	2026-09-01 22:47:40.158869839 +0200
++++ b/cunls/minimizer/device_reduction.cu	2026-09-01 22:47:40.188176385 +0200
+@@ -49,9 +49,9 @@
+ 
+   float sum = 0.0f;
+   for (int i = gid; i < n; i += stride) {
+-    if constexpr (Mode == 0) {
++    if (Mode == 0) {
+       sum += a[i];
+-    } else if constexpr (Mode == 1) {
++    } else if (Mode == 1) {
+       sum += a[i] * b[i];
+     } else {
+       sum += a[i] * w[i] * b[i];
+diff -ruN orig/cunls/robustifier/arctan_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/arctan_loss_function_batch.cu
+--- a/cunls/robustifier/arctan_loss_function_batch.cu	2026-09-01 22:47:40.159272595 +0200
++++ b/cunls/robustifier/arctan_loss_function_batch.cu	2026-09-01 22:47:40.187846410 +0200
+@@ -15,7 +15,7 @@
+  * limitations under the License.
+  */
+ 
+-#include <cuda/std/limits>
++#include <cfloat>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/robustifier/arctan_loss_function_batch.h"
+@@ -37,7 +37,7 @@
+ 
+   float3 &rho = out[tid];
+   rho.x = a * atanf(sq_error / a);
+-  rho.y = fmaxf(cuda::std::numeric_limits<float>::min(), inv);
++  rho.y = fmaxf(FLT_MIN, inv);
+   rho.z = -2.0f * sq_error * b * (inv * inv);
+ }
+ 
+diff -ruN orig/cunls/robustifier/cauchy_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/cauchy_loss_function_batch.cu
+--- a/cunls/robustifier/cauchy_loss_function_batch.cu	2026-09-01 22:47:40.159300300 +0200
++++ b/cunls/robustifier/cauchy_loss_function_batch.cu	2026-09-01 22:47:40.188023431 +0200
+@@ -15,7 +15,7 @@
+  * limitations under the License.
+  */
+ 
+-#include <cuda/std/limits>
++#include <cfloat>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/robustifier/cauchy_loss_function_batch.h"
+@@ -37,7 +37,7 @@
+ 
+   float3 &rho = out[tid];
+   rho.x = b * logf(sum);
+-  rho.y = fmaxf(cuda::std::numeric_limits<float>::min(), inv);
++  rho.y = fmaxf(FLT_MIN, inv);
+   rho.z = -c * (inv * inv);
+ }
+ 
+diff -ruN orig/cunls/robustifier/huber_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/huber_loss_function_batch.cu
+--- a/cunls/robustifier/huber_loss_function_batch.cu	2026-09-01 22:47:40.159326830 +0200
++++ b/cunls/robustifier/huber_loss_function_batch.cu	2026-09-01 22:47:40.187891994 +0200
+@@ -17,7 +17,7 @@
+ 
+ #include <stdint.h>
+ 
+-#include <cuda/std/limits>
++#include <cfloat>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/robustifier/huber_loss_function_batch.h"
+@@ -57,7 +57,7 @@
+     // 'r' is always positive.
+     const float r = sqrtf(sq_error);
+     rho.x = 2.0 * delta * r - delta_squared_;
+-    rho.y = fmaxf(cuda::std::numeric_limits<float>::min(), delta / r);
++    rho.y = fmaxf(FLT_MIN, delta / r);
+     rho.z = -rho.y / (2.0 * sq_error);
+   } else {
+     // Inlier region.
+diff -ruN orig/cunls/robustifier/scaled_loss_function_batch.h cuNLS-Release_07_13_2026/cunls/robustifier/scaled_loss_function_batch.h
+--- a/cunls/robustifier/scaled_loss_function_batch.h	2026-09-01 22:47:40.159412893 +0200
++++ b/cunls/robustifier/scaled_loss_function_batch.h	2026-09-01 22:47:40.191519266 +0200
+@@ -58,7 +58,7 @@
+  *       InformationFactorBatch.
+  */
+ template <class T, typename std::enable_if_t<
+-                       std::is_base_of_v<LossFunctionBatch, T>, int> = 0>
++                       std::is_base_of<LossFunctionBatch, T>::value, int> = 0>
+ class ScaledLossFunctionBatch : public LossFunctionBatch {
+ public:
+   /**
+diff -ruN orig/cunls/robustifier/soft_lone_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/soft_lone_loss_function_batch.cu
+--- a/cunls/robustifier/soft_lone_loss_function_batch.cu	2026-09-01 22:47:40.159426839 +0200
++++ b/cunls/robustifier/soft_lone_loss_function_batch.cu	2026-09-01 22:47:40.187982606 +0200
+@@ -15,7 +15,7 @@
+  * limitations under the License.
+  */
+ 
+-#include <cuda/std/limits>
++#include <cfloat>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/robustifier/soft_lone_loss_function_batch.h"
+@@ -37,7 +37,7 @@
+ 
+   float3 &rho = out[tid];
+   rho.x = 2.0f * b * (tmp - 1.0f);
+-  rho.y = fmaxf(cuda::std::numeric_limits<float>::min(), 1.0f / tmp);
++  rho.y = fmaxf(FLT_MIN, 1.0f / tmp);
+   rho.z = -(c * rho.y) / (2.0f * sum);
+ }
+ 
+diff -ruN orig/cunls/robustifier/tolerant_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/tolerant_loss_function_batch.cu
+--- a/cunls/robustifier/tolerant_loss_function_batch.cu	2026-09-01 22:47:40.159470861 +0200
++++ b/cunls/robustifier/tolerant_loss_function_batch.cu	2026-09-01 22:47:40.187939281 +0200
+@@ -15,7 +15,7 @@
+  * limitations under the License.
+  */
+ 
+-#include <cuda/std/limits>
++#include <cfloat>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/robustifier/tolerant_loss_function_batch.h"
+@@ -45,7 +45,7 @@
+     const float e_x = expf(x);
+     const float one_plus_e_x = 1.0f + e_x;
+     rho.x = b * logf(one_plus_e_x) - c;
+-    rho.y = fmaxf(cuda::std::numeric_limits<float>::min(), e_x / one_plus_e_x);
++    rho.y = fmaxf(FLT_MIN, e_x / one_plus_e_x);
+     rho.z = 0.5f / (b * (1.0f + coshf(x)));
+   }
+ }
+diff -ruN orig/cunls/state/state_batch_ops.cu cuNLS-Release_07_13_2026/cunls/state/state_batch_ops.cu
+--- a/cunls/state/state_batch_ops.cu	2026-09-01 22:47:40.159898608 +0200
++++ b/cunls/state/state_batch_ops.cu	2026-09-01 22:47:40.188075044 +0200
+@@ -114,7 +114,7 @@
+    */
+   __host__ __device__ int operator()(int map_value, bool binary_pattern) const {
+     if (!binary_pattern) {
+-      return cuda::std::numeric_limits<int>::max();
++      return INT_MAX;
+     }
+     return map_value;
+   }
