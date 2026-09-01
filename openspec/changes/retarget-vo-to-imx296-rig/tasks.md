@@ -766,6 +766,13 @@ physically moved - the remaining items are not doable from here.
   costs nothing in quality, and 31 ms fits; (2) batch the remaps; (3) the fused node (4.2), which
   removes the CPU round-trip entirely and is the designed answer. Resolution reduction is last.
 
+- [ ] 4.7 **Make the fused node resolve ports at runtime, as the capture node already does.**
+  It takes raw 0-based Argus indices from `sensor_ids`, so it assumes bind order equals port
+  order c,d,e,f. Task 1.1 established that this must not be assumed — a different boot shifted
+  it, which is why `argus_capture_node` resolves at runtime. A shift here permutes the cameras
+  against the extrinsics silently, and the frustum graph would still pass: it is the same shape
+  of error as the round-1/round-2 mirror (3R.17).
+
 - [ ] 4.6 **Preflight the VO path the way the calibration path is preflighted.** `trigger_mode` silently
   resets to 0 on every reboot and the VO then produces nothing but drops, while asking "is the trigger
   running?". `record_calib_session.sh` already checks and sets it; add the same to the VO run path,
