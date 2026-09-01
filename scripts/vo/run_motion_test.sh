@@ -98,14 +98,26 @@ echo
 if [ "$RECORD_IMAGES" = 1 ]; then
   MOTION_LABEL="$LABEL" RECORD_IMAGES=1 EXPOSURE_US="$EXPOSURE_US" \
     PUBLISH_EVERY_N="${PUBLISH_EVERY_N:-1}" \
-    docker compose run --rm motion 2>&1 | tee "$OUT/vo.log" & COMPOSE_PID=$!; wait $COMPOSE_PID || true
+    # NOT `... | tee ... &`: in a pipeline $! is the PID of the LAST element (tee), so the
+    # trap would signal tee and leave the container running. Redirect, and tail for a live view.
+    docker compose run --rm motion > "$OUT/vo.log" 2>&1 &
+    COMPOSE_PID=$!
+    tail -f "$OUT/vo.log" & TAIL_PID=$!
+    wait $COMPOSE_PID || true
+    kill $TAIL_PID 2>/dev/null || true
   sudo mv bags/motion_${LABEL}_* "$OUT/" 2>/dev/null || true
 else
   # Fused zero-copy + RECORD=1: bags /cuvslam/odometry and /tf from inside the same
   # container. Both are RELIABLE publishers, so no QoS override is needed here - unlike the
   # image topics, which are best_effort and silently record nothing without one.
   RECORD=1 EXPOSURE_US="$EXPOSURE_US" \
-    docker compose run --rm fused 2>&1 | tee "$OUT/vo.log" & COMPOSE_PID=$!; wait $COMPOSE_PID || true
+    # NOT `... | tee ... &`: in a pipeline $! is the PID of the LAST element (tee), so the
+    # trap would signal tee and leave the container running. Redirect, and tail for a live view.
+    docker compose run --rm fused > "$OUT/vo.log" 2>&1 &
+    COMPOSE_PID=$!
+    tail -f "$OUT/vo.log" & TAIL_PID=$!
+    wait $COMPOSE_PID || true
+    kill $TAIL_PID 2>/dev/null || true
   sudo mv bags/fused_* "$OUT/" 2>/dev/null || true
 fi
 
