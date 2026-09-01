@@ -10,15 +10,25 @@
 # every set at one frame period twice over while the trigger was perfect - so a run that
 # starts wrong is expensive to diagnose afterwards. Refuse instead.
 #
-# --record-images ALSO bags the four camera streams, which is what makes a run replayable:
-# move the rig once, then re-run the VO against it as often as needed without being at the
-# rig. Cost is bandwidth (~95 MB/s at 15 Hz), so it decimates and expects short runs.
+# DEFAULT IS THE FUSED ZERO-COPY NODE, and that is the one to use for section 5.
 #
-# DO TWO PASSES, and do not merge them:
-#   1. --record-images, for a replayable bag
-#   2. without it, for the live 5.1/5.2 numbers
-# The recorder competes for CPU and I/O and can induce drops of its own; a tape-measure
-# number taken with it running cannot be told apart from the rig misbehaving.
+# 5.1, 5.2 and 5.4 all measure ODOMETRY - translation against a tape measure, drift on
+# return to origin, rate. None of them needs images. The fused node reads Argus straight
+# into CUDA and publishes no images at all, so recording it costs 4.5 MB a minute instead
+# of ~95 MB/s, and - the real point - the pipeline being MEASURED is the pipeline that
+# would be DEPLOYED. Recording the modular path instead would validate something we do not
+# intend to ship.
+#
+# --record-images switches to the MODULAR node and additionally bags the four camera
+# streams. That is a convenience for offline tuning (move the rig once, re-run the VO
+# against it as often as needed), NOT the measurement:
+#   - it is a different pipeline: images over DDS, CPU remap, ~95 MB/s, so decimate and
+#     keep runs short. The SD cannot absorb four cameras at 30 Hz.
+#   - a bag can only ever be replayed through the modular node. The fused node consumes
+#     Argus directly and cannot replay one, by construction.
+#   - the recorder competes for CPU and I/O and can induce drops of its own, which on
+#     replay are indistinguishable from the rig misbehaving.
+# So if you want both, do two separate passes and do not merge them.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."          # repo root = compose file location
 
@@ -72,13 +82,23 @@ echo "  5.2 return-to-origin: go out and come back to the SAME pose"
 [ "$RECORD_IMAGES" = 1 ] && echo "  recording IMAGES too - keep this run short (~30 s)"
 echo
 
-MOTION_LABEL="$LABEL" RECORD_IMAGES="$RECORD_IMAGES" EXPOSURE_US="$EXPOSURE_US" \
-  PUBLISH_EVERY_N="${PUBLISH_EVERY_N:-1}" \
-  docker compose run --rm motion 2>&1 | tee "$OUT/vo.log" || true
+if [ "$RECORD_IMAGES" = 1 ]; then
+  MOTION_LABEL="$LABEL" RECORD_IMAGES=1 EXPOSURE_US="$EXPOSURE_US" \
+    PUBLISH_EVERY_N="${PUBLISH_EVERY_N:-1}" \
+    docker compose run --rm motion 2>&1 | tee "$OUT/vo.log" || true
+  sudo mv bags/motion_${LABEL}_* "$OUT/" 2>/dev/null || true
+else
+  # Fused zero-copy + RECORD=1: bags /cuvslam/odometry and /tf from inside the same
+  # container. Both are RELIABLE publishers, so no QoS override is needed here - unlike the
+  # image topics, which are best_effort and silently record nothing without one.
+  RECORD=1 EXPOSURE_US="$EXPOSURE_US" \
+    docker compose run --rm fused 2>&1 | tee "$OUT/vo.log" || true
+  sudo mv bags/fused_* "$OUT/" 2>/dev/null || true
+fi
 
-echo; echo "=== sets / skew / drops, from the node's own reporting ==="
-grep -E "sets |dropped|remap|tracking lost" "$OUT/vo.log" | tail -12
-mv bags/motion_${LABEL}_* "$OUT/" 2>/dev/null || true
+echo; echo "=== rate / timing / drops, from the node's own reporting ==="
+grep -E "avg/|sets |dropped|tracking lost" "$OUT/vo.log" | tail -8
+sudo chown -R "$(id -u):$(id -g)" "$OUT" 2>/dev/null || true   # the container writes as root
 echo
 echo "bag under $OUT - copy the whole directory to the host and run:"
 echo "  python3 scripts/vo/analyze_motion.py $OUT"
