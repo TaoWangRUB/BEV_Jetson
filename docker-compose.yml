@@ -72,6 +72,47 @@ services:
         sleep 8
         exec ros2 launch bev_cuvslam bev_cuvslam.launch.py
 
+  # Section 5 motion test: capture + VO + recorder in ONE container, on purpose.
+  #
+  # Cross-container DDS would drop images - 4x1456x1088 mono8 is ~6.3 MB per set, ~95 MB/s
+  # at 15 Hz - and a lossy recording is worse than none, because the loss looks like rig
+  # behaviour when it is replayed.
+  #
+  # RECORD_IMAGES=1 also bags the four camera streams, which is what makes the run
+  # REPLAYABLE: move the rig once, then re-run the VO against it as often as needed. Cost is
+  # bandwidth, so decimate (PUBLISH_EVERY_N=2 -> ~47 MB/s) and keep runs short. The SD is
+  # known not to absorb 30 Hz of four cameras.
+  #
+  # TWO PASSES, and do not merge them. The recorder competes for CPU and I/O and can itself
+  # induce drops; a live tape-measure number taken with the recorder running cannot be told
+  # apart from the rig misbehaving. So: one pass with RECORD_IMAGES=1 for replay, one pass
+  # without it for the live 5.1/5.2 numbers.
+  #
+  #   MOTION_LABEL=line1 RECORD_IMAGES=1 PUBLISH_EVERY_N=2 EXPOSURE_US=$(...) \
+  #     docker compose run --rm motion
+  motion:
+    <<: *bev
+    command:
+      - bash
+      - -lc
+      - |
+        set -e
+        ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p publish_every_n:=${PUBLISH_EVERY_N:-1} -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us (j106-trigctl.py --port /dev/ttyACM0 status)} &
+        CAP=$$!
+        ros2 launch bev_cuvslam bev_cuvslam.launch.py &
+        VO=$$!
+        trap "kill $$CAP $$VO 2>/dev/null" EXIT
+        sleep 10                      # cuVSLAM warms the GPU and builds 8 remap tables first
+        TOPICS="/cuvslam/odometry /tf /cam1/frame_meta"
+        if [ "${RECORD_IMAGES:-0}" = 1 ]; then
+          TOPICS="$$TOPICS /cam1/image_raw /cam2/image_raw /cam3/image_raw /cam4/image_raw"
+        fi
+        OUT=bags/motion_${MOTION_LABEL:-run}_$(date +%Y%m%d_%H%M%S)
+        mkdir -p bags
+        echo "recording $$TOPICS -> $$OUT"
+        echo "MOVE THE RIG NOW. Ctrl-C when the move is complete."
+        ros2 bag record -o "$$OUT" $$TOPICS
+
   # Ports (not sensor-ids) are resolved at runtime; exposure_us is the trigger generator's
   # MEASURED pulse width, which in Fast Trigger mode IS the exposure. Read it back with
   #   j106-trigctl.py --port /dev/ttyACM0 status      -> chN_exposure_us / pulse_ns
