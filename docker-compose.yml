@@ -57,8 +57,27 @@ services:
       - bash
       - -lc
       - |
-        if [ "${RECORD:-0}" = 1 ]; then mkdir -p bags; ros2 bag record -o bags/fused_$(date +%Y%m%d_%H%M%S) /cuvslam/odometry /tf & fi
-        exec ros2 launch bev_cuvslam bev_cuvslam_fused.launch.py
+        REC=""
+        if [ "${RECORD:-0}" = 1 ]; then
+          mkdir -p bags
+          ros2 bag record -o bags/fused_$(date +%Y%m%d_%H%M%S) /cuvslam/odometry /tf &
+          REC=$$!
+        fi
+        # NO `exec` HERE, deliberately. This used to background the recorder and then exec
+        # the launch, which replaced the shell - so nothing could trap the shutdown, and on
+        # SIGINT the container tore down while rosbag2 was still holding an uncommitted WAL.
+        # The result was a bag directory with no metadata.yaml, unreadable, reporting 0
+        # messages. It sometimes survived by luck, which is worse than failing.
+        #
+        # Keep the shell as PID 1, and on shutdown stop the RECORDER FIRST and wait for it:
+        # rosbag2 checkpoints and writes metadata.yaml only on a clean SIGINT.
+        ros2 launch bev_cuvslam bev_cuvslam_fused.launch.py &
+        VO=$$!
+        stop() { [ -n "$$REC" ] && kill -INT $$REC 2>/dev/null; kill -INT $$VO 2>/dev/null;
+                 [ -n "$$REC" ] && wait $$REC 2>/dev/null; wait $$VO 2>/dev/null; }
+        trap stop INT TERM
+        wait $$VO
+        [ -n "$$REC" ] && { kill -INT $$REC 2>/dev/null; wait $$REC 2>/dev/null; } || true
 
   # Modular pipeline (capture + VO) in ONE container (cross-container DDS discovery fails)
   modular:
