@@ -83,8 +83,12 @@ echo "$status" > "$OUT/trigger_status.txt"
 # with docker stop produced a directory that looked complete and contained nothing.
 #
 # Forward SIGINT to the compose child so Ctrl-C here reaches the recorder in the container.
-COMPOSE_PID=""
-forward_int() { [ -n "$COMPOSE_PID" ] && kill -INT "$COMPOSE_PID" 2>/dev/null; }
+# Deliver the signal to the CONTAINER by name, not to `docker compose run`. Compose only
+# forwards SIGINT when it has a TTY, so a script-driven stop (or any non-interactive run)
+# leaves the container going with the recorder holding an open bag. Naming it and using
+# `docker kill -s INT` works the same way whether or not anyone is at a terminal.
+CNAME="bev_motion_$$"
+forward_int() { docker kill -s INT "$CNAME" >/dev/null 2>&1 || true; }
 trap forward_int INT TERM
 
 echo "preflight OK  trigger_mode=1  active_low  exposure_us=$EXPOSURE_US"
@@ -101,13 +105,13 @@ echo
 # $! is the compose process the trap needs to reach.
 if [ "$RECORD_IMAGES" = 1 ]; then
   export MOTION_LABEL="$LABEL" RECORD_IMAGES=1 EXPOSURE_US PUBLISH_EVERY_N="${PUBLISH_EVERY_N:-1}"
-  docker compose run --rm motion > "$OUT/vo.log" 2>&1 &
+  docker compose run --rm --name "$CNAME" motion > "$OUT/vo.log" 2>&1 &
 else
   # Fused zero-copy + RECORD=1: bags /cuvslam/odometry and /tf from inside the same
   # container. Both are RELIABLE publishers, so no QoS override is needed here - unlike the
   # image topics, which are best_effort and silently record nothing without one.
   export RECORD=1 EXPOSURE_US
-  docker compose run --rm fused > "$OUT/vo.log" 2>&1 &
+  docker compose run --rm --name "$CNAME" fused > "$OUT/vo.log" 2>&1 &
 fi
 COMPOSE_PID=$!
 tail -f "$OUT/vo.log" & TAIL_PID=$!
