@@ -14,10 +14,8 @@ cd "$(dirname "$0")/../.."
 OPENCV_INC=${OPENCV_INC:-/usr/include/opencv4}
 OUT=$(mktemp -d); trap 'rm -rf "$OUT"' EXIT
 
-sed -n '/^cv::Matx44d load_matrix4/,/^}$/p;/^cuvslam::Pose pose_from_matrix/,/^}$/p' \
-    ros2/bev_cuvslam/src/cuvslam_multicam_node.cpp > "$OUT/helpers.inc"
 cp scripts/vo/rig_build_test.cpp "$OUT/"
-g++ -O2 -I "$OUT" -I ros2/bev_cuvslam/include -I "$OPENCV_INC" -I third_party/cuVSLAM/libs \
+g++ -O2 -I ros2/bev_cuvslam/include -I "$OPENCV_INC" -I third_party/cuVSLAM/libs \
     "$OUT/rig_build_test.cpp" -o "$OUT/rig_build_test" \
     -lopencv_core -lopencv_imgproc -lopencv_calib3d -lyaml-cpp
 # Defaults are the tracked config - the rig the node will actually load. Override all

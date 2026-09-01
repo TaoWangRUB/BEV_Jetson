@@ -75,7 +75,10 @@ struct VirtualPinhole {
   int width{}, height{};
   double focal{}, cx{}, cy{};
   double yaw_rad{};          // -pi/4 or +pi/4
-  cv::Mat map1, map2;        // remap tables, fixed-point (CV_16SC2 + CV_16UC1)
+  cv::Mat map1, map2;        // remap tables, fixed-point (CV_16SC2 + CV_16UC1) - CPU path
+  cv::Mat mapf;              // the same table as CV_32FC2 source coords - GPU path only.
+                             // Kept rather than recovered from the fixed-point pair: the
+                             // CPU and GPU carves must be the same map, not two roundings.
 };
 
 // Build the BACKWARD map: for each virtual pixel, which raw fisheye pixel feeds it.
@@ -101,6 +104,7 @@ inline VirtualPinhole BuildVirtualPinhole(const OmniIntrinsics& o, double yaw_ra
     }
   }
   cv::convertMaps(fmap, cv::Mat(), vp.map1, vp.map2, CV_16SC2);
+  vp.mapf = fmap;
   return vp;
 }
 

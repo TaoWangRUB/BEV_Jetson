@@ -44,6 +44,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "cuvslam/cuvslam2.h"
+#include "bev_cuvslam/rig_build.hpp"
 #include "bev_cuvslam/virtual_pinhole.hpp"
 
 namespace {
@@ -63,38 +64,8 @@ YAML::Node load_yaml(const std::string& path) {
 }
 
 // 4x4 row-major matrix from yaml (rig_in_cam1 blocks).
-cv::Matx44d load_matrix4(const YAML::Node& n) {
-  cv::Matx44d M;
-  for (int i = 0; i < 4; ++i)
-    for (int j = 0; j < 4; ++j) M(i, j) = n[i][j].as<double>();
-  return M;
-}
-
 // cuVSLAM Pose (quaternion xyzw + translation) from a 4x4. cuVSLAM uses the OpenCV
 // convention - x right, y down, z forward - which is what our extrinsics are already in.
-cuvslam::Pose pose_from_matrix(const cv::Matx44d& M) {
-  cuvslam::Pose p;
-  p.translation = {static_cast<float>(M(0,3)), static_cast<float>(M(1,3)), static_cast<float>(M(2,3))};
-  const double tr = M(0,0) + M(1,1) + M(2,2);
-  double q[4];  // w, x, y, z
-  if (tr > 0) {
-    const double t = std::sqrt(tr + 1.0) * 2.0;
-    q[0] = 0.25*t; q[1] = (M(2,1)-M(1,2))/t; q[2] = (M(0,2)-M(2,0))/t; q[3] = (M(1,0)-M(0,1))/t;
-  } else if (M(0,0) > M(1,1) && M(0,0) > M(2,2)) {
-    const double t = std::sqrt(1.0 + M(0,0) - M(1,1) - M(2,2)) * 2.0;
-    q[0] = (M(2,1)-M(1,2))/t; q[1] = 0.25*t; q[2] = (M(0,1)+M(1,0))/t; q[3] = (M(0,2)+M(2,0))/t;
-  } else if (M(1,1) > M(2,2)) {
-    const double t = std::sqrt(1.0 + M(1,1) - M(0,0) - M(2,2)) * 2.0;
-    q[0] = (M(0,2)-M(2,0))/t; q[1] = (M(0,1)+M(1,0))/t; q[2] = 0.25*t; q[3] = (M(1,2)+M(2,1))/t;
-  } else {
-    const double t = std::sqrt(1.0 + M(2,2) - M(0,0) - M(1,1)) * 2.0;
-    q[0] = (M(1,0)-M(0,1))/t; q[1] = (M(0,2)+M(2,0))/t; q[2] = (M(1,2)+M(2,1))/t; q[3] = 0.25*t;
-  }
-  p.rotation = {static_cast<float>(q[1]), static_cast<float>(q[2]),
-                static_cast<float>(q[3]), static_cast<float>(q[0])};  // x, y, z, w
-  return p;
-}
-
 // rig_from_<frame> pose from a node with t_xyz_m + q_wxyz (yaml is wxyz; cuVSLAM wants xyzw).
 cuvslam::Pose load_pose(const YAML::Node& n) {
   cuvslam::Pose p;
@@ -173,42 +144,20 @@ class CuvslamMulticamNode : public rclcpp::Node {
     // Carve each fisheye into two virtual pinholes. cuVSLAM cannot consume the raw
     // cameras at all: its only fisheye model is equidistant, capped below 180 deg, and
     // these lenses fit ~192 deg. See virtual_pinhole.hpp.
-    const YAML::Node rig_y = load_yaml(rig_path_);
-    const YAML::Node vs_y = load_yaml(vstereo_path_);
-    const YAML::Node vp_y = vs_y["virtual_pinhole"];
-    const int vw = vp_y["width"].as<int>(), vh = vp_y["height"].as<int>();
-    const double vfov = vp_y["fov_deg"].as<double>();
+    //
+    // Built by bev_cuvslam/rig_build.hpp, SHARED with the fused node - see the note there
+    // on why this is one implementation and not two.
+    auto vrig = bev_cuvslam::BuildVirtualRig(calib_dir_, rig_path_, vstereo_path_,
+                                             {cams_[0], cams_[1], cams_[2], cams_[3]});
+    for (const auto& w : vrig.warnings) RCLCPP_WARN(get_logger(), "%s", w.c_str());
+    vpin_ = std::move(vrig.vpin);
+    vsrc_ = std::move(vrig.vsrc);
+    cuvslam::Rig rig = std::move(vrig.rig);
+    for (size_t k = 0; k < vpin_.size(); ++k)
+      RCLCPP_INFO(get_logger(), "  vcam %zu = %s %+.0f deg: %dx%d f=%.1f", k,
+                  cams_[vsrc_[k]].c_str(), vpin_[k].yaw_rad * 180.0 / CV_PI,
+                  vpin_[k].width, vpin_[k].height, vpin_[k].focal);
 
-    cuvslam::Rig rig;
-    for (size_t i = 0; i < 4; ++i) {
-      const auto omni = bev_cuvslam::LoadOmni(calib_dir_ + "/" + cams_[i] + ".yaml");
-      if (omni.width != vp_y["source_width"].as<int>(omni.width))
-        RCLCPP_WARN(get_logger(), "%s calibrated at %dx%d - check it matches the live rig",
-                    cams_[i].c_str(), omni.width, omni.height);
-      // rig frame IS cam1's optical frame, which is how rig_in_cam1 is expressed.
-      // NOT the FLU body frame of rig_layout.yaml - see the frame note there (3R.16b).
-      const cv::Matx44d rig_from_fisheye = load_matrix4(rig_y["rig_in_cam1"][cams_[i]]);
-      for (int k = 0; k < 2; ++k) {
-        const double yaw = (k == 0 ? -1.0 : +1.0) * CV_PI / 4.0;
-        vpin_.push_back(bev_cuvslam::BuildVirtualPinhole(omni, yaw, vw, vh, vfov));
-        const double c = std::cos(yaw), sn = std::sin(yaw);
-        const cv::Matx44d Ry(c,0,sn,0,  0,1,0,0,  -sn,0,c,0,  0,0,0,1);
-        cuvslam::Camera cam;
-        cam.size = {vw, vh};
-        cam.focal = {static_cast<float>(vpin_.back().focal), static_cast<float>(vpin_.back().focal)};
-        cam.principal = {static_cast<float>(vpin_.back().cx), static_cast<float>(vpin_.back().cy)};
-        // Pinhole with NO distortion: the remap already removed it. Anything else here
-        // would be applying the correction twice.
-        cam.distortion.model = cuvslam::Distortion::Model::Pinhole;
-        cam.distortion.parameters = {};
-        cam.rig_from_camera = pose_from_matrix(rig_from_fisheye * Ry);
-        rig.cameras.push_back(cam);
-        vsrc_.push_back(i);
-        RCLCPP_INFO(get_logger(), "  vcam %zu = %s %+.0f deg: %dx%d f=%.1f",
-                    vpin_.size() - 1, cams_[i].c_str(), yaw * 180.0 / CV_PI, vw, vh,
-                    vpin_.back().focal);
-      }
-    }
     // No IMU in multicam mode (cuVSLAM v15 limitation).
 
     cuvslam::Odometry::Config cfg = cuvslam::Odometry::GetDefaultConfig();
