@@ -653,7 +653,56 @@ done during A, in parallel, since it needs no calibration.
 - [ ] 4.2 **Deliberately deferred, and the reason is not effort.** The fused node exists to avoid a CPU round-trip (NVMM Y plane straight to CUDA). Adding the virtual-pinhole carve to it means a CUDA remap on the NVMM buffer - a CPU remap would negate the node's entire purpose. Until 4.5/section 5 show the modular path is too slow, the fused node has no justification to be rewritten twice. Note the stamping fix it needs is the same one 4.1 made; `iframe->getTime()` is the WRONG source (consumer-side - it reported cameras ~7 ms apart in capture-loop order), so this task's original wording is superseded by README 4.7.
 - [~] 4.3 Done for the modular node (sets / worst skew / drops / remap time every 5 s); pending for the fused node with 4.2. Report the drop counter and recent worst-case skew from both nodes; make a stopped trigger diagnosable as a trigger fault, not a camera failure (spec: *A stopped trigger is diagnosable*).
 - [~] 4.4 `bev_cuvslam.launch.py` retargeted (ring-closed extrinsics, virtual-stereo config, skew gate, no `sync_slop_ms`). `fused_vo_params.yaml` and the fused run scripts wait on 4.2.
-- [ ] 4.5 **Blocked on §3R** (the rig is uncalibrated as it stands). Run both nodes on the board: confirm zero dropped sets with the trigger live, worst-case skew < 1 ms, and `/cuvslam/odometry` tracking with no "tracking lost".
+- [~] 4.5 **FIRST BUILD AND FIRST LIVE RUN, 2026-09-01.** `bev_cuvslam` had never been compiled;
+  it now builds and runs on the board. Four findings, two of them defects that are fixed.
+
+  **Build.** `docker compose run --rm build-ws` in `cuvslam-foxy:tx2`. libcuvslam did NOT need
+  rebuilding (already CUDA-10.2 built at `third_party/cuVSLAM/build_tx2gpu/bin/libcuvslam.so`); the
+  submodule pointer is identical on both branches, so the checkout preserved it. One blocker: the
+  workspace's `install/cv_bridge` was a June artifact linked against OpenCV **4.8** (`.so.408`, from
+  the VINS work in `/usr/local`) while the image ships 4.2 — it shadowed the image's own
+  `ros-foxy-cv-bridge` and failed at link. Moved aside as `install/cv_bridge.ocv48.bak`; all three
+  packages then built. Also: compose interpolates the WHOLE file, so `build-ws` refuses to run
+  without `EXPOSURE_US` even though only `modular` uses it.
+
+  **The rig is accepted by cuVSLAM, and 3R.17's offline check is now validated against it.** cuVSLAM's
+  own frustum test found exactly four pairs, covering all 8 virtual cameras, and they are the four
+  `verify_rig_build.sh` predicted:
+
+  | cuVSLAM pair | ratio | offline prediction | ratio |
+  |---|---|---|---|
+  | 0-3  cam1₋₄₅–cam2₊₄₅ | 0.905 | cam1_L–cam2_R | 0.936 |
+  | 1-4  cam1₊₄₅–cam3₋₄₅ | 0.948 | cam1_R–cam3_L | 0.934 |
+  | 2-7  cam2₋₄₅–cam4₊₄₅ | 0.907 | cam2_L–cam4_R | 0.916 |
+  | 5-6  cam3₊₄₅–cam4₋₄₅ | 0.952 | cam3_R–cam4_L | 0.945 |
+
+  Agreement within 0.03 on every pair. The offline gate can be trusted before a board session.
+
+  **Defect 1, fixed: the set matching raced DDS delivery.** With the trigger active the capture node
+  measured **8 µs** of real skew, and the VO rejected **204 of 206** sets at exactly 33.3 ms — one
+  frame period. It matched on cam1's *arrival* and then took the nearest-stamp candidate from each
+  other camera, but at that instant the same-edge frames have usually not been delivered, so the
+  nearest is the PREVIOUS edge. Now anchors on cam1's oldest buffered frame and waits until every
+  other camera has delivered a frame at or after it. Worst skew **33.3 ms → 1 µs**, acceptance
+  **1% → 48%**. It presented as "is the trigger running?", and the trigger was perfect.
+
+  **Defect 2, environmental: `trigger_mode` resets to 0 on reboot.** The first run reported
+  `trigger free-running` and dropped everything at 36.9 ms. `/sys/module/imx296/parameters/trigger_mode`
+  was 0 after the morning's reboot. `record_calib_session.sh` already documents and preflights this;
+  **the VO path does not** — see 4.6.
+
+  **Remaining, and it is a throughput limit, not a sync problem:** ~50% of sets still drop. The
+  capture node reports the same 33.33 ms events at its own source (314 over-limit of 2269, ~14%)
+  while median offsets stay at 0 µs, so cameras are genuinely missing trigger edges. The cause is in
+  the same log: **`remap 31271 us` per set** — 31 ms of CPU remap for 8 virtual cameras against a
+  33 ms budget at 30 Hz. The modular node is saturated. Next: decimate to 15 Hz (§3.2b's
+  `publish_every_n`, added for exactly this) and/or move to the fused node, which exists to avoid
+  this CPU round-trip (4.2).
+
+  Also: repeated runs leak an Argus session — one run died with `Argus setup failed` until
+  `sudo systemctl restart nvargus-daemon`. Compose warns about it; worth automating.
+
+  Original text: blocked on §3R (the rig is uncalibrated as it stands). Run both nodes on the board: confirm zero dropped sets with the trigger live, worst-case skew < 1 ms, and `/cuvslam/odometry` tracking with no "tracking lost".
 
 ## 5. Motion test (closes bring-up-end-to-end-vo 3.4 / 3.6)
 
@@ -662,6 +711,11 @@ a drift number would be attributed to the VO rather than to the optics. Tooling 
 `scripts/vo/run_motion_test.sh` (board; refuses to record unless
 `trigger_mode` is 1) and `scripts/vo/analyze_motion.py` (host). Needs the rig powered and
 physically moved - the remaining items are not doable from here.
+
+- [ ] 4.6 **Preflight the VO path the way the calibration path is preflighted.** `trigger_mode` silently
+  resets to 0 on every reboot and the VO then produces nothing but drops, while asking "is the trigger
+  running?". `record_calib_session.sh` already checks and sets it; add the same to the VO run path,
+  plus the F401 polarity/exposure read-back and an `nvargus-daemon` restart on a leaked session.
 
 - [ ] 5.1 Move the rig a measured straight-line distance; record `/cuvslam/odometry` + `/tf` and compare reported translation against the tape measure (spec: *Translation is recovered at true scale*, 5 %).
 - [ ] 5.2 Return the rig to its starting pose and check the trajectory returns near the origin; record the drift.
