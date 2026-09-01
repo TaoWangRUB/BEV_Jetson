@@ -32,6 +32,9 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."          # repo root = compose file location
 
+# MOTION_SECONDS=<n> records for exactly n seconds and stops itself cleanly, which is what
+# you want for a repeatable run and what makes the pipeline testable without a terminal.
+# Leave it unset for an open-ended run stopped with Ctrl-C.
 LABEL=${1:?usage: run_motion_test.sh <label> <tape_metres> [--record-images]}
 TAPE=${2:?give the tape-measured distance in metres, even for a return-to-origin run}
 RECORD_IMAGES=0
@@ -101,6 +104,7 @@ trap forward_int INT TERM
 echo "preflight OK  trigger_mode=1  active_low  exposure_us=$EXPOSURE_US"
 echo "output: $OUT"
 echo
+[ -n "${MOTION_SECONDS:-}" ] && echo "  recording for ${MOTION_SECONDS}s, then stopping itself" || echo "  stop with Ctrl-C when the move is complete"
 echo "  5.1 straight line: move exactly $TAPE m and STOP"
 echo "  5.2 return-to-origin: go out and come back to the SAME pose"
 [ "$RECORD_IMAGES" = 1 ] && echo "  recording IMAGES too - keep this run short (~30 s)"
@@ -111,13 +115,13 @@ echo
 # recorder holding an open bag. Redirect to the log and tail it for the live view, so
 # $! is the compose process the trap needs to reach.
 if [ "$RECORD_IMAGES" = 1 ]; then
-  export MOTION_LABEL="$LABEL" RECORD_IMAGES=1 EXPOSURE_US PUBLISH_EVERY_N="${PUBLISH_EVERY_N:-1}"
+  export MOTION_LABEL="$LABEL" RECORD_IMAGES=1 EXPOSURE_US MOTION_SECONDS PUBLISH_EVERY_N="${PUBLISH_EVERY_N:-1}"
   docker compose run --rm --name "$CNAME" motion > "$OUT/vo.log" 2>&1 &
 else
   # Fused zero-copy + RECORD=1: bags /cuvslam/odometry and /tf from inside the same
   # container. Both are RELIABLE publishers, so no QoS override is needed here - unlike the
   # image topics, which are best_effort and silently record nothing without one.
-  export RECORD=1 EXPOSURE_US
+  export RECORD=1 EXPOSURE_US MOTION_SECONDS
   docker compose run --rm --name "$CNAME" fused > "$OUT/vo.log" 2>&1 &
 fi
 COMPOSE_PID=$!

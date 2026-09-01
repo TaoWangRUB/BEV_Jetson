@@ -76,7 +76,18 @@ services:
         stop() { [ -n "$$REC" ] && kill -INT $$REC 2>/dev/null; kill -INT $$VO 2>/dev/null;
                  [ -n "$$REC" ] && wait $$REC 2>/dev/null; wait $$VO 2>/dev/null; }
         trap stop INT TERM
-        wait $$VO
+        # MOTION_SECONDS makes a run a DEFINED EXPERIMENT rather than an open-ended one that
+        # depends on a signal arriving intact. Ctrl-C still works; this just does not need it.
+        # Worth having because the signal path is fragile in every non-interactive case:
+        # background jobs inherit SIGINT ignored, and `docker compose run` only forwards it
+        # when it has a TTY - and a stop that half-works leaves an unreadable bag.
+        if [ -n "${MOTION_SECONDS:-}" ]; then
+          sleep "${MOTION_SECONDS}"
+          echo "MOTION_SECONDS=${MOTION_SECONDS} elapsed - stopping cleanly"
+          stop
+        else
+          wait $$VO
+        fi
         [ -n "$$REC" ] && { kill -INT $$REC 2>/dev/null; wait $$REC 2>/dev/null; } || true
 
   # Modular pipeline (capture + VO) in ONE container (cross-container DDS discovery fails)
