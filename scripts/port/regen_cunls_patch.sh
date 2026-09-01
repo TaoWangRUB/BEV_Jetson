@@ -149,6 +149,40 @@ for f in ["cunls/common/log.h", "cunls/common/log.cpp"]:
     edit(f, lambda s: s
          .replace("#include <string_view>\n", "")
          .replace("std::string_view", "const std::string &"))
+#  Thrust gained thrust::cuda::par_nosync in 1.16 (CUDA 11.6); CUDA 10.2 ships
+#  Thrust 1.9.7. par is the same policy with a stream sync after each algorithm --
+#  correct, marginally slower. A dedicated compat header keeps the Thrust CUDA
+#  backend includes out of host .cpp translation units (helper.h reaches those, and
+#  those headers want nvcc). par_nosync is the ONLY Thrust symbol cuNLS uses that
+#  1.9.7 lacks -- the rest of its Thrust surface was checked against the board.
+(root / "cunls" / "common" / "thrust_compat.h").write_text("""/*
+ * CUDA-10.2 / TX2 port shim -- not part of upstream cuNLS.
+ */
+
+#pragma once
+
+#include <thrust/version.h>
+#include <thrust/system/cuda/execution_policy.h>
+
+// thrust::cuda::par_nosync arrived in Thrust 1.16 (CUDA 11.6). Older toolkits get
+// thrust::cuda::par, which differs only by synchronising the stream after each
+// algorithm: same results, slightly less overlap.
+#if defined(THRUST_VERSION) && THRUST_VERSION >= 101600
+#define CUNLS_PAR_NOSYNC thrust::cuda::par_nosync
+#else
+#define CUNLS_PAR_NOSYNC thrust::cuda::par
+#endif
+""")
+
+for f in ["cunls/math/dense_matrix_ops.cu", "cunls/state/state_batch_ops.cu",
+          "cunls/minimizer/minimizer_state.cu", "cunls/minimizer/fast_matrix_multiplier.cu",
+          "cunls/minimizer/sparse_matrix.cu", "cunls/minimizer/jacobian_ops.cu"]:
+    def add_compat(s):
+        i = s.index('#include "cunls/')
+        s = s[:i] + '#include "cunls/common/thrust_compat.h"\n' + s[i:]
+        return s.replace("thrust::cuda::par_nosync", "CUNLS_PAR_NOSYNC")
+    edit(f, add_compat)
+
 #  CUDA 10.2 spells the generic SpMV algorithm selector CUSPARSE_MV_ALG_DEFAULT;
 #  it became CUSPARSE_SPMV_ALG_DEFAULT in CUDA 11 and the old name was dropped in
 #  CUDA 12. Alias the current spelling onto the old one on pre-11 toolkits so the
