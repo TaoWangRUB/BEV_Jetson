@@ -88,7 +88,14 @@ echo "$status" > "$OUT/trigger_status.txt"
 # leaves the container going with the recorder holding an open bag. Naming it and using
 # `docker kill -s INT` works the same way whether or not anyone is at a terminal.
 CNAME="bev_motion_$$"
-forward_int() { docker kill -s INT "$CNAME" >/dev/null 2>&1 || true; }
+forward_int() {
+  docker kill -s INT "$CNAME" >/dev/null 2>&1 || true
+  # AND WAIT FOR IT TO ACTUALLY EXIT. bash's `wait` returns as soon as a trapped signal
+  # arrives, even though the child is still running - so without this the script raced on
+  # to move the bag while rosbag2 was still writing it, producing exactly the unreadable
+  # -wal/-shm directory this whole trap exists to prevent.
+  docker wait "$CNAME" >/dev/null 2>&1 || true
+}
 trap forward_int INT TERM
 
 echo "preflight OK  trigger_mode=1  active_low  exposure_us=$EXPOSURE_US"
@@ -117,6 +124,8 @@ COMPOSE_PID=$!
 tail -f "$OUT/vo.log" & TAIL_PID=$!
 wait "$COMPOSE_PID" || true
 kill "$TAIL_PID" 2>/dev/null || true
+# Belt and braces: if the container is somehow still up, do not move an open bag.
+docker wait "$CNAME" >/dev/null 2>&1 || true
 sudo mv bags/fused_* bags/motion_${LABEL}_* "$OUT/" 2>/dev/null || true
 
 echo; echo "=== rate / timing / drops, from the node's own reporting ==="
