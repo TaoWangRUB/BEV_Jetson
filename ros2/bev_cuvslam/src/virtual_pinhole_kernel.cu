@@ -22,16 +22,11 @@
 
 namespace {
 
-__global__ void vpin_remap_batch(const VPinDesc* __restrict__ desc, int W, int H,
-                                 const uint8_t* __restrict__ s0, const uint8_t* __restrict__ s1,
-                                 const uint8_t* __restrict__ s2, const uint8_t* __restrict__ s3,
-                                 int sw, int sh, int spitch) {
+__global__ void vpin_remap_batch(const VPinDesc* __restrict__ desc, int W, int H) {
   const int x = blockIdx.x * blockDim.x + threadIdx.x;
   const int y = blockIdx.y * blockDim.y + threadIdx.y;
   if (x >= W || y >= H) return;
   const VPinDesc d = desc[blockIdx.z];
-
-  const uint8_t* src = d.src_idx == 0 ? s0 : d.src_idx == 1 ? s1 : d.src_idx == 2 ? s2 : s3;
   const float2 m = d.map[y * W + x];
 
   // Outside the fisheye's valid image the map carries a negative sentinel; write black
@@ -41,10 +36,10 @@ __global__ void vpin_remap_batch(const VPinDesc* __restrict__ desc, int W, int H
   if (m.x >= 0.0f && m.y >= 0.0f) {
     const float fx = floorf(m.x), fy = floorf(m.y);
     const int x0 = (int)fx, y0 = (int)fy;
-    if (x0 >= 0 && y0 >= 0 && x0 + 1 < sw && y0 + 1 < sh) {
+    if (x0 >= 0 && y0 >= 0 && x0 + 1 < d.sw && y0 + 1 < d.sh) {
       const float ax = m.x - fx, ay = m.y - fy;
-      const uint8_t* r0 = src + (size_t)y0 * spitch + x0;
-      const uint8_t* r1 = r0 + spitch;
+      const uint8_t* r0 = d.src + (size_t)y0 * d.spitch + x0;
+      const uint8_t* r1 = r0 + d.spitch;
       const float top = r0[0] * (1.0f - ax) + r0[1] * ax;
       const float bot = r1[0] * (1.0f - ax) + r1[1] * ax;
       out = (uint8_t)lrintf(top * (1.0f - ay) + bot * ay);
@@ -56,10 +51,8 @@ __global__ void vpin_remap_batch(const VPinDesc* __restrict__ desc, int W, int H
 }  // namespace
 
 extern "C" cudaError_t launch_vpin_remap(const VPinDesc* desc, int n_vcam, int W, int H,
-                                         const uint8_t* const* srcs, int sw, int sh, int spitch,
                                          cudaStream_t stream) {
   const dim3 blk(32, 8), grd((W + blk.x - 1) / blk.x, (H + blk.y - 1) / blk.y, n_vcam);
-  vpin_remap_batch<<<grd, blk, 0, stream>>>(desc, W, H, srcs[0], srcs[1], srcs[2], srcs[3],
-                                            sw, sh, spitch);
+  vpin_remap_batch<<<grd, blk, 0, stream>>>(desc, W, H);
   return cudaGetLastError();
 }

@@ -5,12 +5,21 @@
 #include <cstdint>
 #include <cuda_runtime.h>
 
-// One virtual pinhole: where to read (map, into source `src_idx`) and where to write.
-// `map` is W*H float2 of SOURCE pixel coordinates, negative meaning "outside the fisheye".
+// One virtual pinhole: where to read and where to write.
+//
+// `src`/`spitch` live here rather than as kernel parameters because the Argus NVMM buffers
+// are re-registered per frame and their device pointers and pitches are not guaranteed
+// stable. Re-uploading 8 of these is under 200 bytes a frame, which is free next to being
+// wrong once.
+//
+// `map` is width*height float2 of SOURCE pixel coordinates; negative means "this virtual
+// pixel has no source", which happens past the fisheye's valid circle.
 struct VPinDesc {
   const float2* map;
+  const uint8_t* src;
   uint8_t* dst;
-  int src_idx;
+  int spitch;
+  int sw, sh;
   int _pad;
 };
 
@@ -18,10 +27,10 @@ struct VPinDesc {
 extern "C" {
 #endif
 
-// One launch for all n_vcam virtual cameras (gridDim.z indexes them). `srcs` is the 4 device
-// Y-plane pointers for this frame; they change per frame, the descriptors do not.
+// One launch for all n_vcam virtual cameras (gridDim.z indexes them). The CPU path paid
+// ~1 ms per cv::remap call in thread dispatch, eight times a set (task 4.5b); this pays it
+// once, and the GPU has no equivalent cost.
 cudaError_t launch_vpin_remap(const VPinDesc* desc, int n_vcam, int W, int H,
-                              const uint8_t* const* srcs, int sw, int sh, int spitch,
                               cudaStream_t stream);
 
 #ifdef __cplusplus

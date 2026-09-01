@@ -8,6 +8,7 @@
 //
 // Bridge validated by scripts/port/egl_cuda_spike.cpp (device Y plane == CPU path).
 // Build/run inside cuvslam-foxy:tx2 (Argus socket + /dev + jetson_multimedia_api + CUDA).
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -29,6 +30,8 @@
 // cuVSLAM header FIRST: the EGL/X11 headers below #define Success/None/Status/Bool as
 // macros, which would clobber cuVSLAM's Result<T>::Success() (cuvslam2.h:627).
 #include "cuvslam/cuvslam2.h"
+#include "bev_cuvslam/rig_build.hpp"
+#include "bev_cuvslam/virtual_pinhole_gpu.h"
 
 #include <Argus/Argus.h>
 #include <EGLStream/EGLStream.h>
@@ -68,25 +71,6 @@ YAML::Node load_yaml(const std::string& path) {
   }
   return YAML::Load(ss.str());
 }
-cuvslam::Camera load_intrinsics(const std::string& path) {
-  YAML::Node y = load_yaml(path);
-  cuvslam::Camera c;
-  c.size = {y["image_width"].as<int>(), y["image_height"].as<int>()};
-  YAML::Node pp = y["projection_parameters"];
-  c.focal = {pp["mu"].as<float>(), pp["mv"].as<float>()};
-  c.principal = {pp["u0"].as<float>(), pp["v0"].as<float>()};
-  YAML::Node dp = y["distortion_parameters"];
-  c.distortion.model = cuvslam::Distortion::Model::Fisheye;
-  c.distortion.parameters = {dp["k2"].as<float>(), dp["k3"].as<float>(),
-                             dp["k4"].as<float>(), dp["k5"].as<float>()};
-  return c;
-}
-cuvslam::Pose load_pose(const YAML::Node& n) {
-  cuvslam::Pose p;
-  auto t = n["t_xyz_m"]; p.translation = {t[0].as<float>(), t[1].as<float>(), t[2].as<float>()};
-  auto q = n["q_wxyz"];  p.rotation = {q[1].as<float>(), q[2].as<float>(), q[3].as<float>(), q[0].as<float>()};
-  return p;
-}
 }  // namespace
 
 class FusedNode : public rclcpp::Node {
@@ -95,16 +79,24 @@ class FusedNode : public rclcpp::Node {
     // Default = the measured best full-FOV config (see openspec fused-zerocopy §6): capture the
     // full-FOV 1640x1232 mode and ISP-downscale to 832x624 output → ~22 Hz (the sensor's fps
     // ceiling), full surround FOV, lowest CPU. Override params for other configs.
-    calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/832x624");
-    rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics_vo.yaml");
+    calib_dir_ = declare_parameter<std::string>("calib_dir", "config/calib/imx296_1456x1088");
+    // rig_extrinsics_imx296.yaml, NOT rig_extrinsics_vo.yaml: the latter belongs to the
+    // panorama lineage and has the 180 deg mount roll folded in. These extrinsics are solved
+    // directly from the frames the sensor delivers, so folding it in again puts every camera
+    // 180 deg out (3R.16).
+    rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics_imx296.yaml");
+    vstereo_path_ = declare_parameter<std::string>("virtual_stereo", "config/rig/virtual_stereo_imx296.yaml");
+    max_skew_ns_ = (int64_t)declare_parameter<int>("max_skew_us", 1000) * 1000;
     cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
     sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {1, 2, 3, 4});
-    width_ = declare_parameter<int>("width", 832);     // OUTPUT resolution (-> cuVSLAM + calib)
-    height_ = declare_parameter<int>("height", 624);
-    // Sensor mode to capture; larger than output → Argus ISP downscales in NVMM (stays zero-copy).
-    sensor_width_ = declare_parameter<int>("sensor_width", 1640);
-    sensor_height_ = declare_parameter<int>("sensor_height", 1232);
-    fps_ = declare_parameter<int>("fps", 60);          // request high; the sensor mode caps it (1640x1232 → 22 fps)
+    // NATIVE, and not negotiable: this is the resolution the intrinsics were solved at, and
+    // the source of the carve. Downscaling here would silently invalidate camN.yaml. The old
+    // 832x624/1640x1232 defaults were the IMX219 rig's.
+    width_ = declare_parameter<int>("width", 1456);
+    height_ = declare_parameter<int>("height", 1088);
+    sensor_width_ = declare_parameter<int>("sensor_width", 1456);
+    sensor_height_ = declare_parameter<int>("sensor_height", 1088);
+    fps_ = declare_parameter<int>("fps", 30);          // the trigger sets the real rate
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
     // NOT "base_link", and the difference matters. cuVSLAM reports world_from_rig, and
     // this node's rig frame IS cam1's optical frame (z forward, x right, y down),
@@ -153,15 +145,40 @@ class FusedNode : public rclcpp::Node {
     int mj, mn, pt; cuvslam::GetVersion(&mj, &mn, &pt);
     RCLCPP_INFO(get_logger(), "cuVSLAM %d.%d.%d — warming up GPU...", mj, mn, pt);
     cuvslam::WarmUpGPU();
-    YAML::Node rig_y = load_yaml(rig_path_);
-    cuvslam::Rig rig;
-    for (size_t i = 0; i < 4; ++i) {
-      cuvslam::Camera cam = load_intrinsics(calib_dir_ + "/" + cams_[i] + ".yaml");
-      cam.rig_from_camera = load_pose(rig_y["cameras"][cams_[i]]);
-      rig.cameras.push_back(cam);
-      RCLCPP_INFO(get_logger(), "  %s: %dx%d f=(%.1f,%.1f) c=(%.1f,%.1f)", cams_[i].c_str(),
-                  cam.size[0], cam.size[1], cam.focal[0], cam.focal[1], cam.principal[0], cam.principal[1]);
+    // Same carve, same rig, same file parsing as the modular node - bev_cuvslam/rig_build.hpp
+    // is shared deliberately (see the note there). The ONLY difference between the two nodes
+    // is where the gather runs: cv::remap on the CPU there, launch_vpin_remap on the GPU here.
+    auto vrig = bev_cuvslam::BuildVirtualRig(calib_dir_, rig_path_, vstereo_path_, cams_);
+    for (const auto& w : vrig.warnings) RCLCPP_WARN(get_logger(), "%s", w.c_str());
+    vpin_ = std::move(vrig.vpin);
+    vsrc_ = std::move(vrig.vsrc);
+    cuvslam::Rig rig = std::move(vrig.rig);
+    vw_ = vpin_[0].width; vh_ = vpin_[0].height;
+    for (size_t k = 0; k < vpin_.size(); ++k)
+      RCLCPP_INFO(get_logger(), "  vcam %zu = %s %+.0f deg: %dx%d f=%.1f", k,
+                  cams_[vsrc_[k]].c_str(), vpin_[k].yaw_rad * 180.0 / CV_PI,
+                  vpin_[k].width, vpin_[k].height, vpin_[k].focal);
+
+    // Upload the carve tables once. These are the SAME maps the CPU path uses (the float
+    // ones BuildVirtualPinhole keeps), not a second computation that could disagree.
+    desc_.resize(vpin_.size());
+    for (size_t k = 0; k < vpin_.size(); ++k) {
+      const size_t map_bytes = (size_t)vw_ * vh_ * sizeof(float) * 2;
+      void *dmap = nullptr, *ddst = nullptr;
+      if (cudaMalloc(&dmap, map_bytes) != cudaSuccess ||
+          cudaMalloc(&ddst, (size_t)vw_ * vh_) != cudaSuccess)
+        throw std::runtime_error("cudaMalloc failed for the virtual-pinhole tables");
+      if (cudaMemcpy(dmap, vpin_[k].mapf.ptr<float>(), map_bytes, cudaMemcpyHostToDevice) != cudaSuccess)
+        throw std::runtime_error("cudaMemcpy failed uploading a carve map");
+      desc_[k].map = (const float2*)dmap;
+      desc_[k].dst = (uint8_t*)ddst;
+      desc_[k].sw = width_; desc_[k].sh = height_;
     }
+    if (cudaMalloc(&dev_desc_, desc_.size() * sizeof(VPinDesc)) != cudaSuccess)
+      throw std::runtime_error("cudaMalloc failed for the descriptor array");
+    RCLCPP_INFO(get_logger(), "carve tables on the GPU: %zu virtual pinholes at %dx%d",
+                vpin_.size(), vw_, vh_);
+
     cuvslam::Odometry::Config cfg = cuvslam::Odometry::GetDefaultConfig();
     cfg.odometry_mode = cuvslam::Odometry::OdometryMode::Multicamera;
     cfg.multicam_mode = cuvslam::Odometry::MulticameraMode::Precision;
@@ -270,31 +287,83 @@ class FusedNode : public rclcpp::Node {
     while (running_ && rclcpp::ok()) {
       const auto t_loop = std::chrono::steady_clock::now();
       int64_t ts0 = 0; bool ok = true;
+      std::array<int64_t, 4> ts{};
       for (size_t i = 0; i < 4 && ok; ++i) {
         UniqueObj<EGLStream::Frame> frame(ifc[i]->acquireFrame(1000000000));
         auto* iframe = interface_cast<EGLStream::IFrame>(frame.get());
         if (!iframe) { ok = false; break; }
         auto* inb = interface_cast<EGLStream::NV::IImageNativeBuffer>(iframe->getImage());
         if (!inb || !ensure_gpu_buffer(i, inb)) { ok = false; break; }
-        if (i == 0) ts0 = (int64_t)iframe->getTime();
+        // The SENSOR timestamp, not IFrame::getTime(). getTime() is consumer-side and
+        // measured the capture loop's own phase - it put the four cameras ~7 ms apart in
+        // visit order (README 4.7, and 4.2 flagged this node as carrying the same bug).
+        uint64_t sof = 0, expo = 0;
+        if (auto* iacm = interface_cast<EGLStream::IArgusCaptureMetadata>(frame.get()))
+          if (auto* imeta = interface_cast<ICaptureMetadata>(iacm->getMetadata())) {
+            sof = imeta->getSensorTimestamp();
+            expo = imeta->getSensorExposureTime();
+          }
+        if (sof == 0) {
+          if (!warned_no_meta_) {
+            RCLCPP_WARN(get_logger(), "no capture metadata - falling back to the EGLStream "
+                        "frame time, which is consumer-side and NOT synchronised");
+            warned_no_meta_ = true;
+          }
+          sof = (uint64_t)iframe->getTime();
+        }
+        ts[i] = (int64_t)sof - (int64_t)expo / 2;   // exposure midpoint: what the image represents
+        if (i == 0) ts0 = ts[i];
         if (first[i]) { RCLCPP_INFO(get_logger(), "%s first GPU frame", cams_[i].c_str()); first[i] = false; }
       }
       if (!ok) continue;
+
+      // Gate the set on REAL per-frame stamps, exactly as the modular node does. A set that
+      // fails is dropped and counted, never re-stamped: on a triggered rig a wide set means
+      // the trigger, a camera or the capture path is at fault, and the VO cannot fix it.
+      const int64_t lo = *std::min_element(ts.begin(), ts.end());
+      const int64_t hi = *std::max_element(ts.begin(), ts.end());
+      ++sets_;
+      if (hi - lo > max_skew_ns_) {
+        ++dropped_sets_;
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+            "set skew %.1f ms > %.1f ms - dropped (%ld of %ld). Is the trigger running?",
+            (hi - lo) / 1e6, max_skew_ns_ / 1e6, dropped_sets_, sets_);
+        continue;
+      }
+      if (hi - lo > worst_skew_ns_) worst_skew_ns_ = hi - lo;
       const auto t_acq = std::chrono::steady_clock::now();  // after 4-cam acquire (+GPU copy)
 
-      // Build the cuVSLAM ImageSet from the 4 GPU Y planes (unified timestamp = cam0's).
-      cuvslam::Odometry::ImageSet images; images.reserve(4);
-      for (uint32_t i = 0; i < 4; ++i) {
+      // Carve on the GPU. One launch for all 8 virtual cameras; the pixels never leave the
+      // device the NVMM bridge handed us.
+      for (size_t k = 0; k < desc_.size(); ++k) {
+        desc_[k].src = (const uint8_t*)dev_y_[vsrc_[k]];
+        desc_[k].spitch = (int)dev_pitch_[vsrc_[k]];
+      }
+      if (cudaMemcpy(dev_desc_, desc_.data(), desc_.size() * sizeof(VPinDesc),
+                     cudaMemcpyHostToDevice) != cudaSuccess) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "descriptor upload failed");
+        continue;
+      }
+      if (launch_vpin_remap(dev_desc_, (int)desc_.size(), vw_, vh_, 0) != cudaSuccess ||
+          cudaDeviceSynchronize() != cudaSuccess) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "virtual-pinhole carve failed");
+        continue;
+      }
+
+      // The ImageSet is the 8 CARVED views, not the 4 fisheyes: cuVSLAM's only fisheye model
+      // is equidistant and cannot represent these ~192 deg lenses at all (README 4.8).
+      cuvslam::Odometry::ImageSet images; images.reserve(desc_.size());
+      for (uint32_t k = 0; k < desc_.size(); ++k) {
         cuvslam::Image im{};
-        im.pixels = dev_y_[i];
-        im.width = width_;
-        im.height = height_;
-        im.pitch = (int32_t)dev_pitch_[i];
+        im.pixels = desc_[k].dst;
+        im.width = vw_;
+        im.height = vh_;
+        im.pitch = vw_;
         im.encoding = cuvslam::ImageData::Encoding::MONO;
         im.data_type = cuvslam::ImageData::DataType::UINT8;
         im.is_gpu_mem = true;
-        im.timestamp_ns = ts0;
-        im.camera_index = i;
+        im.timestamp_ns = ts[vsrc_[k]];
+        im.camera_index = k;
         images.push_back(im);
       }
       cuvslam::PoseEstimate est;
@@ -359,6 +428,14 @@ class FusedNode : public rclcpp::Node {
   std::vector<std::string> cams_;
   std::vector<int64_t> sensor_ids_;
   int width_, height_, sensor_width_, sensor_height_, fps_;
+  int vw_ = 0, vh_ = 0;
+  std::string vstereo_path_;
+  int64_t max_skew_ns_ = 1000000, worst_skew_ns_ = 0, sets_ = 0, dropped_sets_ = 0;
+  bool warned_no_meta_ = false;
+  std::vector<bev_cuvslam::VirtualPinhole> vpin_;
+  std::vector<int> vsrc_;
+  std::vector<VPinDesc> desc_;
+  VPinDesc* dev_desc_ = nullptr;
   std::unique_ptr<cuvslam::Odometry> tracker_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_bc_;
