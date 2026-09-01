@@ -214,7 +214,7 @@ def solve_rotation(poses, labels):
     moved = math.degrees(math.acos(max(-1, min(1, (np.trace(R.T @ M) - 1) / 2))))
     print("  orthonormalisation moved it %.2f deg  (det = %+.3f)" % (moved, np.linalg.det(R)))
     np.set_printoptions(precision=3, suppress=True)
-    print("  R_imu_from_rig =\n%s" % np.array2string(R, prefix="    "))
+    print("  R_imu_from_body =\n%s" % np.array2string(R, prefix="    "))
     for k, name in enumerate(("front", "left", "up")):
         c = R[:, k]
         ax = int(np.argmax(np.abs(c)))

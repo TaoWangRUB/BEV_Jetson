@@ -18,4 +18,4 @@
     sensor_height: 1232
     fps: 60                                  # request high; sensor mode caps it (1640x1232 -> 22 fps)
     odom_frame: odom
-    base_frame: base_link
+    base_frame: cam1_optical_frame   # NOT base_link: cam1 optical, 180-rolled. See 3R.16b.

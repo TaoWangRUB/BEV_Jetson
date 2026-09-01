@@ -387,36 +387,67 @@ than assumes, because a trigger swap is precisely the event that can degrade ske
   Carried forward: cam2/cam3/cam4 intrinsics are usable but carry 0.3-2.2 % focal uncertainty,
   which propagates to the pairwise baselines and to metric scale. Revisit if 3R.13's ring residual
   or the §5.1 scale check disappoints.
-- [~] 3R.12 **Stage 2 — the four pairwise extrinsics.** Running 2026-09-01 on the 08-31 pair
-  recordings with the new intrinsics, via `scripts/calib/pair_extrinsics.py`. First result — left
-  (cam3→cam1): **994 simultaneous views, baseline 155.4 mm, rotation 90.01°**, against round 1's
-  147.8 mm / 90.9°. The 5 % baseline shift is explained by the focal change (1685→1619 px is 4.1 %,
-  and baseline scales with it), and the rotation is now square to 0.01°.
+- [x] 3R.12 **Stage 2 done — four pairwise extrinsics on the new intrinsics (2026-09-01).**
+  Solved from the 08-31 pair recordings via `scripts/calib/pair_extrinsics.py` (Kalibr's own
+  `GridDetector` and target model, matching on the frame's own header stamp).
 
-  **Stage 2 — the four pairwise extrinsics**, Kalibr's own detector and `T_t_c` (3.5's
-  hand-rolled board model plateaued at 11 px and a metre of baseline error — do not revisit it).
-  Cross-check the baselines against the previous 147.8/148.7/149.1/149.1 mm: they should still agree
-  to a few mm *and* match the physical mount. A real disagreement here is a mount that moved, and
-  `rig_layout.yaml` needs updating with it.
-- [ ] 3R.13 **Ring closure** (`scripts/calib/close_rig_ring.py`), reporting residual before/after,
-  per-edge corrections, and the per-pair epipolar cost — the closure buys consistency, not accuracy,
-  and 3.5b's discipline of printing what it cost stands. If the new pre-closure residual is much
-  larger than 3.63°, resolve it against 3R.9's three-camera stage *before* accepting the closure;
-  a loop driven to zero is not evidence of a correct answer.
-- [x] 3R.14 **Delta MEASURED 2026-09-01: +3.73 ms** (`timeshift_cam_imu = 0.003731525`), cam1 at
-  4986 us exposure, 1101 images and 14 693 IMU samples at 200.11 Hz, reprojection residual 0.45 px.
-  Repeated on an independent recording at the same DLPF: **+3.7556 ms** — the two agree to **24 us**.
+  | pair | cams | simultaneous views | baseline | rotation | round 1 |
+  |---|---|---|---|---|---|
+  | left | cam3 → cam1 | 994 | 155.4 mm | 90.01° | 147.8 mm / 90.9° |
+  | front | cam1 → cam2 | 1178 | 152.7 mm | 89.43° | 148.7 mm / 90.4° |
+  | right | cam2 → cam4 | 1067 | 153.2 mm | 90.90° | 149.2 mm / **92.2°** |
+  | rear | cam4 → cam3 | 1364 | 161.1 mm | 90.64° | 149.2 mm / 90.1° |
 
-  **The sign and magnitude both changed from last session's -8.06 ms, and the old value does not
+  **The right pair, round 1's outlier at 92.2° with only 105 poses, is now 90.90° with 1067** — and
+  it is the pair whose intrinsics moved most (cam2, −146 px in fx). The improvement landed where the
+  theory said it would.
+
+  **Baselines are ~4 mm longer than round 1 across the board**, which is the focal change showing up
+  as expected: a shorter focal puts the board further away and lengthens the baseline.
+
+  **But the baseline spread grew from 1.5 mm to 8.4 mm, and it is not random.** The two pairs
+  involving **cam3** are the two highest (155.4, 161.1); the two without it agree to 0.5 mm
+  (152.7, 153.2). cam3 is the camera that failed 3R.11's subset test worst (34.4 px of fx, drifting
+  *downward* with fewer frames), and an underestimated focal inflates exactly these baselines.
+- [x] 3R.13 **Ring closed 2026-09-01 — and the pre-closure misclosure more than halved.**
+
+  | | round 1 | round 2 |
+  |---|---|---|
+  | before closure | **3.63°** / 9.2 mm | **1.58°** / 9.6 mm |
+  | per-edge corrections | 0.57 – 1.31° | 0.23 – **0.94°** |
+  | after closure | 0.0000° / 0.043 mm | 0.1436° / 0.000 mm |
+
+  That halving is the clearest single verdict on the corner re-sweep: the corner coverage bought a
+  real reduction in systematic bias, not merely different numbers.
+
+  **Two things remain open, both pointing the same way.** 1.58° is still well above the ~0.5° a
+  Monte-Carlo over each pair's own spread says random error alone would leave, so systematic
+  per-recording bias persists — and the **rear pair takes the largest correction (0.94°)**, the pair
+  containing cam3. Every independent line of evidence now converges on cam3's focal being the weak
+  link: worst subset stability, both its baselines inflated, largest closure correction.
+
+  **Anomaly worth resolving before this file is trusted:** the post-closure rotation residual is
+  0.1436°, where the parameterisation (three poses in cam1's frame) makes closure *structurally*
+  impossible to violate and round 1 reached 0.0000°. Translation closed cleanly to 0.000 mm. That
+  looks like the optimiser stopping on a tolerance after 7 iterations rather than a data problem.
+- [x] 3R.14 **Δ MEASURED 2026-09-01: +3.73 ms** (`timeshift_cam_imu = 0.003731525`), cam1 at
+  4986 µs exposure, 1101 images and 14 693 IMU samples at 200.11 Hz, reprojection residual 0.45 px.
+  Repeated on an independent recording at the same DLPF: **+3.7556 ms** — the two agree to **24 µs**,
+  which is the only uncertainty figure that exists, since Kalibr reports none (it prints 18 digits).
+
+  **The sign and magnitude both changed from last session's −8.06 ms, and the old value does not
   reproduce.** Two reasons to trust the new one: last session's IMU input had to be rebuilt from CSV
   because rosbag2 dropped it to 43 Hz (these carry the full 200 Hz in the bag), and it used the
   intrinsics we have since shown to be unconverged. `T_cam_imu` agrees to ~1e-3 across the two new
   solves. The "half the readout = 8.05 ms" coincidence is therefore dead — and it was a
   rolling-shutter quantity on a global-shutter sensor anyway.
-- [x] 3R.14b **Two exposures — Delta is CONSTANT.** +3.7315 ms at 4986 us, +3.8612 ms at 9986 us.
-  A mis-modelled `exposure/2` term predicted a **2.5 ms** shift; the measurement moved **0.13 ms**,
-  so in `Delta = c + k*E` the slope is **k ~ 0.026, i.e. zero**. The exposure-midpoint stamping is
-  correct and Delta is a fixed offset valid at any exposure.
+
+  Written with provenance to `config/calib/imu_mpu9250.yaml`.
+- [x] 3R.14b **Two exposures — Δ is CONSTANT in exposure.** +3.7315 ms at 4986 µs, +3.8612 ms at
+  9986 µs. A mis-modelled `exposure/2` term predicted a **2.5 ms** shift; the measurement moved
+  **0.13 ms**, so in `Δ = c + k·E` the slope is **k ≈ 0.026, i.e. zero**. The exposure-midpoint
+  stamping is correct and Δ does not have to be re-measured when the exposure changes.
+
 - [ ] 3R.14c **Align the gyro and accel filter delays, then re-measure Δ.** The two IMU paths
   currently disagree by **1.02 ms** — gyro 2.90 ms at 184 Hz, accel 1.88 ms at 218 Hz — and
   `imu_node` says so on every startup (*"group delays are REPORTED, not applied: the gyro lags the
@@ -431,11 +462,35 @@ than assumes, because a trigger swap is precisely the event that can degrade ske
   Costs one 90 s recording plus a solve, since Δ moves by ~1 ms when the accel path changes.
   Recorded in `config/calib/imu_mpu9250.yaml` alongside the measured constant.
 
-- [ ] 3R.15 **Regenerate the four virtual-stereo pairs** on the new closed rig
-  (`scripts/calib/regen_vstereo.sh`, `VS_FOV=160`, 768×576 — the horizontal-160 carve of 3.7, not the
-  diagonal 190). Gates: 100 % non-black per rectified view, disparity sign consistent, median |dy|
-  reported per pair against the previous 0.45/1.79/2.55/0.66 px. Dense-disparity validity on a
-  calibration sweep remains *not* evidence either way (3.7).
+- [~] 3R.15 **Regenerated and measured 2026-09-01 — gates met, but the result is worse than round 1
+  and points at cam3.** `VS_FOV=160`, 768×576, on the ring-closed extrinsics.
+
+  | pair | cams | baseline | median \|dy\| | rms | round 1 \|dy\| | disparity valid | depth p10 / med / p90 |
+  |---|---|---|---|---|---|---|---|
+  | left  | cam3→cam1 | 0.1552 m | **2.06 px** | 3.11 | 0.45 | 14 % | 0.31 / 0.45 / 1.82 m |
+  | front | cam1→cam2 | 0.1527 m | **1.32 px** | 2.86 | 1.79 | 17 % | 0.31 / 0.35 / 1.86 m |
+  | right | cam2→cam4 | 0.1533 m | **2.86 px** | 4.07 | 2.55 | 11 % | 0.31 / 0.55 / 1.60 m |
+  | rear  | cam4→cam3 | 0.1612 m | **3.67 px** | 4.52 | 0.66 | 10 % | 0.33 / 0.82 / 1.64 m |
+
+  Gates: 100 % non-black on all four rectified views ✔; disparity sign consistent and depth positive
+  and metrically plausible ✔; median |dy| reported ✔. Front improved (1.79 → 1.32); the other three
+  regressed, and **the two worst are exactly the two pairs containing cam3** (left 2.06, rear 3.67),
+  which also carries the worst subset stability (34.4 px vs cam1's 0.06), both baselines inflated
+  (155.2/161.2 mm vs 152.7/153.3), and the largest ring correction (0.94°). Left **partial: to be
+  re-run after the cam3 re-sweep**, which is expected to move the extrinsics feeding this stage.
+
+  Figure: `config/calib/20260901/evidence/disparity_4pairs_round2.png` (rectified view + disparity per
+  pair). It is a **2×2 montage of four independent pairs, not a fused omnidirectional depth** — nothing
+  in this repo transforms the four into a common frame. Dense-disparity validity of 10–17 % here is the
+  *scene* (repetitive tag grid at 0.3–0.6 m against a blank wall, worst case for block matching), not
+  the rig; per 3.7 a calibration sweep remains *not* evidence either way, and a real verdict needs a
+  textured scene at 1–3 m, which has still not been recorded.
+
+  Three tool bugs had to be fixed before any of these numbers were valid, all of which had previously
+  read as *bad data*: `vstereo_epipolar.py` and `vstereo_disparity.py` both re-derived the carve
+  combination instead of taking the one the generator chose (keeping ~35 % of the image), and both
+  assumed argument order set left/right — giving negative disparity, which `minDisparity=16` then
+  silently discarded. Both now read the generator's `.yaml` sidecar and order the pair by baseline sign.
 
 ### E. Publish, and re-verify what can be verified offline
 
@@ -458,7 +513,7 @@ than assumes, because a trigger swap is precisely the event that can degrade ske
 
   Confirm from one frame that the reconnect did not remount anything upright (3.9's roll still
   applies), because that assumption is what makes the previous paragraph true.
-- [ ] 3R.16b **State, and then fix, what frame the odometry comes out in.** `cuvslam_multicam_node`
+- [x] 3R.16b **State, and then fix, what frame the odometry comes out in.** `cuvslam_multicam_node`
   line 164: *"rig frame IS cam1's frame, which is how rig_in_cam1 is expressed"* — and it publishes
   that pose as `odom -> base_link`. So `base_link` is currently **cam1's raw optical frame**: an
   optical frame (z forward, x right, y down) that is additionally rolled 180 deg by the inverted
@@ -474,6 +529,33 @@ than assumes, because a trigger swap is precisely the event that can degrade ske
   `config/rig/rig_layout.yaml`), or declare `base_link` to be cam1's optical frame in the launch and
   README and let the consumer compose it. Decide before §6.2's documentation pass; do not leave it
   implicit, because a 180 deg roll produces trajectories that look entirely plausible.
+
+  **DECIDED AND IMPLEMENTED 2026-09-01: the second option — name the frame truthfully.** The first
+  option is not available: `rig_layout.yaml` has **no numeric rotation from body to cam1**.
+  `position: front_left` is a label, not a rotation, and deriving one from the nominal layout would
+  assume cam1 looks 45° off forward and sits level — on a rig that has already produced a camera
+  ~19° off its nominal mount. Publishing a *computed-from-nominal* `base_link` would replace an
+  obviously-wrong frame with a plausibly-wrong one, which is worse.
+
+  Found while doing it, and larger than the task described: **`rig_layout.yaml` and the VO code used
+  the word "rig" for two different frames.** The yaml's `R_imu_from_rig` was rig=FLU-body; the node's
+  and `rig_extrinsics_imx296.yaml`'s `rig_in_cam1` is rig=cam1-optical. Composing the two — the
+  obvious thing to do at the first IMU fusion — would have been wrong by (optical→FLU ∘ 180° roll)
+  and would have looked plausible. Caught before any consumer existed: `R_imu_from_rig` was only ever
+  *printed* by `scripts/imu/axis_check.py`, never composed.
+
+  Changes: `rig_layout.yaml` now defines **body** (FLU, vehicle, = ROS `base_link`) and **rig**
+  (cuVSLAM's word, = cam1 optical) explicitly at the top, and states that `R_body_from_cam1` is
+  missing and why that blocks a true `base_link`; `R_imu_from_rig` → **`R_imu_from_body`** (and in
+  `axis_check.py`). Both VO nodes default `base_frame` to **`cam1_optical_frame`**, not `base_link`
+  (`cuvslam_multicam_node.cpp`, `bev_cuvslam_fused_node.cpp`, `bev_cuvslam.launch.py`,
+  `fused_vo_params.yaml`), and `cuvslam_multicam_node` logs the frame and its caveat at startup —
+  because the pose alone will never reveal the error.
+
+  Unblocked by this: §5.1/§5.2 were already frame-independent and stay so. Still blocked: any tf
+  consumer wanting a vehicle frame, until `R_body_from_cam1` is measured — that is new work, not
+  part of this change. **The C++ is edited but not compiled** (no ROS 2 on this host); it builds or
+  fails in the §4.5 board session like the rest of the node.
 
 - [ ] 3R.17 **Re-run the offline rig verification before the board session**, unchanged from 4.1b:
   `scripts/vo/verify_rig_build.sh` (cuVSLAM's own frustum test on the poses the C++ emits — the
@@ -522,6 +604,6 @@ physically moved - the remaining items are not doable from here.
 ## 6. Wrap-up
 
 - [ ] 6.1 Tick `bring-up-end-to-end-vo` tasks 3.4/3.6 with the evidence from §5, or state precisely why they remain open.
-- [ ] 6.2 Update `README.md` and `docs/` for the IMX296 rig: population, trigger prerequisite, `jetson-clocks`, new resolution, calibration layout.
+- [ ] 6.2 Update `README.md` and `docs/` for the IMX296 rig: population, trigger prerequisite, `jetson-clocks`, new resolution, calibration layout. **Must also carry 3R.16b's outcome:** the odometry child frame is `cam1_optical_frame`, not `base_link`, and what a consumer has to compose to get a vehicle frame.
 - [ ] 6.3 Update the project memory notes with the measured outcome (skew, rate, whether tracking is metric, Δ).
 - [ ] 6.4 Archive this change once §5 has a verdict.

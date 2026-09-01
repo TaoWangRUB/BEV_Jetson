@@ -106,7 +106,14 @@ class FusedNode : public rclcpp::Node {
     sensor_height_ = declare_parameter<int>("sensor_height", 1232);
     fps_ = declare_parameter<int>("fps", 60);          // request high; the sensor mode caps it (1640x1232 → 22 fps)
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
-    base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
+    // NOT "base_link", and the difference matters. cuVSLAM reports world_from_rig, and
+    // this node's rig frame IS cam1's optical frame (z forward, x right, y down),
+    // additionally rolled 180 deg by the inverted mount. Publishing that as base_link
+    // would tell every tf consumer it is FLU on the vehicle, which it is not - and a
+    // 180 deg roll produces trajectories that look entirely plausible. Publishing a
+    // true base_link needs R_body_from_cam1, which is not measured; see
+    // config/rig/rig_layout.yaml and 3R.16b. Override the parameter only once it is.
+    base_frame_ = declare_parameter<std::string>("base_frame", "cam1_optical_frame");
     if (cams_.size() != 4 || sensor_ids_.size() != 4)
       throw std::runtime_error("fused node is wired for exactly 4 cameras");
 

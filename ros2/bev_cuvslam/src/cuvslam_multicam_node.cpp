@@ -111,7 +111,14 @@ class CuvslamMulticamNode : public rclcpp::Node {
     topics_ = declare_parameter<std::vector<std::string>>(
         "image_topics", {"/cam1/image_raw", "/cam2/image_raw", "/cam3/image_raw", "/cam4/image_raw"});
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
-    base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
+    // NOT "base_link", and the difference matters. cuVSLAM reports world_from_rig, and
+    // this node's rig frame IS cam1's optical frame (z forward, x right, y down),
+    // additionally rolled 180 deg by the inverted mount. Publishing that as base_link
+    // would tell every tf consumer it is FLU on the vehicle, which it is not - and a
+    // 180 deg roll produces trajectories that look entirely plausible. Publishing a
+    // true base_link needs R_body_from_cam1, which is not measured; see
+    // config/rig/rig_layout.yaml and 3R.16b. Override the parameter only once it is.
+    base_frame_ = declare_parameter<std::string>("base_frame", "cam1_optical_frame");
     // A set whose frames span more than this is not a set. cuVSLAM's Multicamera gate is
     // 1 ms; the triggered rig measures 1 us, so anything near the limit is a fault, not
     // something to widen the window for.
@@ -135,6 +142,17 @@ class CuvslamMulticamNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "cuVSLAM multicam VO up: 4 fisheyes -> %zu virtual pinholes, "
                 "mode=Multicamera (visual only), sets gated at %.1f ms skew on real per-frame "
                 "timestamps.", vpin_.size(), max_skew_ns_ / 1e6);
+    // Say the frame out loud. Anyone reading this trajectory in rviz or fusing it with
+    // the IMU needs to know it is not a vehicle frame, and the pose alone will not tell
+    // them - a 180 deg roll still traces a plausible path.
+    RCLCPP_INFO(get_logger(),
+                "odometry frame: %s -> %s. The child frame is CAM1'S OPTICAL FRAME "
+                "(z forward, x right, y down), rolled 180 deg by the inverted mount. "
+                "It is NOT base_link and NOT FLU. Translation magnitudes and "
+                "return-to-origin drift are frame-independent and unaffected; anything "
+                "wanting a vehicle frame must compose R_body_from_cam1, which is not yet "
+                "measured (config/rig/rig_layout.yaml, 3R.16b).",
+                odom_frame_.c_str(), base_frame_.c_str());
   }
 
  private:
@@ -161,7 +179,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
       if (omni.width != vp_y["source_width"].as<int>(omni.width))
         RCLCPP_WARN(get_logger(), "%s calibrated at %dx%d - check it matches the live rig",
                     cams_[i].c_str(), omni.width, omni.height);
-      // rig frame IS cam1's frame, which is how rig_in_cam1 is expressed.
+      // rig frame IS cam1's optical frame, which is how rig_in_cam1 is expressed.
+      // NOT the FLU body frame of rig_layout.yaml - see the frame note there (3R.16b).
       const cv::Matx44d rig_from_fisheye = load_matrix4(rig_y["rig_in_cam1"][cams_[i]]);
       for (int k = 0; k < 2; ++k) {
         const double yaw = (k == 0 ? -1.0 : +1.0) * CV_PI / 4.0;

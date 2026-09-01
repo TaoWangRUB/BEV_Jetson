@@ -27,7 +27,7 @@ def generate_launch_description():
                     '/cam3/image_raw', '/cam4/image_raw',
                 ],
                 'odom_frame': 'odom',
-                'base_frame': 'base_link',
+                'base_frame': 'cam1_optical_frame',   # NOT base_link: cam1 optical, 180-rolled. See 3R.16b.
                 # A set whose frames span more than this is not a set. cuVSLAM's own
                 # Multicamera gate is 1 ms and the triggered rig measures 1 us, so
                 # anything near this limit is a trigger fault - do NOT widen it to make

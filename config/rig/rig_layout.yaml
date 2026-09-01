@@ -3,7 +3,24 @@
 # result is CHECKED against — a gross axis swap or a dropped 180-degree roll produces
 # numbers that still look plausible, so there has to be something to compare them with.
 #
-# Rig frame is FLU: x forward, y left, z up.
+# TWO FRAMES, AND THEY ARE NOT THE SAME ONE. This file previously called the FLU frame
+# "rig", and so does cuVSLAM — for a different frame. Disambiguated 2026-09-01 (3R.16b)
+# before anything composed the two and got a silently-wrong answer:
+#
+#   body  — FLU: x forward, y left, z up. The vehicle frame. Everything in THIS file is
+#           expressed in it, and it is what ROS means by base_link.
+#   rig   — cuVSLAM's word, used in rig_extrinsics_imx296.yaml (`rig_in_cam1`) and in
+#           cuvslam_multicam_node. It is CAM1'S OPTICAL FRAME: z forward along cam1's
+#           optical axis, x right, y down, and additionally rolled 180 deg by the
+#           inverted mount. It is not FLU and it is not the vehicle.
+#
+# MISSING, and the reason the VO node cannot publish a true base_link: there is no
+# numeric rotation here from body to cam1. `position: front_left` is a label, not a
+# rotation. Deriving one from the nominal layout would assume cam1 looks 45 deg off
+# forward and is level — and this rig has already produced a camera ~19 deg off its
+# nominal mount, so that assumption is exactly the kind this file exists to catch.
+# Until R_body_from_cam1 is MEASURED, the VO node names its output frame
+# cam1_optical_frame rather than base_link. See 3R.16b.
 
 cameras:
   # port -> where it physically points. The ROS cam names follow the ports in
@@ -76,14 +93,18 @@ imu:
   # IMU's +z pointing down matches the whole board being mounted inverted, as the
   # cameras are.
   axes:
-    rig_front: +y
-    rig_left:  +x
-    rig_up:    -z
-  # Rotation taking a vector in rig(FLU) coordinates to IMU coordinates: swap x/y and
+    body_front: +y
+    body_left:  +x
+    body_up:    -z
+  # Rotation taking a vector in body(FLU) coordinates to IMU coordinates: swap x/y and
   # flip z, i.e. 180 degrees about (1,1,0)/sqrt(2).
-  R_imu_from_rig: [[0, 1, 0],
-                   [1, 0, 0],
-                   [0, 0, -1]]
+  # RENAMED 2026-09-01 from R_imu_from_rig. The old name read as "from cuVSLAM's rig
+  # frame", which is cam1 optical — composing it that way would have been wrong by the
+  # optical->FLU convention and the 180 deg mount roll, and would have looked plausible.
+  # Only scripts/imu/axis_check.py touches this key; renamed there too.
+  R_imu_from_body: [[0, 1, 0],
+                    [1, 0, 0],
+                    [0, 0, -1]]
   # At rest |a| = 10.46 m/s^2, 6.7% above 1 g. That is the part's uncalibrated zero-g
   # offset (+-60 mg typical) and is exactly what a VIO/Kalibr calibration estimates —
   # it is NOT a clean gravity reference. Gyro bias at rest ~0.013 rad/s per axis.
