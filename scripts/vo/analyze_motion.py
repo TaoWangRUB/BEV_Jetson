@@ -10,13 +10,16 @@ shows it.
 """
 import sys, pathlib, numpy as np
 from rosbags.highlevel import AnyReader
+from rosbags.typesys import Stores, get_typestore
 
 d = pathlib.Path(sys.argv[1])
 tape = float((d / "tape_metres.txt").read_text().strip())
 bag = next(p for p in d.rglob("*") if p.is_dir() and list(p.glob("*.db3")))
 
 ts, xyz = [], []
-with AnyReader([bag]) as r:
+# Foxy bags carry no embedded type definitions, and rosbags >=0.10 refuses them without a
+# typestore ("Bag contains no type definitions"). Name the distro the board actually runs.
+with AnyReader([bag], default_typestore=get_typestore(Stores.ROS2_FOXY)) as r:
     conns = [c for c in r.connections if c.topic == "/cuvslam/odometry"]
     if not conns: sys.exit("no /cuvslam/odometry in the bag - did tracking ever start?")
     for con, t, raw in r.messages(connections=conns):
