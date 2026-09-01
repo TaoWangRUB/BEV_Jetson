@@ -23,15 +23,16 @@ The TX2 can't go past JetPack 4.6, so these are permanent — hence a source por
 not a version bump. The *algorithm* is classic feature-based VIO and runs fine on
 a TX2; only the codebase's toolchain assumptions needed adapting.
 
-## The fixes (all idempotent; applied at build time — submodule stays at v15.0.0)
+## The fixes (all idempotent; applied at build time — submodule stays at v17.0.0)
 Driver: `scripts/build_cuvslam_tx2gpu.sh` + `scripts/port/downgrade_cuvslam_cpp17.py`.
 
 1. `CMAKE_CUDA_STANDARD 17 → 14` (kernels use no C++17 device features).
 2. Restore `libs/log` (was lost to an over-broad rsync exclude).
-3. Pin arch: `-DCMAKE_CUDA_ARCHITECTURES=62` + rewrite `-arch=all` → `-arch=sm_62`
-   (nvcc 10.2 rejects `native`/`all`).
+3. Pin arch: `-DCMAKE_CUDA_ARCHITECTURES=62`. Since v17 upstream only emits
+   `-arch=all` when the caller leaves `CMAKE_CUDA_ARCHITECTURES` unset, so the
+   old `-arch=all` → `-arch=sm_62` source rewrite is no longer needed.
 4. **C++17 → C++14 converter** (`downgrade_cuvslam_cpp17.py`): nested namespaces
-   `namespace a::b {` → nested blocks; `inline constexpr` → `constexpr`. ~200 files.
+   `namespace a::b {` → nested blocks; `inline constexpr` → `constexpr`. ~429 files.
 5. Guard CUDA-11 cuSOLVER IRS enum cases (`IRS_PARAMS_INVALID_{PREC,REFINE,
    MAXITER}`, `IRS_INFOS_NOT_DESTROYED`, `IRS_MATRIX_SINGULAR`, `INVALID_WORKSPACE`).
 6. `cudaMallocAsync(...)` → `cudaMalloc(...)` (1 call; also removes the r470 need).

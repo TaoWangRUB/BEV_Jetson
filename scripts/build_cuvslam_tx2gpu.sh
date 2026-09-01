@@ -19,13 +19,21 @@ mkdir -p "${REPO_ROOT}/build"
 # tree stays a plain checkout, so a top-level `git pull` on the TX2 never trips on
 # a dirty/!git submodule. Idempotent (skips if already applied). Covered fixes:
 #   1. CMAKE_CUDA_STANDARD 17 -> 14             (cmake/cuVSLAMUtils.cmake)
-#   2. -arch=all -> -arch=sm_62                 (cuda_kernels/CMakeLists.txt)
+#   2. (obsolete since v17: upstream emits -arch=all only when the caller
+#      leaves CMAKE_CUDA_ARCHITECTURES unset; we pass 62 below)
 #   3. -march=native guarded to CXX only        (cmake/cuVSLAMUtils.cmake)
-#   4. C++17 -> C++14 device-syntax downgrade    (~394 files)
+#   4. C++17 -> C++14 device-syntax downgrade    (~429 files)
 #   5. cuSOLVER-11 IRS enum guards               (culib_helper.h)
 #   6. cudaMallocAsync -> cudaMalloc             (selection_v2.cpp)
-# Regenerate after a submodule bump: see patch/cuvslam/README.md (uses
-# scripts/port/downgrade_cuvslam_cpp17.py + the documented sed edits).
+# Regenerate after a submodule bump: scripts/port/regen_cuvslam_patch.sh
+# (see patch/cuvslam/README.md).
+#
+# USE_CUNLS: v17 flipped this option's default OFF -> ON. cuNLS is the CUDA nonlinear
+# least-squares backend behind the new OdometryMode::Multisensor; its CMake downloads a
+# prebuilt cuDSS archive at configure time and requires a modern CUDA. Neither exists for
+# CUDA 10.2 / sm_62, so it must be forced OFF here or the configure step fails. Turning it
+# off also means Multisensor mode is unavailable on the TX2 (it throws without cuNLS) --
+# Multicamera stays the mode this board uses.
 PATCH="${REPO_ROOT}/patch/cuvslam/0001-cuda102-tx2-port.patch"
 if patch -p1 -d "${SRC}" --dry-run --reverse --force <"${PATCH}" >/dev/null 2>&1; then
     echo "cuVSLAM CUDA-10.2 port patch already applied."
@@ -44,7 +52,8 @@ cmake -S "${SRC}" -B "${BUILD}" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER=gcc-8 -DCMAKE_CXX_COMPILER=g++-8 \
     -DCMAKE_CUDA_HOST_COMPILER=g++-8 \
     -DCMAKE_CXX_STANDARD_LIBRARIES=-lstdc++fs \
-    -DUSE_RERUN=OFF -DUSE_CERES=OFF -DUSE_NVTX=OFF 2>&1 | tee "${LOG}"
+    -DUSE_RERUN=OFF -DUSE_CERES=OFF -DUSE_NVTX=OFF \
+    -DUSE_CUNLS=OFF 2>&1 | tee "${LOG}"
 
 # --- known fix #7: the fetched dense_hash_map dep defines an unconditional
 #     std::pmr alias; gcc-8's libstdc++ has no std::pmr (added in gcc-9). cuVSLAM

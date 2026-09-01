@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Downgrade cuVSLAM C++17 device-incompatible syntax to C++14 so nvcc 10.2 (TX2,
 sm_62) can compile the .cu files. IDEMPOTENT — applied at build time by
-scripts/build_cuvslam_tx2gpu.sh; the cuVSLAM submodule stays pinned at v15.0.0.
+scripts/build_cuvslam_tx2gpu.sh; the cuVSLAM submodule stays pinned at v17.0.0.
 
 Transforms (safe in both C++14 and C++17, so applied to all sources):
   1. nested namespace open : `namespace a::b::c {`        -> `namespace a { namespace b { namespace c {`

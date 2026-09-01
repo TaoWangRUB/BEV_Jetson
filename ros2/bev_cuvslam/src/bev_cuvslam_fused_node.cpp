@@ -431,10 +431,10 @@ class FusedNode : public rclcpp::Node {
     od.pose.pose.orientation.y = p.rotation[1];
     od.pose.pose.orientation.z = p.rotation[2];
     od.pose.pose.orientation.w = p.rotation[3];
-    static constexpr int perm[6] = {3, 4, 5, 0, 1, 2};  // cuVSLAM [Rx,Ry,Rz,x,y,z] -> ROS [x,y,z,Rx,Ry,Rz]
-    for (int r = 0; r < 6; ++r)
-      for (int c = 0; c < 6; ++c)
-        od.pose.covariance[r * 6 + c] = pwc.covariance[perm[r] * 6 + perm[c]];
+    // Since cuVSLAM v17 the covariance is already row-major [x,y,z,Rx,Ry,Rz] (field
+    // renamed to covariance_xyz_rpy) — the same order ROS Odometry wants, so copy directly.
+    // (Up to v15 it was [Rx,Ry,Rz,x,y,z] and needed a {3,4,5,0,1,2} permutation.)
+    for (int i = 0; i < 36; ++i) od.pose.covariance[i] = pwc.covariance_xyz_rpy[i];
     odom_pub_->publish(od);
 
     geometry_msgs::msg::TransformStamped tf;

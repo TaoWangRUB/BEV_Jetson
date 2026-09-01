@@ -1,5 +1,5 @@
 diff --git a/cmake/cuVSLAMUtils.cmake b/cmake/cuVSLAMUtils.cmake
-index 2a92166..a89eec3 100644
+index b869c79..1d00532 100644
 --- a/cmake/cuVSLAMUtils.cmake
 +++ b/cmake/cuVSLAMUtils.cmake
 @@ -26,7 +26,7 @@ macro(setup_cuvslam_settings)
@@ -11,7 +11,7 @@ index 2a92166..a89eec3 100644
      set(CMAKE_CUDA_STANDARD_REQUIRED ON)
      set(CMAKE_CXX_VISIBILITY_PRESET hidden)
      set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
-@@ -94,7 +94,7 @@ macro(setup_cuvslam_settings)
+@@ -95,7 +95,7 @@ macro(setup_cuvslam_settings)
          # Architecture-specific flags
          if (${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "arm64|aarch64")
              # Compile for compatible ARM hardware (Nano, TX2, Xavier, etc.)
@@ -21,64 +21,64 @@ index 2a92166..a89eec3 100644
              # For x86_64 we avoid -march=haswell to maintain compatibility with AMD --
              # using default to be generic.
 diff --git a/libs/camera/camera.cpp b/libs/camera/camera.cpp
-index 55a3d2f..ebe2ec5 100644
+index 4a44682..555fd10 100644
 --- a/libs/camera/camera.cpp
 +++ b/libs/camera/camera.cpp
-@@ -18,7 +18,7 @@
- #include "camera/camera.h"
- #include "common/unaligned_types.h"
+@@ -30,7 +30,7 @@ using namespace cuvslam;
+ }
+ }  // namespace
  
 -namespace cuvslam::camera {
 +namespace cuvslam { namespace camera {
- 
  ICameraModel::ICameraModel(const Vector2T& resolution, const Vector2T& focal, const Vector2T& principal,
                             float max_normalized_uv_radius, float max_xy_radius)
-@@ -391,4 +391,4 @@ std::unique_ptr<ICameraModel> CreateCameraModel(const Vector2T& resolution, cons
+     : resolution_(resolution),
+@@ -386,4 +386,4 @@ std::unique_ptr<ICameraModel> CreateCameraModel(const Vector2T& resolution, cons
+   }
    return {};
  }
- 
 -}  // namespace cuvslam::camera
 +}}  // namespace cuvslam::camera
 diff --git a/libs/camera/camera.h b/libs/camera/camera.h
-index 8a19210..e982091 100644
+index ab935db..53aa716 100644
 --- a/libs/camera/camera.h
 +++ b/libs/camera/camera.h
-@@ -24,7 +24,7 @@
- #include "common/unaligned_types.h"
+@@ -26,7 +26,7 @@
  #include "common/vector_2t.h"
+ #include "cuvslam/cuvslam2.h"
  
 -namespace cuvslam::camera {
 +namespace cuvslam { namespace camera {
  
  // there are three coordinate spaces:
  // 1) pixel coordinates (top left is zero)
-@@ -181,4 +181,4 @@ std::unique_ptr<ICameraModel> CreateCameraModel(const Vector2T& resolution, cons
-                                                 const Vector2T& principal, const std::string& distortion_model,
+@@ -186,4 +186,4 @@ std::unique_ptr<ICameraModel> CreateCameraModel(const Vector2T& resolution, cons
+                                                 const Vector2T& principal, Distortion::Model model,
                                                  const float* parameters, int32_t num_parameters);
  
 -}  // namespace cuvslam::camera
 +}}  // namespace cuvslam::camera
 diff --git a/libs/camera/frustum_intersection_graph.cpp b/libs/camera/frustum_intersection_graph.cpp
-index c1a8d84..36d7f8d 100644
+index c5dd7a6..ad9edb4 100644
 --- a/libs/camera/frustum_intersection_graph.cpp
 +++ b/libs/camera/frustum_intersection_graph.cpp
-@@ -23,7 +23,7 @@
+@@ -24,7 +24,7 @@
  #include "common/log.h"
  #include "common/vector_3t.h"
  
 -namespace cuvslam::camera {
 +namespace cuvslam { namespace camera {
  
- namespace {
- 
-@@ -351,4 +351,4 @@ const std::vector<CameraId>& FrustumIntersectionGraph::secondary_cameras(CameraI
+ MulticameraMode ParseMulticameraMode(const std::string& mode, MulticameraMode default_mode) {
+   const std::unordered_map<std::string, MulticameraMode> modes{
+@@ -359,4 +359,4 @@ const std::vector<CameraId>& FrustumIntersectionGraph::secondary_cameras(CameraI
    return secondary_from_primary_.at(primary_camera);
  }
  
 -}  // namespace cuvslam::camera
 +}}  // namespace cuvslam::camera
 diff --git a/libs/camera/frustum_intersection_graph.h b/libs/camera/frustum_intersection_graph.h
-index b135d82..2284657 100644
+index c2d92d2..2557e80 100644
 --- a/libs/camera/frustum_intersection_graph.h
 +++ b/libs/camera/frustum_intersection_graph.h
 @@ -24,7 +24,7 @@
@@ -90,7 +90,7 @@ index b135d82..2284657 100644
  
  enum class MulticameraMode {
    // each secondary camera must be connected to only one primary camera
-@@ -87,4 +87,4 @@ private:
+@@ -105,4 +105,4 @@ private:
    std::unordered_map<CameraId, std::vector<CameraId>> secondary_from_primary_;
  };
  
@@ -154,10 +154,10 @@ index 256e6bf..676acd8 100644
 -}  // namespace cuvslam::camera
 +}}  // namespace cuvslam::camera
 diff --git a/libs/camera_rig_edex/blackout_oscillator_filter.cpp b/libs/camera_rig_edex/blackout_oscillator_filter.cpp
-index 1cab424..547159f 100644
+index 09007d3..5dc81fc 100644
 --- a/libs/camera_rig_edex/blackout_oscillator_filter.cpp
 +++ b/libs/camera_rig_edex/blackout_oscillator_filter.cpp
-@@ -20,7 +20,7 @@
+@@ -24,7 +24,7 @@
  #include "common/imu_measurement.h"
  #include "common/log.h"
  
@@ -166,7 +166,7 @@ index 1cab424..547159f 100644
  
  BlackoutOscillatorFilter::BlackoutOscillatorFilter(std::unique_ptr<ICameraRig>&& base, int period, int duration)
      : base_(std::move(base)), period_(period), duration_(duration) {
-@@ -82,4 +82,4 @@ void BlackoutOscillatorFilter::registerIMUCallback(
+@@ -97,4 +97,4 @@ void BlackoutOscillatorFilter::registerIMUCallback(
    base_->registerIMUCallback(func);
  }
  
@@ -192,10 +192,10 @@ index 5532330..02821b3 100644
 -}  // namespace cuvslam::camera_rig_edex
 +}}  // namespace cuvslam::camera_rig_edex
 diff --git a/libs/camera_rig_edex/camera_rig_edex.cpp b/libs/camera_rig_edex/camera_rig_edex.cpp
-index 3c4b895..07c8367 100644
+index 9f81161..307e703 100644
 --- a/libs/camera_rig_edex/camera_rig_edex.cpp
 +++ b/libs/camera_rig_edex/camera_rig_edex.cpp
-@@ -29,7 +29,7 @@
+@@ -28,7 +28,7 @@
  #include "common/log_types.h"
  #include "utils/image_loader.h"
  
@@ -204,14 +204,14 @@ index 3c4b895..07c8367 100644
  
  int64_t CameraRigEdex::get_event_timestamp(const Event& event) {
    return event.type == Frame ? event.frame_metadata.camera.at(0).timestamp_ns : event.imu_measurement.time_ns;
-@@ -423,4 +423,4 @@ void CameraRigEdex::registerIMUCallback(const std::function<void(const imu::ImuM
+@@ -429,4 +429,4 @@ void CameraRigEdex::registerIMUCallback(const std::function<void(const imu::ImuM
    imuCallback_ = func;
  }
  
 -}  // namespace cuvslam::camera_rig_edex
 +}}  // namespace cuvslam::camera_rig_edex
 diff --git a/libs/camera_rig_edex/camera_rig_edex.h b/libs/camera_rig_edex/camera_rig_edex.h
-index a73f4bb..c2aada3 100644
+index be06df7..8cf3594 100644
 --- a/libs/camera_rig_edex/camera_rig_edex.h
 +++ b/libs/camera_rig_edex/camera_rig_edex.h
 @@ -25,7 +25,7 @@
@@ -223,14 +223,14 @@ index a73f4bb..c2aada3 100644
  
  class ICameraRigReplay : public ICameraRig {
  public:
-@@ -105,4 +105,4 @@ public:
+@@ -106,4 +106,4 @@ public:
    bool setCurrentFrame(int frame) override;
  };
  
 -}  // namespace cuvslam::camera_rig_edex
 +}}  // namespace cuvslam::camera_rig_edex
 diff --git a/libs/camera_rig_edex/repeated_camera_rig_edex.cpp b/libs/camera_rig_edex/repeated_camera_rig_edex.cpp
-index cafd22e..93fc8ab 100644
+index ec4b02b..70c9b6b 100644
 --- a/libs/camera_rig_edex/repeated_camera_rig_edex.cpp
 +++ b/libs/camera_rig_edex/repeated_camera_rig_edex.cpp
 @@ -23,7 +23,7 @@
@@ -242,7 +242,7 @@ index cafd22e..93fc8ab 100644
  
  bool RepeatedCameraRigEdex::check_end_of_sequence() {
    if (base_->isFinished()) {
-@@ -71,4 +71,4 @@ void RepeatedCameraRigEdex::registerIMUCallback(const std::function<void(const i
+@@ -73,4 +73,4 @@ void RepeatedCameraRigEdex::registerIMUCallback(const std::function<void(const i
    });
  }
  
@@ -268,7 +268,7 @@ index 142b1df..cf3de1c 100644
 -}  // namespace cuvslam::camera_rig_edex
 +}}  // namespace cuvslam::camera_rig_edex
 diff --git a/libs/camera_rig_edex/shuttle_camera_rig_edex.cpp b/libs/camera_rig_edex/shuttle_camera_rig_edex.cpp
-index 84c921d..56ed1dd 100644
+index 0c2b3f5..eaab5b7 100644
 --- a/libs/camera_rig_edex/shuttle_camera_rig_edex.cpp
 +++ b/libs/camera_rig_edex/shuttle_camera_rig_edex.cpp
 @@ -21,7 +21,7 @@
@@ -280,7 +280,7 @@ index 84c921d..56ed1dd 100644
  
  bool ShuttleCameraRigEdex::check_end_of_sequence() {
    if (base_->isFinished()) {
-@@ -68,4 +68,4 @@ void ShuttleCameraRigEdex::registerIMUCallback(const std::function<void(const im
+@@ -70,4 +70,4 @@ void ShuttleCameraRigEdex::registerIMUCallback(const std::function<void(const im
    // Do nothing, IMU is not supported in shuttle replay
  }
  
@@ -422,6 +422,43 @@ index 4e9e409..2ee1bad 100644
  
  // Implementation macro, use other Trace* macros instead
  #define TraceImpl(V, ...)                                             \
+diff --git a/libs/common/parse_utils.cpp b/libs/common/parse_utils.cpp
+index 8281dc7..9ec1ddb 100644
+--- a/libs/common/parse_utils.cpp
++++ b/libs/common/parse_utils.cpp
+@@ -22,7 +22,7 @@
+ #include <string>
+ #include <system_error>
+ 
+-namespace cuvslam::common {
++namespace cuvslam { namespace common {
+ 
+ namespace {
+ 
+@@ -82,4 +82,4 @@ int32_t ParseInt32(std::string_view v) { return Parse<int32_t>(v, "int32"); }
+ 
+ int64_t ParseInt64(std::string_view v) { return Parse<int64_t>(v, "int64"); }
+ 
+-}  // namespace cuvslam::common
++}}  // namespace cuvslam::common
+diff --git a/libs/common/parse_utils.h b/libs/common/parse_utils.h
+index ce63665..8d5df15 100644
+--- a/libs/common/parse_utils.h
++++ b/libs/common/parse_utils.h
+@@ -19,11 +19,11 @@
+ #include <cstdint>
+ #include <string_view>
+ 
+-namespace cuvslam::common {
++namespace cuvslam { namespace common {
+ 
+ bool ParseBool(std::string_view v);
+ float ParseFloat(std::string_view v);
+ int32_t ParseInt32(std::string_view v);
+ int64_t ParseInt64(std::string_view v);
+ 
+-}  // namespace cuvslam::common
++}}  // namespace cuvslam::common
 diff --git a/libs/common/thread_name.h b/libs/common/thread_name.h
 index efcaf64..11bdca3 100644
 --- a/libs/common/thread_name.h
@@ -556,10 +593,10 @@ index dd6add7..7e52fda 100644
 -}  // namespace cuvslam::cuda
 +}}  // namespace cuvslam::cuda
 diff --git a/libs/cuda_modules/cuda_helper.h b/libs/cuda_modules/cuda_helper.h
-index ac3adc7..725197e 100644
+index 999fadc..aeab74c 100644
 --- a/libs/cuda_modules/cuda_helper.h
 +++ b/libs/cuda_modules/cuda_helper.h
-@@ -48,7 +48,7 @@
+@@ -55,7 +55,7 @@
  #define CUDA_CHECK(status) CUDA_CHECK_IMPL(status, "[CUDA]", cudaGetErrorString, true)
  #define CUDA_CHECK_NOTHROW(status) CUDA_CHECK_IMPL(status, "[CUDA]", cudaGetErrorString, false)
  
@@ -568,25 +605,12 @@ index ac3adc7..725197e 100644
  
  enum GPUCopyDirection { ToGPU, ToCPU };
  
-@@ -454,4 +454,4 @@ void WarmUpGpu();
+@@ -493,4 +493,4 @@ void WarmUpGpu();
  
  bool IsGpuPointer(const void* ptr);
  
 -}  // namespace cuvslam::cuda
 +}}  // namespace cuvslam::cuda
-diff --git a/libs/cuda_modules/cuda_kernels/CMakeLists.txt b/libs/cuda_modules/cuda_kernels/CMakeLists.txt
-index 20d91f4..5852fa1 100644
---- a/libs/cuda_modules/cuda_kernels/CMakeLists.txt
-+++ b/libs/cuda_modules/cuda_kernels/CMakeLists.txt
-@@ -39,7 +39,7 @@ set_target_properties(cuda_kernels PROPERTIES
- 
- target_compile_options(cuda_kernels PRIVATE
-     $<$<COMPILE_LANGUAGE:CUDA>:--compiler-options=-fPIC,-fvisibility=hidden>
--    $<$<COMPILE_LANGUAGE:CUDA>:-arch=all> # instead of CMAKE_CUDA_ARCHITECTURES
-+    $<$<COMPILE_LANGUAGE:CUDA>:-arch=sm_62> # instead of CMAKE_CUDA_ARCHITECTURES
-     # Enable device debug info for compute-sanitizer support
-     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Debug>>:-G>
-     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:RelWithDebInfo>>:-lineinfo>
 diff --git a/libs/cuda_modules/cuda_kernels/convolutions.cu b/libs/cuda_modules/cuda_kernels/convolutions.cu
 index 41e4f3e..1decbda 100644
 --- a/libs/cuda_modules/cuda_kernels/convolutions.cu
@@ -623,7 +647,7 @@ index aab7fac..816f655 100644
 -}  // namespace cuvslam::cuda
 +}}  // namespace cuvslam::cuda
 diff --git a/libs/cuda_modules/cuda_kernels/cuda_kernels.h b/libs/cuda_modules/cuda_kernels/cuda_kernels.h
-index 552b6be..4b148ec 100644
+index 7f28e72..74784bc 100644
 --- a/libs/cuda_modules/cuda_kernels/cuda_kernels.h
 +++ b/libs/cuda_modules/cuda_kernels/cuda_kernels.h
 @@ -31,7 +31,7 @@
@@ -635,9 +659,9 @@ index 552b6be..4b148ec 100644
  
  struct Size {
    int width, height;
-@@ -184,4 +184,4 @@ cudaError_t point_to_point(const ImgTextures& tex, const Inctinsics& intrinsics,
- cudaError_t lift(cudaTextureObject_t curr_depth, const Inctinsics& intrinsics, const Track* tracks, size_t num_tracks,
-                  float3* landmarks, cudaStream_t stream);
+@@ -280,4 +280,4 @@ cudaError_t point_to_plane_evaluate(const GPUPlane* planes, int num_planes, int
+                                     const float* cam_from_rig, float* residuals, float* jacobians, size_t num_factors,
+                                     cudaStream_t stream);
  
 -}  // namespace cuvslam::cuda
 +}}  // namespace cuvslam::cuda
@@ -661,7 +685,7 @@ index 02bad82..6086033 100644
 -}  // namespace cuvslam::cuda
 +}}  // namespace cuvslam::cuda
 diff --git a/libs/cuda_modules/cuda_kernels/cuda_sba_imu_v1.h b/libs/cuda_modules/cuda_kernels/cuda_sba_imu_v1.h
-index 143ab34..e7f5679 100644
+index 31f9716..f8b632e 100644
 --- a/libs/cuda_modules/cuda_kernels/cuda_sba_imu_v1.h
 +++ b/libs/cuda_modules/cuda_kernels/cuda_sba_imu_v1.h
 @@ -22,7 +22,7 @@
@@ -756,7 +780,7 @@ index b952425..55cc091 100644
 -}  // namespace cuvslam::cuda
 +}}  // namespace cuvslam::cuda
 diff --git a/libs/cuda_modules/cuda_kernels/lk_tracker.cu b/libs/cuda_modules/cuda_kernels/lk_tracker.cu
-index fb4110b..f872d8c 100644
+index 9430ff2..eba749a 100644
 --- a/libs/cuda_modules/cuda_kernels/lk_tracker.cu
 +++ b/libs/cuda_modules/cuda_kernels/lk_tracker.cu
 @@ -24,7 +24,7 @@
@@ -768,14 +792,71 @@ index fb4110b..f872d8c 100644
  
  constexpr float gauss_coeffs[9] = {0.0135196f, 0.0476622f, 0.11723f,   0.201168f, 0.240841f,
                                     0.201168f,  0.11723f,   0.0476622f, 0.0135196f};
-@@ -669,4 +669,4 @@ cudaError_t lk_track_horizontal(Pyramid prevFrameGradXPyramid, Pyramid prevFrame
+@@ -687,4 +687,4 @@ cudaError_t lk_track_horizontal(Pyramid prevFrameGradXPyramid, Pyramid prevFrame
+   return cudaGetLastError();
+ }
+ 
+-}  // namespace cuvslam::cuda
++}}  // namespace cuvslam::cuda
+diff --git a/libs/cuda_modules/cuda_kernels/photometric_kernel.cu b/libs/cuda_modules/cuda_kernels/photometric_kernel.cu
+index 2c2a8f7..e74afff 100644
+--- a/libs/cuda_modules/cuda_kernels/photometric_kernel.cu
++++ b/libs/cuda_modules/cuda_kernels/photometric_kernel.cu
+@@ -35,7 +35,7 @@
+ // lamp / table pixels 5-10 cm off the floor no longer pollute the residual.
+ #define P2P_MAX_DIST 0.03f
+ 
+-namespace cuvslam::cuda {
++namespace cuvslam { namespace cuda {
+ 
+ namespace {
+ 
+@@ -261,4 +261,4 @@ cudaError_t point_to_plane_evaluate(const GPUPlane* planes, int num_planes, int
+   return cudaGetLastError();
+ }
+ 
+-}  // namespace cuvslam::cuda
++}}  // namespace cuvslam::cuda
+diff --git a/libs/cuda_modules/cuda_kernels/plane_detection_kernel.cu b/libs/cuda_modules/cuda_kernels/plane_detection_kernel.cu
+index a058203..e279371 100644
+--- a/libs/cuda_modules/cuda_kernels/plane_detection_kernel.cu
++++ b/libs/cuda_modules/cuda_kernels/plane_detection_kernel.cu
+@@ -17,7 +17,7 @@
+ #include "cuda_modules/cuda_kernels/cuda_common.h"
+ #include "cuda_modules/cuda_kernels/cuda_kernels.h"
+ 
+-namespace cuvslam::cuda {
++namespace cuvslam { namespace cuda {
+ 
+ namespace {
+ 
+@@ -421,4 +421,4 @@ cudaError_t fill_iota(int* out, int n, cudaStream_t stream) {
+   return cudaGetLastError();
+ }
+ 
+-}  // namespace cuvslam::cuda
++}}  // namespace cuvslam::cuda
+diff --git a/libs/cuda_modules/cuda_kernels/point_to_point_icp_kernel.cu b/libs/cuda_modules/cuda_kernels/point_to_point_icp_kernel.cu
+index 541143a..5c67e59 100644
+--- a/libs/cuda_modules/cuda_kernels/point_to_point_icp_kernel.cu
++++ b/libs/cuda_modules/cuda_kernels/point_to_point_icp_kernel.cu
+@@ -17,7 +17,7 @@
+ #include "cuda_modules/cuda_kernels/cuda_common.h"
+ #include "cuda_modules/cuda_kernels/cuda_kernels.h"
+ 
+-namespace cuvslam::cuda {
++namespace cuvslam { namespace cuda {
+ 
+ namespace {
+ 
+@@ -164,4 +164,4 @@ cudaError_t point_to_point_icp_evaluate(const float3* landmarks_world, float con
    return cudaGetLastError();
  }
  
 -}  // namespace cuvslam::cuda
 +}}  // namespace cuvslam::cuda
 diff --git a/libs/cuda_modules/cuda_kernels/sba_imu_v1.cu b/libs/cuda_modules/cuda_kernels/sba_imu_v1.cu
-index 48065c3..7650192 100644
+index 8b3278f..6667144 100644
 --- a/libs/cuda_modules/cuda_kernels/sba_imu_v1.cu
 +++ b/libs/cuda_modules/cuda_kernels/sba_imu_v1.cu
 @@ -27,7 +27,7 @@
@@ -787,14 +868,14 @@ index 48065c3..7650192 100644
  
  __device__ __forceinline__ void Exp(cuvslam::cuda::Matf33& result, const cuvslam::cuda::Vecf3& twist) {
    float3 w = {twist.d_[0], twist.d_[1], twist.d_[2]};
-@@ -2145,4 +2145,4 @@ cudaError_t init_update(cuvslam::cuda::Matf33* update_pose_w_from_imu_linear, fl
+@@ -2161,4 +2161,4 @@ cudaError_t init_update(cuvslam::cuda::Matf33* update_pose_w_from_imu_linear, fl
    return cudaSuccess;
  }
  
 -}  // namespace cuvslam::cuda::sba_imu
 +}}}  // namespace cuvslam::cuda::sba_imu
 diff --git a/libs/cuda_modules/cuda_kernels/sba_v1.cu b/libs/cuda_modules/cuda_kernels/sba_v1.cu
-index 1e1eebf..38faeb0 100644
+index 5d15abd..43aac08 100644
 --- a/libs/cuda_modules/cuda_kernels/sba_v1.cu
 +++ b/libs/cuda_modules/cuda_kernels/sba_v1.cu
 @@ -212,7 +212,7 @@ __device__ int JacobiSVD::get_rank_(float threshold) const {
@@ -870,7 +951,7 @@ index 01a4265..ba3b64b 100644
 -}  // namespace cuvslam::cuda
 +}}  // namespace cuvslam::cuda
 diff --git a/libs/cuda_modules/cuda_kernels/window_matcher.cu b/libs/cuda_modules/cuda_kernels/window_matcher.cu
-index 82d562c..24bff98 100644
+index e33886d..5302d3b 100644
 --- a/libs/cuda_modules/cuda_kernels/window_matcher.cu
 +++ b/libs/cuda_modules/cuda_kernels/window_matcher.cu
 @@ -30,7 +30,7 @@
@@ -882,8 +963,8 @@ index 82d562c..24bff98 100644
  
  namespace {
  __device__ __forceinline__ void Transform(const Pose& A, const float3& B, float3& result) {
-@@ -581,9 +581,9 @@ __global__ void lift_kernel(cudaTextureObject_t curr_depth, Inctinsics intrinsic
-   landmarks[x] = {track.obs_xy.x * z, -track.obs_xy.y * z, -z};
+@@ -560,9 +560,9 @@ __global__ void lift_kernel(cudaTextureObject_t curr_depth, Inctinsics intrinsic
+   landmarks[x] = {track.obs_xy.x * z, track.obs_xy.y * z, z};
  }
  
 -}  // namespace cuvslam::cuda::matcher
@@ -894,7 +975,7 @@ index 82d562c..24bff98 100644
  
  cudaError_t photometric(const ImgTextures& tex, const Inctinsics& intrinsics, const Extrinsics& extr,
                          const Track* tracks, size_t num_tracks, float huber, float* cost, float* num_valid, float* rhs,
-@@ -614,4 +614,4 @@ cudaError_t lift(cudaTextureObject_t curr_depth, const Inctinsics& intrinsics, c
+@@ -593,4 +593,4 @@ cudaError_t lift(cudaTextureObject_t curr_depth, const Inctinsics& intrinsics, c
    return cudaGetLastError();
  }
  
@@ -1058,7 +1139,7 @@ index 8482a2c..89498f7 100644
 -}  // namespace cuvslam::cuda
 +}}  // namespace cuvslam::cuda
 diff --git a/libs/cuda_modules/image_cast.cpp b/libs/cuda_modules/image_cast.cpp
-index 953f237..868ee2d 100644
+index b70c3a3..aa4dfe1 100644
 --- a/libs/cuda_modules/image_cast.cpp
 +++ b/libs/cuda_modules/image_cast.cpp
 @@ -19,7 +19,7 @@
@@ -1070,7 +1151,7 @@ index 953f237..868ee2d 100644
  
  GPUImageT& ImageCast::operator()(void* data, const ImageEncoding& encoding, const ImageShape& image_shape,
                                   cudaStream_t s) {
-@@ -96,4 +96,4 @@ bool ImageCast::burn_mask_depth(uint8_t* cpu_mask, const ImageShape& image_shape
+@@ -100,4 +100,4 @@ bool ImageCast::burn_mask_depth(uint8_t* cpu_mask, const ImageShape& image_shape
    return error == cudaSuccess;
  }
  
@@ -1210,11 +1291,11 @@ index 1e6a9a7..9bb69fc 100644
 -}  // namespace cuvslam::cuda::sba
 +}}}  // namespace cuvslam::cuda::sba
 diff --git a/libs/cuda_modules/selection_v2.cpp b/libs/cuda_modules/selection_v2.cpp
-index e65022a..445d763 100644
+index 9ca2321..9f68d98 100644
 --- a/libs/cuda_modules/selection_v2.cpp
 +++ b/libs/cuda_modules/selection_v2.cpp
-@@ -19,7 +19,7 @@
- 
+@@ -20,7 +20,7 @@
+ #include <array>
  #include <cassert>
  
 -namespace cuvslam::cuda {
@@ -1222,7 +1303,7 @@ index e65022a..445d763 100644
  
  GPUSelection::~GPUSelection() { cudaFree(sort_temp_buffer_); }
  
-@@ -57,7 +57,7 @@ void GPUSelection::computeGFTTAndSelectFeatures(const GPUGradientPyramid &gradie
+@@ -58,7 +58,7 @@ void GPUSelection::computeGFTTAndSelectFeatures(const GPUGradientPyramid &gradie
      indices_ = std::make_unique<GPUImage<uint2>>(downsampled_size_.x, downsampled_size_.y);
  
      sort_temp_buffer_size_ = sort_keypoints_get_temp_buffer_size(max_tracks_);
@@ -1231,7 +1312,7 @@ index e65022a..445d763 100644
    }
  
    size_t num_old_keypoints = std::min(max_tracks_, AliveFeatures.size());
-@@ -182,4 +182,4 @@ void GPUSelection::computeGFTTAndSelectFeatures(const GPUGradientPyramid &gradie
+@@ -183,4 +183,4 @@ void GPUSelection::computeGFTTAndSelectFeatures(const GPUGradientPyramid &gradie
    }
  }
  
@@ -1333,7 +1414,7 @@ index a3b0eab..8ede216 100644
 -}  // namespace cuvslam::edex
 +}}  // namespace cuvslam::edex
 diff --git a/libs/edex/edex_internal.h b/libs/edex/edex_internal.h
-index 72fe601..240d6d2 100644
+index e21c862..06e1645 100644
 --- a/libs/edex/edex_internal.h
 +++ b/libs/edex/edex_internal.h
 @@ -23,7 +23,7 @@
@@ -1345,14 +1426,14 @@ index 72fe601..240d6d2 100644
  
  static const char* EDEX_VERSION_VALUE = "0.9";
  
-@@ -647,4 +647,4 @@ inline void WriteFrames(const FrameSet& keyFrames, Json::Value& root) {
+@@ -649,4 +649,4 @@ inline void WriteFrames(const FrameSet& keyFrames, Json::Value& root) {
    }
  }
  
 -}  // namespace cuvslam::edex::internal
 +}}}  // namespace cuvslam::edex::internal
 diff --git a/libs/edex/edex_types.h b/libs/edex/edex_types.h
-index f8483ae..a107aea 100644
+index 6df1de9..a73dfce 100644
 --- a/libs/edex/edex_types.h
 +++ b/libs/edex/edex_types.h
 @@ -24,7 +24,7 @@
@@ -1447,7 +1528,7 @@ index f34488b..b71852b 100644
 -}  // namespace cuvslam::edex
 +}}  // namespace cuvslam::edex
 diff --git a/libs/epipolar/camera_projection.cpp b/libs/epipolar/camera_projection.cpp
-index 157e5ae..7422dcc 100644
+index bb07cf3..9ec02da 100644
 --- a/libs/epipolar/camera_projection.cpp
 +++ b/libs/epipolar/camera_projection.cpp
 @@ -17,7 +17,7 @@
@@ -1459,14 +1540,14 @@ index 157e5ae..7422dcc 100644
  
  bool CreateCameraMatrix(const Vector3T& position, const Vector3T& lookingAt, const Vector3T& up,
                          Isometry3T& cameraMatrix) {
-@@ -91,4 +91,4 @@ float CalculateDistanceFromExpectedRotationMatrix(const QuaternionT::RotationMat
+@@ -92,4 +92,4 @@ float CalculateDistanceFromExpectedRotationMatrix(const QuaternionT::RotationMat
    return QuaternionT(expected).angularDistance(QuaternionT(actual));
  }
  
 -}  // namespace cuvslam::epipolar
 +}}  // namespace cuvslam::epipolar
 diff --git a/libs/epipolar/camera_projection.h b/libs/epipolar/camera_projection.h
-index db7cc41..8e6eb06 100644
+index 1e54331..cac4723 100644
 --- a/libs/epipolar/camera_projection.h
 +++ b/libs/epipolar/camera_projection.h
 @@ -22,7 +22,7 @@
@@ -1478,14 +1559,14 @@ index db7cc41..8e6eb06 100644
  
  ///-------------------------------------------------------------------------------------------------
  /// @brief Convenience method to create a camera matrix (positional matrix) from parameters.
-@@ -112,4 +112,4 @@ float CalculateMatricesFrobeniusDistance(const Eigen::MatrixBase<Matrix>& expect
+@@ -111,4 +111,4 @@ float CalculateMatricesFrobeniusDistance(const Eigen::MatrixBase<Matrix>& expect
    return std::sqrt((expected - actual).squaredNorm() / std::min(expected.squaredNorm(), actual.squaredNorm()));
  }
  
 -}  // namespace cuvslam::epipolar
 +}}  // namespace cuvslam::epipolar
 diff --git a/libs/epipolar/camera_selection.h b/libs/epipolar/camera_selection.h
-index 0240c0c..b005eeb 100644
+index 8220197..5566de2 100644
 --- a/libs/epipolar/camera_selection.h
 +++ b/libs/epipolar/camera_selection.h
 @@ -26,7 +26,7 @@
@@ -1496,8 +1577,8 @@ index 0240c0c..b005eeb 100644
 +namespace cuvslam { namespace epipolar {
  
  namespace FrustumProperties {
- const float MINIMUM_HITHER = -0.1f;
-@@ -387,4 +387,4 @@ private:
+ /// Minimum positive depth (camera +Z forward, OpenCV) for a point to be considered in front of the camera.
+@@ -388,4 +388,4 @@ private:
    std::array<Vector9T, 3> xi_;
  };
  
@@ -1713,7 +1794,7 @@ index e385097..2290467 100644
 -}  // namespace cuvslam::epipolar
 +}}  // namespace cuvslam::epipolar
 diff --git a/libs/epipolar/resectioning_utils.cpp b/libs/epipolar/resectioning_utils.cpp
-index 5606e91..a310bb8 100644
+index 8b242d5..fe85a72 100644
 --- a/libs/epipolar/resectioning_utils.cpp
 +++ b/libs/epipolar/resectioning_utils.cpp
 @@ -31,7 +31,7 @@ const auto PREALIGN_NORM_THRESHOLD = 0.01f;
@@ -1751,7 +1832,7 @@ index a1c7517..884aff5 100644
 -}  // namespace cuvslam::epipolar
 +}}  // namespace cuvslam::epipolar
 diff --git a/libs/epipolar/resectioning_utils_internal.h b/libs/epipolar/resectioning_utils_internal.h
-index d7fc072..9c11bbd 100644
+index 86d6f46..0e3b4dc 100644
 --- a/libs/epipolar/resectioning_utils_internal.h
 +++ b/libs/epipolar/resectioning_utils_internal.h
 @@ -27,7 +27,7 @@
@@ -1761,9 +1842,9 @@ index d7fc072..9c11bbd 100644
 -namespace cuvslam::epipolar {
 +namespace cuvslam { namespace epipolar {
  
- // Note: if used with 3D point and it's 2D Projection, don't forget to make projection as 3D vector by multiplying
- // homogeneous version of it by -1 to set direction of it in front of the camera
-@@ -263,4 +263,4 @@ private:
+ // Angular prealign: compare the 3D landmark direction in camera space to the image ray (x, y, 1) (OpenCV +Z forward).
+ template <typename _Vector, typename _VectorOther, typename _Scalar = typename _Vector::Scalar>
+@@ -262,4 +262,4 @@ private:
  
  };  // class SurveyedTrackingRotational
  
@@ -1789,7 +1870,7 @@ index df1a1c5..9725c83 100644
 -}  // namespace test::epipolar
 +}}  // namespace test::epipolar
 diff --git a/libs/epipolar/test/camera_points_reconstruction_integ_test.h b/libs/epipolar/test/camera_points_reconstruction_integ_test.h
-index 498750a..54e2fe8 100644
+index d5290c1..05d1fba 100644
 --- a/libs/epipolar/test/camera_points_reconstruction_integ_test.h
 +++ b/libs/epipolar/test/camera_points_reconstruction_integ_test.h
 @@ -99,7 +99,7 @@ bool Verify3DPointsInFrontOFBothCameras(const cuvslam::Vector3TVector& points3D,
@@ -1808,7 +1889,7 @@ index 498750a..54e2fe8 100644
 -}  // namespace test::epipolar
 +}}  // namespace test::epipolar
 diff --git a/libs/epipolar/test/camera_selection_test.cpp b/libs/epipolar/test/camera_selection_test.cpp
-index fb2d9a5..c08ccfb 100644
+index 34fadd0..c6d944a 100644
 --- a/libs/epipolar/test/camera_selection_test.cpp
 +++ b/libs/epipolar/test/camera_selection_test.cpp
 @@ -20,7 +20,7 @@
@@ -1820,7 +1901,7 @@ index fb2d9a5..c08ccfb 100644
  using namespace cuvslam;
  
  namespace {
-@@ -191,4 +191,4 @@ TEST_F(CameraSelectionTest, CountPointsInFrontOfCameras_MixedPointsInFrontAndBeh
+@@ -184,4 +184,4 @@ TEST_F(CameraSelectionTest, CountPointsInFrontOfCameras_MixedPointsInFrontAndBeh
    EXPECT_EQ(expectedCount, actualCount);
  }
  
@@ -1846,7 +1927,7 @@ index 291019d..8d0da04 100644
 -}  // namespace test::epipolar
 +}}  // namespace test::epipolar
 diff --git a/libs/epipolar/test/fundamental_matrix_utils_test.cpp b/libs/epipolar/test/fundamental_matrix_utils_test.cpp
-index be18ec0..7209327 100644
+index 84d99a4..ad57e99 100644
 --- a/libs/epipolar/test/fundamental_matrix_utils_test.cpp
 +++ b/libs/epipolar/test/fundamental_matrix_utils_test.cpp
 @@ -19,7 +19,7 @@
@@ -1865,7 +1946,7 @@ index be18ec0..7209327 100644
 -}  // namespace test::epipolar
 +}}  // namespace test::epipolar
 diff --git a/libs/epipolar/test/fundamental_matrix_utils_test.h b/libs/epipolar/test/fundamental_matrix_utils_test.h
-index 218d8b0..df7c962 100644
+index 27a4849..de0a774 100644
 --- a/libs/epipolar/test/fundamental_matrix_utils_test.h
 +++ b/libs/epipolar/test/fundamental_matrix_utils_test.h
 @@ -19,7 +19,7 @@
@@ -1902,27 +1983,8 @@ index d1526d3..91fa45e 100644
  
 -}  // namespace test::epipolar
 +}}  // namespace test::epipolar
-diff --git a/libs/epipolar/test/generate_points_in_cube_test.h b/libs/epipolar/test/generate_points_in_cube_test.h
-index 9cd98f4..8808761 100644
---- a/libs/epipolar/test/generate_points_in_cube_test.h
-+++ b/libs/epipolar/test/generate_points_in_cube_test.h
-@@ -21,7 +21,7 @@
- 
- #include "common/vector_3t.h"
- 
--namespace test::utils {
-+namespace test { namespace utils {
- using namespace cuvslam;
- 
- ///-------------------------------------------------------------------------------------------------
-@@ -63,4 +63,4 @@ inline Vector3TVector GeneratePointsInCube(size_t numPoints, const Vector3T& min
-   return GeneratePointsInCube(numPoints, minRange, maxRange, [](const Vector3T&) -> bool { return true; });
- }
- 
--}  // namespace test::utils
-+}}  // namespace test::utils
 diff --git a/libs/epipolar/test/generate_visible_points_test.h b/libs/epipolar/test/generate_visible_points_test.h
-index d5222bb..ea56afe 100644
+index aa3d218..0d24ca1 100644
 --- a/libs/epipolar/test/generate_visible_points_test.h
 +++ b/libs/epipolar/test/generate_visible_points_test.h
 @@ -20,7 +20,7 @@
@@ -1941,10 +2003,10 @@ index d5222bb..ea56afe 100644
 -}  // namespace test::epipolar
 +}}  // namespace test::epipolar
 diff --git a/libs/epipolar/test/homography_ransac_test.cpp b/libs/epipolar/test/homography_ransac_test.cpp
-index 1be8c05..2973dee 100644
+index c254183..7df166e 100644
 --- a/libs/epipolar/test/homography_ransac_test.cpp
 +++ b/libs/epipolar/test/homography_ransac_test.cpp
-@@ -20,7 +20,7 @@
+@@ -22,7 +22,7 @@
  #include "epipolar/homography_ransac.h"
  #include "epipolar/test/homography_test.h"
  
@@ -1953,7 +2015,7 @@ index 1be8c05..2973dee 100644
  
  class HomographyRansacTest : public HomographyTest {
  protected:
-@@ -178,4 +178,4 @@ TEST_F(HomographyRansacTest, HomographyRansacWithNoiseCountInliners) {
+@@ -181,4 +181,4 @@ TEST_F(HomographyRansacTest, HomographyRansacWithNoiseCountInliners) {
    EXPECT_EQ(numInliers, points2DPairs.size() - numCorrupted);
  }
  
@@ -1979,7 +2041,7 @@ index 2c36c9e..52aed22 100644
 -}  // namespace test::epipolar
 +}}  // namespace test::epipolar
 diff --git a/libs/epipolar/test/homography_test.cpp b/libs/epipolar/test/homography_test.cpp
-index 0f25d49..f9fa2cb 100644
+index c79492b..008535a 100644
 --- a/libs/epipolar/test/homography_test.cpp
 +++ b/libs/epipolar/test/homography_test.cpp
 @@ -18,7 +18,7 @@
@@ -1998,7 +2060,7 @@ index 0f25d49..f9fa2cb 100644
 -}  // namespace test::epipolar
 +}}  // namespace test::epipolar
 diff --git a/libs/epipolar/test/homography_test.h b/libs/epipolar/test/homography_test.h
-index ed7a19d..30217dd 100644
+index b0cefa8..df33ab2 100644
 --- a/libs/epipolar/test/homography_test.h
 +++ b/libs/epipolar/test/homography_test.h
 @@ -23,7 +23,7 @@
@@ -2055,7 +2117,7 @@ index 820e816..e0d9ef8 100644
 -}  // namespace test::epipolar
 +}}  // namespace test::epipolar
 diff --git a/libs/epipolar/test/resectioning_integ_test.cpp b/libs/epipolar/test/resectioning_integ_test.cpp
-index 68e7605..9883822 100644
+index 109d175..969b953 100644
 --- a/libs/epipolar/test/resectioning_integ_test.cpp
 +++ b/libs/epipolar/test/resectioning_integ_test.cpp
 @@ -123,7 +123,7 @@ Vector2TPairVector GenerateVectorOfPairsFromPairsOfVectors(const Vector2TVector&
@@ -2074,19 +2136,19 @@ index 68e7605..9883822 100644
 -}  // namespace test::epipolar
 +}}  // namespace test::epipolar
 diff --git a/libs/epipolar/test/resectioning_utils_test.cpp b/libs/epipolar/test/resectioning_utils_test.cpp
-index d73ded4..6336657 100644
+index 2659884..a553888 100644
 --- a/libs/epipolar/test/resectioning_utils_test.cpp
 +++ b/libs/epipolar/test/resectioning_utils_test.cpp
-@@ -26,7 +26,7 @@
+@@ -25,7 +25,7 @@
+ #include "epipolar/test/generate_points_in_cube_test.h"
  #include "epipolar/test/resectioning_utils_test.h"
  #include "pnp/multicam_pnp.h"
- 
 -namespace test::epipolar {
 +namespace test { namespace epipolar {
  
  using namespace cuvslam;
  using namespace cuvslam::epipolar;
-@@ -417,4 +417,4 @@ TEST_F(ResectioningUtilsTest, StartWithWorldCoordinatesExpMap) {
+@@ -415,4 +415,4 @@ TEST_F(ResectioningUtilsTest, StartWithWorldCoordinatesExpMap) {
    //    RunPoseRefinement(rig);
  }
  
@@ -2112,7 +2174,7 @@ index 36cb3ea..4b56586 100644
 -}  // namespace test::epipolar
 +}}  // namespace test::epipolar
 diff --git a/libs/epipolar/test/triangulation_test.cpp b/libs/epipolar/test/triangulation_test.cpp
-index bd4eeab..391c204 100644
+index 74dd3a8..5894e3c 100644
 --- a/libs/epipolar/test/triangulation_test.cpp
 +++ b/libs/epipolar/test/triangulation_test.cpp
 @@ -24,7 +24,7 @@
@@ -2130,11 +2192,49 @@ index bd4eeab..391c204 100644
  
 -}  // namespace test::epipolar
 +}}  // namespace test::epipolar
+diff --git a/libs/imu/gyro_bias_nec.cpp b/libs/imu/gyro_bias_nec.cpp
+index 20d5eb7..48ee6dd 100644
+--- a/libs/imu/gyro_bias_nec.cpp
++++ b/libs/imu/gyro_bias_nec.cpp
+@@ -23,7 +23,7 @@
+ #include "common/log.h"
+ #include "math/twist.h"
+ 
+-namespace cuvslam::sba_imu {
++namespace cuvslam { namespace sba_imu {
+ 
+ namespace {
+ 
+@@ -275,4 +275,4 @@ Vector3T SolveGyroBiasNec(const std::vector<Pose>& poses,
+   return Vector3T(static_cast<float>(bg[0]), static_cast<float>(bg[1]), static_cast<float>(bg[2]));
+ }
+ 
+-}  // namespace cuvslam::sba_imu
++}}  // namespace cuvslam::sba_imu
+diff --git a/libs/imu/gyro_bias_nec.h b/libs/imu/gyro_bias_nec.h
+index 34a1333..338928e 100644
+--- a/libs/imu/gyro_bias_nec.h
++++ b/libs/imu/gyro_bias_nec.h
+@@ -23,7 +23,7 @@
+ #include "common/unaligned_types.h"
+ #include "imu/imu_sba_problem.h"
+ 
+-namespace cuvslam::sba_imu {
++namespace cuvslam { namespace sba_imu {
+ 
+ // Solve gyro bias using the NEC (Normalized Epipolar Constraint) method.
+ // Internally: matches features by TrackId -> builds bearing vectors -> computes summation matrices ->
+@@ -40,4 +40,4 @@ Vector3T SolveGyroBiasNec(const std::vector<Pose>& poses,
+ void MatchObservations(const std::vector<camera::Observation>& obs_i, const std::vector<camera::Observation>& obs_j,
+                        std::vector<Eigen::Vector3d>& bearing_i, std::vector<Eigen::Vector3d>& bearing_j);
+ 
+-}  // namespace cuvslam::sba_imu
++}}  // namespace cuvslam::sba_imu
 diff --git a/libs/imu/imu_preintegration.cpp b/libs/imu/imu_preintegration.cpp
-index 3b2ad75..4d38014 100644
+index 1745fa0..d467901 100644
 --- a/libs/imu/imu_preintegration.cpp
 +++ b/libs/imu/imu_preintegration.cpp
-@@ -20,7 +20,7 @@
+@@ -21,7 +21,7 @@
  #include "imu/linear_solver.h"
  #include "imu/positive_matrix.h"
  
@@ -2143,14 +2243,14 @@ index 3b2ad75..4d38014 100644
  
  IMUPreintegration::IMUPreintegration() { Initialize(Vector3T::Zero(), Vector3T::Zero()); }
  
-@@ -242,4 +242,4 @@ bool IMUPreintegration::empty() const { return measurements_.empty(); }
+@@ -241,4 +241,4 @@ bool IMUPreintegration::empty() const { return measurements_.empty(); }
  
  size_t IMUPreintegration::size() const { return measurements_.size(); }
  
 -}  // namespace cuvslam::sba_imu
 +}}  // namespace cuvslam::sba_imu
 diff --git a/libs/imu/imu_preintegration.h b/libs/imu/imu_preintegration.h
-index 19ba76c..86e0205 100644
+index 520ae6a..214bc1f 100644
 --- a/libs/imu/imu_preintegration.h
 +++ b/libs/imu/imu_preintegration.h
 @@ -27,7 +27,7 @@
@@ -2162,7 +2262,7 @@ index 19ba76c..86e0205 100644
  
  const float GRAVITY_VALUE = 9.81;
  
-@@ -105,4 +105,4 @@ private:
+@@ -107,4 +107,4 @@ private:
    mutable std::optional<Matrix3T> gyro_random_walk_accum_info_matrix_ = std::nullopt;
  };
  
@@ -2188,10 +2288,10 @@ index f804b09..b8c287f 100644
 -}  // namespace cuvslam::sba_imu
 +}}  // namespace cuvslam::sba_imu
 diff --git a/libs/imu/imu_sba_fixed_vel.cpp b/libs/imu/imu_sba_fixed_vel.cpp
-index ea94aa6..c9bb5fd 100644
+index 13cfd09..20d085b 100644
 --- a/libs/imu/imu_sba_fixed_vel.cpp
 +++ b/libs/imu/imu_sba_fixed_vel.cpp
-@@ -40,7 +40,7 @@ bool both_fixed(const sba_imu::ImuBAProblem& problem, int pid) {
+@@ -45,7 +45,7 @@ float effective_imu_penalty(const sba_imu::ImuBAProblem& problem, int i) {
  
  }  // namespace
  
@@ -2200,14 +2300,14 @@ index ea94aa6..c9bb5fd 100644
  
  IMUBundlerCpuFixedVel::IMUBundlerCpuFixedVel(const imu::ImuCalibration& calib) : calib_(calib) {}
  
-@@ -1077,4 +1077,4 @@ void IMUBundlerCpuFixedVel::BuildReducedSystem(internal::ReducedSystem& reduced_
+@@ -1067,4 +1067,4 @@ void IMUBundlerCpuFixedVel::BuildReducedSystem(internal::ReducedSystem& reduced_
    }
  }
  
 -}  // namespace cuvslam::sba_imu
 +}}  // namespace cuvslam::sba_imu
 diff --git a/libs/imu/imu_sba_gpu.h b/libs/imu/imu_sba_gpu.h
-index 191b990..647cc5c 100644
+index 29c88ab..1584086 100644
 --- a/libs/imu/imu_sba_gpu.h
 +++ b/libs/imu/imu_sba_gpu.h
 @@ -34,7 +34,7 @@ namespace {
@@ -2219,14 +2319,14 @@ index 191b990..647cc5c 100644
  
  // This is a more or less classic version of bundle adjustment.
  // Each step of Levenberg-Marquardt algorithm solves a sparse linear
-@@ -192,4 +192,4 @@ private:
+@@ -194,4 +194,4 @@ private:
    cuvslam::cuda::Vecf3 calib_left_from_imu_translation;
  };
  
 -}  // namespace cuvslam::sba_imu
 +}}  // namespace cuvslam::sba_imu
 diff --git a/libs/imu/imu_sba_gpu_fixed_vel.cpp b/libs/imu/imu_sba_gpu_fixed_vel.cpp
-index 763177d..6a8fda3 100644
+index 8c28d34..dcf2772 100644
 --- a/libs/imu/imu_sba_gpu_fixed_vel.cpp
 +++ b/libs/imu/imu_sba_gpu_fixed_vel.cpp
 @@ -37,7 +37,7 @@
@@ -2238,14 +2338,14 @@ index 763177d..6a8fda3 100644
  using namespace cuvslam::cuda;
  namespace {
  
-@@ -984,4 +984,4 @@ void IMUBundlerGpuFixedVel::DebugDump(const char * prefix, ImuBAProblem& problem
+@@ -986,4 +986,4 @@ void IMUBundlerGpuFixedVel::DebugDump(const char * prefix, ImuBAProblem& problem
      }
  }
  */
 -}  // namespace cuvslam::sba_imu
 +}}  // namespace cuvslam::sba_imu
 diff --git a/libs/imu/imu_sba_problem.cpp b/libs/imu/imu_sba_problem.cpp
-index e03391d..39633bf 100644
+index 8b9a685..1e82e87 100644
 --- a/libs/imu/imu_sba_problem.cpp
 +++ b/libs/imu/imu_sba_problem.cpp
 @@ -19,7 +19,7 @@
@@ -2257,14 +2357,14 @@ index e03391d..39633bf 100644
  
  bool Pose::predict_pose(const Vector3T& gravity, const IMUPreintegration& preint, Pose& pose) const {
    const float dt = preint.dT_s;
-@@ -71,4 +71,4 @@ void ImuBAProblem::Reset() {
+@@ -64,4 +64,4 @@ void ImuBAProblem::Reset() {
    reintegration_thresh = 0;
  }
  
 -}  // namespace cuvslam::sba_imu
 +}}  // namespace cuvslam::sba_imu
 diff --git a/libs/imu/imu_sba_problem.h b/libs/imu/imu_sba_problem.h
-index f204661..a614c56 100644
+index 3008478..90a2277 100644
 --- a/libs/imu/imu_sba_problem.h
 +++ b/libs/imu/imu_sba_problem.h
 @@ -23,7 +23,7 @@
@@ -2275,18 +2375,18 @@ index f204661..a614c56 100644
 +namespace cuvslam { namespace sba_imu {
  
  // use IMU frame to simplify jacobians
- // world frame should be bound to the Keyframe, where gravity was obtained
-@@ -89,4 +89,4 @@ struct ImuBAProblem {
+ // world frame should be bound to the Keyframe where gravity was obtained (OpenCV: +Y down; gravity ~ +Y when upright)
+@@ -90,4 +90,4 @@ struct ImuBAProblem {
    void Reset();
  };
  
 -}  // namespace cuvslam::sba_imu
 +}}  // namespace cuvslam::sba_imu
 diff --git a/libs/imu/inertial_optimization.cpp b/libs/imu/inertial_optimization.cpp
-index bea70f9..c717dde 100644
+index 0eed9c3..525921f 100644
 --- a/libs/imu/inertial_optimization.cpp
 +++ b/libs/imu/inertial_optimization.cpp
-@@ -38,7 +38,7 @@ struct InertialJacobians {
+@@ -41,7 +41,7 @@ struct InertialJacobians {
  
  }  // namespace
  
@@ -2295,18 +2395,18 @@ index bea70f9..c717dde 100644
  
  float InertialOptimizer::calc_cost_with_update(const std::vector<Pose>& poses, const Matrix3T& Rgravity,
                                                 const Vector3T& gyro_bias, const Vector3T& acc_bias,
-@@ -377,4 +377,4 @@ bool InertialOptimizer::optimize_inertial(std::vector<Pose>& poses, Matrix3T& Rg
+@@ -925,4 +925,4 @@ bool InertialOptimizer::OptimizeInertialAdaptive(
    return current_cost < initial_cost;
  }
  
 -}  // namespace cuvslam::sba_imu
 +}}  // namespace cuvslam::sba_imu
 diff --git a/libs/imu/inertial_optimization.h b/libs/imu/inertial_optimization.h
-index 00aee07..4e7ce3a 100644
+index 951bc90..8b8eb55 100644
 --- a/libs/imu/inertial_optimization.h
 +++ b/libs/imu/inertial_optimization.h
-@@ -23,7 +23,7 @@
- 
+@@ -24,7 +24,7 @@
+ #include "camera/observation.h"
  #include "imu/imu_sba_problem.h"
  
 -namespace cuvslam::sba_imu {
@@ -2314,7 +2414,7 @@ index 00aee07..4e7ce3a 100644
  
  class InertialOptimizer {
  public:
-@@ -50,4 +50,4 @@ private:
+@@ -79,4 +79,4 @@ private:
    profiler::GravityProfiler::DomainHelper profiler_domain_ = profiler::GravityProfiler::DomainHelper("Gravity");
  };
  
@@ -2431,10 +2531,10 @@ index 9bb48ff..114abf0 100644
 -}  // namespace cuvslam::sba_imu
 +}}  // namespace cuvslam::sba_imu
 diff --git a/libs/imu/soft_inertial_pnp.cpp b/libs/imu/soft_inertial_pnp.cpp
-index 69ffae8..43d4046 100644
+index b7695e4..d118536 100644
 --- a/libs/imu/soft_inertial_pnp.cpp
 +++ b/libs/imu/soft_inertial_pnp.cpp
-@@ -26,7 +26,7 @@
+@@ -27,7 +27,7 @@
  #define ROBUST_COST math::ComputeHuberLoss
  #define ROBUST_WEIGHT math::ComputeDHuberLoss
  
@@ -2443,14 +2543,14 @@ index 69ffae8..43d4046 100644
  
  using Mat93 = Eigen::Matrix<float, 9, 3>;
  using Mat39 = Eigen::Matrix<float, 3, 9>;
-@@ -823,4 +823,4 @@ bool SoftInertialPnPWithOutliers(const imu::ImuCalibration& imu_calibration, con
+@@ -848,4 +848,4 @@ bool SoftInertialPnPWithOutliers(const imu::ImuCalibration& imu_calibration, con
    return out;
  }
  
 -}  // namespace cuvslam::sba_imu
 +}}  // namespace cuvslam::sba_imu
 diff --git a/libs/imu/soft_inertial_pnp.h b/libs/imu/soft_inertial_pnp.h
-index 8648de5..96fd4e9 100644
+index ccaaba8..b50b2ae 100644
 --- a/libs/imu/soft_inertial_pnp.h
 +++ b/libs/imu/soft_inertial_pnp.h
 @@ -24,7 +24,7 @@
@@ -2462,17 +2562,17 @@ index 8648de5..96fd4e9 100644
  
  struct StereoPnPInput {
    std::vector<Vector3T> points;
-@@ -56,4 +56,4 @@ bool SoftInertialPnP(const imu::ImuCalibration& imu_calibration, const StereoPnP
+@@ -59,4 +59,4 @@ bool SoftInertialPnP(const imu::ImuCalibration& imu_calibration, const StereoPnP
  bool SoftInertialPnPWithOutliers(const imu::ImuCalibration& imu_calibration, const StereoPnPInput& problem,
                                   Pose& prev_pose, Pose& pose, float imu_info_penalty = 1e-3);
  
 -}  // namespace cuvslam::sba_imu
 +}}  // namespace cuvslam::sba_imu
 diff --git a/libs/imu/test/imu_pnp_test.cpp b/libs/imu/test/imu_pnp_test.cpp
-index 2bb3f9b..3f1e17f 100644
+index edfa005..bfac67f 100644
 --- a/libs/imu/test/imu_pnp_test.cpp
 +++ b/libs/imu/test/imu_pnp_test.cpp
-@@ -637,7 +637,7 @@ void run_test(
+@@ -632,7 +632,7 @@ void run_test(
  
  } // namespace
  
@@ -2480,8 +2580,8 @@ index 2bb3f9b..3f1e17f 100644
 +namespace test { namespace sba_imu {
  
  TEST(Imu, ImuPnPTest) {
-     std::random_device rd;
-@@ -654,6 +654,6 @@ TEST(Imu, ImuPnPTest) {
+     std::mt19937 gen(::testing::UnitTest::GetInstance()->random_seed());
+@@ -647,6 +647,6 @@ TEST(Imu, ImuPnPTest) {
      }
  }
  
@@ -2490,10 +2590,10 @@ index 2bb3f9b..3f1e17f 100644
  
  #endif
 diff --git a/libs/launcher/base_launcher.cpp b/libs/launcher/base_launcher.cpp
-index 0362700..0c8c441 100644
+index 0cb304b..2ead115 100644
 --- a/libs/launcher/base_launcher.cpp
 +++ b/libs/launcher/base_launcher.cpp
-@@ -85,7 +85,7 @@ DEFINE_bool(disable_full_dump, false, "Disable gather 2d and 3d observations for
+@@ -78,7 +78,7 @@ DEFINE_bool(disable_full_dump, false, "Disable gather 2d and 3d observations for
  DEFINE_double(image_drop_rate, 0.0, "Image drop rate");
  DEFINE_string(image_drop_type, "steady", "Image dropping type: steady, normal, sticky");
  
@@ -2502,17 +2602,17 @@ index 0362700..0c8c441 100644
  
  namespace {
  
-@@ -850,4 +850,4 @@ float tracks2d_deviation(const std::vector<Track2D>& tracks2d) {
-   return sqrt(dispersion);
+@@ -791,4 +791,4 @@ void BaseLauncher::updateGTPoses(const Isometry3TVector& poses) {
+   }
  }
  
 -}  // namespace cuvslam::launcher
 +}}  // namespace cuvslam::launcher
 diff --git a/libs/launcher/base_launcher.h b/libs/launcher/base_launcher.h
-index 2c08539..89c8602 100644
+index 7eac36e..fbe500f 100644
 --- a/libs/launcher/base_launcher.h
 +++ b/libs/launcher/base_launcher.h
-@@ -37,7 +37,7 @@
+@@ -36,7 +36,7 @@
  #include "sof/image_context.h"
  #include "sof/image_manager.h"
  
@@ -2521,26 +2621,61 @@ index 2c08539..89c8602 100644
  
  class BaseLauncher {
  public:
-@@ -147,4 +147,4 @@ protected:
+@@ -151,4 +151,4 @@ protected:
    Isometry3TVector gt_poses_;
  };
  
 -}  // namespace cuvslam::launcher
 +}}  // namespace cuvslam::launcher
+diff --git a/libs/launcher/launch_load_and_localize.cpp b/libs/launcher/launch_load_and_localize.cpp
+index faa5c54..bcea309 100644
+--- a/libs/launcher/launch_load_and_localize.cpp
++++ b/libs/launcher/launch_load_and_localize.cpp
+@@ -89,7 +89,7 @@ std::shared_ptr<sof::ImageContext> LoadImage(const std::string& filename, bool t
+ }
+ }  // namespace
+ 
+-namespace cuvslam::launcher {
++namespace cuvslam { namespace launcher {
+ void LaunchLoadMapAndLocalize(slam::AsyncSlam& slam, int64_t timestamp_ns, const sof::Images& current_images,
+                               bool use_gpu) {
+   const Isometry3T guess_pose = ReadGuessPoseFromGFlags();
+@@ -113,4 +113,4 @@ void LaunchLoadMapAndLocalize(slam::AsyncSlam& slam, int64_t timestamp_ns, const
+                      user_provide_image ? user_provided_images : current_images, GetDefaultLocalizationSettings(),
+                      start_cb, nullptr);
+ }
+-}  // namespace cuvslam::launcher
++}}  // namespace cuvslam::launcher
+diff --git a/libs/launcher/launch_load_and_localize.h b/libs/launcher/launch_load_and_localize.h
+index e71ac51..95eadd6 100644
+--- a/libs/launcher/launch_load_and_localize.h
++++ b/libs/launcher/launch_load_and_localize.h
+@@ -18,9 +18,9 @@
+ #include "slam/async_slam/async_slam.h"
+ #include "sof/image_context.h"
+ 
+-namespace cuvslam::launcher {
++namespace cuvslam { namespace launcher {
+ 
+ void LaunchLoadMapAndLocalize(slam::AsyncSlam& slam, int64_t timestamp_ns, const sof::Images& current_images,
+                               bool use_gpu);
+ 
+-}  // namespace cuvslam::launcher
++}}  // namespace cuvslam::launcher
 diff --git a/libs/launcher/launcher_create.cpp b/libs/launcher/launcher_create.cpp
-index 9acf276..2b91c53 100644
+index adc38bf..9cad33e 100644
 --- a/libs/launcher/launcher_create.cpp
 +++ b/libs/launcher/launcher_create.cpp
-@@ -28,7 +28,7 @@
+@@ -31,7 +31,7 @@
  
- DEFINE_string(mode, "multicamera", "Choose from, 'mono', 'multicamera', 'inertial', 'rgbd'");
+ DEFINE_string(mode, "multicamera", "Choose from, 'mono', 'multicamera', 'inertial', 'rgbd', 'multisensor'");
  
 -namespace cuvslam::launcher {
 +namespace cuvslam { namespace launcher {
  
  std::unique_ptr<BaseLauncher> CreateLauncher(ICameraRig& rig, const odom::Settings& svo_settings) {
    if (FLAGS_mode == "mono") {
-@@ -47,4 +47,4 @@ std::unique_ptr<BaseLauncher> CreateLauncher(ICameraRig& rig, const odom::Settin
+@@ -58,4 +58,4 @@ std::unique_ptr<BaseLauncher> CreateLauncher(ICameraRig& rig, const odom::Settin
    throw std::invalid_argument{"Unsupported mode."};
  }
  
@@ -2562,7 +2697,7 @@ index 38d8722..c9621b9 100644
 -}  // namespace cuvslam::launcher
 +}}  // namespace cuvslam::launcher
 diff --git a/libs/launcher/monocular_launcher.cpp b/libs/launcher/monocular_launcher.cpp
-index c61ae95..5a17661 100644
+index beabb2c..ce80c82 100644
 --- a/libs/launcher/monocular_launcher.cpp
 +++ b/libs/launcher/monocular_launcher.cpp
 @@ -17,7 +17,7 @@
@@ -2574,14 +2709,14 @@ index c61ae95..5a17661 100644
  
  MonocularLauncher::MonocularLauncher(ICameraRig& cameraRig, const odom::Settings& svo_settings)
      : BaseLauncher(cameraRig, svo_settings) {
-@@ -36,4 +36,4 @@ bool MonocularLauncher::launch_vo(Isometry3T& delta, Matrix6T& pose_info) {
+@@ -37,4 +37,4 @@ bool MonocularLauncher::launch_vo(Isometry3T& delta, Matrix6T& pose_info,
  
  const odom::IVisualOdometry::VOFrameStat& MonocularLauncher::last_vo_stat() { return *tracker->get_last_stat(); }
  
 -}  // namespace cuvslam::launcher
 +}}  // namespace cuvslam::launcher
 diff --git a/libs/launcher/monocular_launcher.h b/libs/launcher/monocular_launcher.h
-index 7fbce4a..1a5b7ae 100644
+index 196ff7f..a79246d 100644
 --- a/libs/launcher/monocular_launcher.h
 +++ b/libs/launcher/monocular_launcher.h
 @@ -21,7 +21,7 @@
@@ -2600,7 +2735,7 @@ index 7fbce4a..1a5b7ae 100644
 -}  // namespace cuvslam::launcher
 +}}  // namespace cuvslam::launcher
 diff --git a/libs/launcher/multi_camera_launcher.cpp b/libs/launcher/multi_camera_launcher.cpp
-index 6549201..b5d07e8 100644
+index 4a7d78c..7eba7b1 100644
 --- a/libs/launcher/multi_camera_launcher.cpp
 +++ b/libs/launcher/multi_camera_launcher.cpp
 @@ -17,7 +17,7 @@
@@ -2612,14 +2747,14 @@ index 6549201..b5d07e8 100644
  MultiCameraLauncher::MultiCameraLauncher(ICameraRig& cameraRig, const odom::Settings& svo_settings)
      : MultiCameraBaseLauncher(cameraRig, svo_settings) {
    TraceMessage("Stereo launcher is selected");
-@@ -33,4 +33,4 @@ bool MultiCameraLauncher::launch_vo(Isometry3T& delta, Matrix6T& pose_info) {
+@@ -34,4 +34,4 @@ bool MultiCameraLauncher::launch_vo(Isometry3T& delta, Matrix6T& pose_info,
  }
  
  const odom::IVisualOdometry::VOFrameStat& MultiCameraLauncher::last_vo_stat() { return *tracker->get_last_stat(); }
 -}  // namespace cuvslam::launcher
 +}}  // namespace cuvslam::launcher
 diff --git a/libs/launcher/multi_camera_launcher.h b/libs/launcher/multi_camera_launcher.h
-index 92ac00e..653559c 100644
+index 45c0f0c..6ff5b7c 100644
 --- a/libs/launcher/multi_camera_launcher.h
 +++ b/libs/launcher/multi_camera_launcher.h
 @@ -21,7 +21,7 @@
@@ -2638,26 +2773,26 @@ index 92ac00e..653559c 100644
 -}  // namespace cuvslam::launcher
 +}}  // namespace cuvslam::launcher
 diff --git a/libs/launcher/multi_camera_launcher_base.cpp b/libs/launcher/multi_camera_launcher_base.cpp
-index 6e95133..233354b 100644
+index b58c7b6..a710f82 100644
 --- a/libs/launcher/multi_camera_launcher_base.cpp
 +++ b/libs/launcher/multi_camera_launcher_base.cpp
-@@ -22,7 +22,7 @@
- DEFINE_bool(stereo_track_for_depth, false, "Use stereo tracking for the RGB camera");
+@@ -40,7 +40,7 @@ DEFINE_string(fig_depth_camera_ids, "auto",
+ 
  DEFINE_int32(slam_camera, -1, "Select single camera for slam. If -1, all cameras will be used");
  
 -namespace cuvslam::launcher {
 +namespace cuvslam { namespace launcher {
- MultiCameraBaseLauncher::MultiCameraBaseLauncher(ICameraRig& cameraRig, const odom::Settings& svo_settings)
-     : BaseLauncher(cameraRig, svo_settings) {
-   const std::vector<CameraId> depth_ids = cameraRig_.getCamerasWithDepth();
-@@ -67,4 +67,4 @@ MultiCameraBaseLauncher::MultiCameraBaseLauncher(ICameraRig& cameraRig, const od
-     slam_cameras_ = prim_cams;
-   }
+ namespace {
+ 
+ // Resolves a depth-cameras specification string against the rig.
+@@ -145,4 +145,4 @@ MultiCameraBaseLauncher::MultiCameraBaseLauncher(ICameraRig& cameraRig, const od
+ bool MultiCameraBaseLauncher::isDepthCamera(CameraId id) const {
+   return std::find(depth_ids_.begin(), depth_ids_.end(), id) != depth_ids_.end();
  }
 -}  // namespace cuvslam::launcher
 +}}  // namespace cuvslam::launcher
 diff --git a/libs/launcher/multi_camera_launcher_base.h b/libs/launcher/multi_camera_launcher_base.h
-index f896230..c44cb87 100644
+index f22a667..f77976a 100644
 --- a/libs/launcher/multi_camera_launcher_base.h
 +++ b/libs/launcher/multi_camera_launcher_base.h
 @@ -21,7 +21,7 @@
@@ -2668,15 +2803,53 @@ index f896230..c44cb87 100644
 +namespace cuvslam { namespace launcher {
  class MultiCameraBaseLauncher : public BaseLauncher {
  public:
-   MultiCameraBaseLauncher(ICameraRig& cameraRig, const odom::Settings& svo_settings);
-@@ -29,4 +29,4 @@ public:
- protected:
-   camera::FrustumIntersectionGraph fig;
+   // `auto_allow_stereo_track_for_depth` lets a subclass force the FIG to keep secondary edges
+@@ -41,4 +41,4 @@ protected:
+   // drift.
+   std::vector<CameraId> depth_ids_;
+ };
+-}  // namespace cuvslam::launcher
++}}  // namespace cuvslam::launcher
+diff --git a/libs/launcher/multisensor_camera_launcher.cpp b/libs/launcher/multisensor_camera_launcher.cpp
+index 723e1d0..ee0e9bd 100644
+--- a/libs/launcher/multisensor_camera_launcher.cpp
++++ b/libs/launcher/multisensor_camera_launcher.cpp
+@@ -30,7 +30,7 @@ DEFINE_bool(multisensor_use_imu, false,
+             "sba_mode to inertial and registers the IMU callback.");
+ DEFINE_double(multisensor_depth_scale, 1.0, "Depth scale factor (raw depth divided by this value yields meters)");
+ 
+-namespace cuvslam::launcher {
++namespace cuvslam { namespace launcher {
+ 
+ MultisensorCameraLauncher::MultisensorCameraLauncher(ICameraRig& cameraRig, const odom::Settings& svo_settings)
+     // Multisensor mode always wants stereo tracking between depth-aligned cameras and other
+@@ -114,4 +114,4 @@ bool MultisensorCameraLauncher::launch_vo(Isometry3T& delta, Matrix6T& pose_info
+ const odom::IVisualOdometry::VOFrameStat& MultisensorCameraLauncher::last_vo_stat() {
+   return *tracker->get_last_stat();
+ }
+-}  // namespace cuvslam::launcher
++}}  // namespace cuvslam::launcher
+diff --git a/libs/launcher/multisensor_camera_launcher.h b/libs/launcher/multisensor_camera_launcher.h
+index eb30440..84d1cd5 100644
+--- a/libs/launcher/multisensor_camera_launcher.h
++++ b/libs/launcher/multisensor_camera_launcher.h
+@@ -21,7 +21,7 @@
+ 
+ #include "odometry/multisensor_odometry.h"
+ 
+-namespace cuvslam::launcher {
++namespace cuvslam { namespace launcher {
+ class MultisensorCameraLauncher : public MultiCameraBaseLauncher {
+ public:
+   MultisensorCameraLauncher(ICameraRig& cameraRig, const odom::Settings& svo_settings);
+@@ -34,4 +34,4 @@ protected:
+ 
+   std::unique_ptr<odom::MultisensorOdometry> tracker;
  };
 -}  // namespace cuvslam::launcher
 +}}  // namespace cuvslam::launcher
 diff --git a/libs/launcher/rgbd_camera_launcher.cpp b/libs/launcher/rgbd_camera_launcher.cpp
-index 1658f3c..ec7c02f 100644
+index 2fc4b2a..a2c2ee4 100644
 --- a/libs/launcher/rgbd_camera_launcher.cpp
 +++ b/libs/launcher/rgbd_camera_launcher.cpp
 @@ -17,7 +17,7 @@
@@ -2688,14 +2861,14 @@ index 1658f3c..ec7c02f 100644
  RGBDCameraLauncher::RGBDCameraLauncher(ICameraRig& cameraRig, const odom::Settings& svo_settings)
      : MultiCameraBaseLauncher(cameraRig, svo_settings) {
    TraceMessage("RGBD launcher is selected");
-@@ -33,4 +33,4 @@ bool RGBDCameraLauncher::launch_vo(Isometry3T& delta, Matrix6T& pose_info) {
+@@ -35,4 +35,4 @@ bool RGBDCameraLauncher::launch_vo(Isometry3T& delta, Matrix6T& pose_info,
  }
  
  const odom::IVisualOdometry::VOFrameStat& RGBDCameraLauncher::last_vo_stat() { return *tracker->get_last_stat(); }
 -}  // namespace cuvslam::launcher
 +}}  // namespace cuvslam::launcher
 diff --git a/libs/launcher/rgbd_camera_launcher.h b/libs/launcher/rgbd_camera_launcher.h
-index 2de63d4..5e9287b 100644
+index 2dac54e..d0eb764 100644
 --- a/libs/launcher/rgbd_camera_launcher.h
 +++ b/libs/launcher/rgbd_camera_launcher.h
 @@ -21,7 +21,7 @@
@@ -2714,26 +2887,26 @@ index 2de63d4..5e9287b 100644
 -}  // namespace cuvslam::launcher
 +}}  // namespace cuvslam::launcher
 diff --git a/libs/launcher/visual_inertial_launcher.cpp b/libs/launcher/visual_inertial_launcher.cpp
-index 05f80be..c42cec5 100644
+index ec7cd7b..77c592a 100644
 --- a/libs/launcher/visual_inertial_launcher.cpp
 +++ b/libs/launcher/visual_inertial_launcher.cpp
-@@ -17,7 +17,7 @@
+@@ -21,7 +21,7 @@
  
- #include "launcher/visual_inertial_launcher.h"
+ DEFINE_bool(debug_imu_mode, false, "Enable IMU debug mode (pure IMU integration, no visual tracking)");
  
 -namespace cuvslam::launcher {
 +namespace cuvslam { namespace launcher {
  VisualInertialLauncher::VisualInertialLauncher(ICameraRig& cameraRig, const odom::Settings& svo_settings)
      : MultiCameraBaseLauncher(cameraRig, svo_settings) {
    TraceMessage("Inertial launcher is selected");
-@@ -36,4 +36,4 @@ bool VisualInertialLauncher::launch_vo(Isometry3T& delta, Matrix6T& pose_info) {
+@@ -41,4 +41,4 @@ bool VisualInertialLauncher::launch_vo(Isometry3T& delta, Matrix6T& pose_info,
  }
  
  const odom::IVisualOdometry::VOFrameStat& VisualInertialLauncher::last_vo_stat() { return *tracker->get_last_stat(); }
 -}  // namespace cuvslam::launcher
 +}}  // namespace cuvslam::launcher
 diff --git a/libs/launcher/visual_inertial_launcher.h b/libs/launcher/visual_inertial_launcher.h
-index 315fa80..16f9fea 100644
+index ec437ab..73d03db 100644
 --- a/libs/launcher/visual_inertial_launcher.h
 +++ b/libs/launcher/visual_inertial_launcher.h
 @@ -21,7 +21,7 @@
@@ -2752,11 +2925,11 @@ index 315fa80..16f9fea 100644
 -}  // namespace cuvslam::launcher
 +}}  // namespace cuvslam::launcher
 diff --git a/libs/launcher/visualizer.cpp b/libs/launcher/visualizer.cpp
-index b876703..1f83e3a 100644
+index 0ee84b2..96b5ba9 100644
 --- a/libs/launcher/visualizer.cpp
 +++ b/libs/launcher/visualizer.cpp
-@@ -27,7 +27,7 @@
- #include "pipelines/visualizer.h"
+@@ -26,7 +26,7 @@
+ #include "launcher/visualizer.h"
  #include "visualizer/visualizer.hpp"
  
 -namespace cuvslam::launcher {
@@ -2934,6 +3107,44 @@ index 663c388..149c452 100644
  
 -}  // namespace test::logger
 +}}  // namespace test::logger
+diff --git a/libs/map/depth_point_map.cpp b/libs/map/depth_point_map.cpp
+index 49cec0b..417fe09 100644
+--- a/libs/map/depth_point_map.cpp
++++ b/libs/map/depth_point_map.cpp
+@@ -20,7 +20,7 @@
+ 
+ #include "cuda_modules/cuda_kernels/cuda_kernels.h"
+ 
+-namespace cuvslam::map {
++namespace cuvslam { namespace map {
+ 
+ namespace {
+ 
+@@ -147,4 +147,4 @@ void DepthPointMap::add_samples(const DepthCameraInfo& cam, size_t n) {
+   }
+ }
+ 
+-}  // namespace cuvslam::map
++}}  // namespace cuvslam::map
+diff --git a/libs/map/depth_point_map.h b/libs/map/depth_point_map.h
+index cd1f110..7f96a72 100644
+--- a/libs/map/depth_point_map.h
++++ b/libs/map/depth_point_map.h
+@@ -24,7 +24,7 @@
+ #include "profiler/profiler.h"
+ #include "profiler/profiler_enable.h"
+ 
+-namespace cuvslam::map {
++namespace cuvslam { namespace map {
+ 
+ struct DepthPointMapSettings {
+   // sample_stride 8 → 4 doubles the unprojected sample-pool density per update
+@@ -96,4 +96,4 @@ private:
+   profiler::MapProfiler::DomainHelper profiler_domain_ = profiler::MapProfiler::DomainHelper("DepthPointMap");
+ };
+ 
+-}  // namespace cuvslam::map
++}}  // namespace cuvslam::map
 diff --git a/libs/map/keyframe.cpp b/libs/map/keyframe.cpp
 index b6d0c50..2f6d2cc 100644
 --- a/libs/map/keyframe.cpp
@@ -2992,7 +3203,7 @@ index 12cbe07..5c87e39 100644
 -}  // namespace cuvslam::map
 +}}  // namespace cuvslam::map
 diff --git a/libs/map/map.cpp b/libs/map/map.cpp
-index 2585158..88cb055 100644
+index 8e7bebb..aa1757e 100644
 --- a/libs/map/map.cpp
 +++ b/libs/map/map.cpp
 @@ -19,7 +19,7 @@
@@ -3004,14 +3215,14 @@ index 2585158..88cb055 100644
  using namespace cuvslam::camera;
  
  UnifiedMap::UnifiedMap(size_t capacity) : capacity_(capacity) {
-@@ -245,4 +245,4 @@ void UnifiedMap::clear() {
+@@ -258,4 +258,4 @@ void UnifiedMap::clear() {
    keyframes_from_landmark_.clear();
  }
  
 -}  // namespace cuvslam::map
 +}}  // namespace cuvslam::map
 diff --git a/libs/map/map.h b/libs/map/map.h
-index 65d2c41..1c63d53 100644
+index b2db618..be4f66c 100644
 --- a/libs/map/map.h
 +++ b/libs/map/map.h
 @@ -37,7 +37,7 @@
@@ -3020,17 +3231,55 @@ index 65d2c41..1c63d53 100644
  
 -namespace cuvslam::map {
 +namespace cuvslam { namespace map {
- using namespace cuvslam::camera;
  
  using namespace cuvslam::sba_imu;
-@@ -134,4 +134,4 @@ private:
+ using PreintegPtr = std::shared_ptr<IMUPreintegration>;
+@@ -135,4 +135,4 @@ private:
    profiler::MapProfiler::DomainHelper profiler_domain_ = profiler::MapProfiler::DomainHelper("Map");
  };
  
 -}  // namespace cuvslam::map
 +}}  // namespace cuvslam::map
+diff --git a/libs/map/plane_map.cpp b/libs/map/plane_map.cpp
+index 36128e4..46a3faf 100644
+--- a/libs/map/plane_map.cpp
++++ b/libs/map/plane_map.cpp
+@@ -30,7 +30,7 @@
+ #include "common/vector_2t.h"
+ #include "cuda_modules/cuda_kernels/cuda_kernels.h"
+ 
+-namespace cuvslam::map {
++namespace cuvslam { namespace map {
+ 
+ namespace {
+ 
+@@ -894,4 +894,4 @@ std::vector<Plane> PlaneMap::suppress_redundant(std::vector<Plane>& planes) cons
+   return result;
+ }
+ 
+-}  // namespace cuvslam::map
++}}  // namespace cuvslam::map
+diff --git a/libs/map/plane_map.h b/libs/map/plane_map.h
+index e368d8b..40338ad 100644
+--- a/libs/map/plane_map.h
++++ b/libs/map/plane_map.h
+@@ -29,7 +29,7 @@
+ #include "profiler/profiler.h"
+ #include "profiler/profiler_enable.h"
+ 
+-namespace cuvslam::map {
++namespace cuvslam { namespace map {
+ 
+ // A 3D point with an associated unit surface normal (rig-frame).
+ struct SurfacePoint {
+@@ -155,4 +155,4 @@ private:
+   profiler::MapProfiler::DomainHelper profiler_domain_ = profiler::MapProfiler::DomainHelper("PlaneMap");
+ };
+ 
+-}  // namespace cuvslam::map
++}}  // namespace cuvslam::map
 diff --git a/libs/map/service.cpp b/libs/map/service.cpp
-index 48d19a4..64b1800 100644
+index 29dcada..410ecc9 100644
 --- a/libs/map/service.cpp
 +++ b/libs/map/service.cpp
 @@ -17,7 +17,7 @@
@@ -3042,14 +3291,14 @@ index 48d19a4..64b1800 100644
  
  ServiceBase::ServiceBase(UnifiedMap& map, bool async) : map_(map), async_(async) {
    if (!async_) {
-@@ -85,4 +85,4 @@ void ServiceBase::run() {
+@@ -89,4 +89,4 @@ void ServiceBase::run() {
    }
  };
  
 -}  // namespace cuvslam::map
 +}}  // namespace cuvslam::map
 diff --git a/libs/map/service.h b/libs/map/service.h
-index 70fc3f7..45633d2 100644
+index 4c40762..de9c674 100644
 --- a/libs/map/service.h
 +++ b/libs/map/service.h
 @@ -24,7 +24,7 @@
@@ -3061,14 +3310,33 @@ index 70fc3f7..45633d2 100644
  
  class ServiceBase {
  public:
-@@ -59,4 +59,4 @@ private:
-   std::condition_variable cv_;
+@@ -63,4 +63,4 @@ private:
+   std::thread job_;
  };
  
 -}  // namespace cuvslam::map
 +}}  // namespace cuvslam::map
+diff --git a/libs/map/test/depth_point_map_test.cpp b/libs/map/test/depth_point_map_test.cpp
+index b94635a..e516321 100644
+--- a/libs/map/test/depth_point_map_test.cpp
++++ b/libs/map/test/depth_point_map_test.cpp
+@@ -24,7 +24,7 @@
+ 
+ #include "map/depth_point_map.h"
+ 
+-namespace test::map {
++namespace test { namespace map {
+ 
+ using namespace cuvslam;
+ 
+@@ -250,4 +250,4 @@ TEST(DepthPointMapTest, CloseButOffFrustumPointsAreKept) {
+   }
+ }
+ 
+-}  // namespace test::map
++}}  // namespace test::map
 diff --git a/libs/map/test/map_test.cpp b/libs/map/test/map_test.cpp
-index 55404a4..b51b77e 100644
+index 57e715f..d3b94e5 100644
 --- a/libs/map/test/map_test.cpp
 +++ b/libs/map/test/map_test.cpp
 @@ -24,7 +24,7 @@
@@ -3086,8 +3354,27 @@ index 55404a4..b51b77e 100644
  
 -}  // namespace test::math
 +}}  // namespace test::math
+diff --git a/libs/map/test/plane_map_test.cpp b/libs/map/test/plane_map_test.cpp
+index e6c211f..c66970a 100644
+--- a/libs/map/test/plane_map_test.cpp
++++ b/libs/map/test/plane_map_test.cpp
+@@ -25,7 +25,7 @@
+ 
+ #include "map/plane_map.h"
+ 
+-namespace test::map {
++namespace test { namespace map {
+ 
+ using namespace cuvslam;
+ 
+@@ -164,4 +164,4 @@ TEST(PlaneMap, RespectsMaxInliersForGeometryCap) {
+   EXPECT_NEAR(plane.centroid.z(), 2.f, 0.05f);
+ }
+ 
+-}  // namespace test::map
++}}  // namespace test::map
 diff --git a/libs/math/pgo.cpp b/libs/math/pgo.cpp
-index 854dee7..bd22864 100644
+index f7904f5..1421e73 100644
 --- a/libs/math/pgo.cpp
 +++ b/libs/math/pgo.cpp
 @@ -25,7 +25,7 @@
@@ -3099,14 +3386,14 @@ index 854dee7..bd22864 100644
  
  constexpr int num_reserve_floats = 200;
  
-@@ -657,4 +657,4 @@ bool PGO::run(PGOInput& inputs, int max_iterations) const {
+@@ -662,4 +662,4 @@ bool PGO::run(PGOInput& inputs, int max_iterations) const {
    }
  }
  
 -}  // namespace cuvslam::math
 +}}  // namespace cuvslam::math
 diff --git a/libs/math/pgo.h b/libs/math/pgo.h
-index 102d54c..23b22be 100644
+index 2db9be5..e4512cb 100644
 --- a/libs/math/pgo.h
 +++ b/libs/math/pgo.h
 @@ -26,7 +26,7 @@
@@ -3118,8 +3405,46 @@ index 102d54c..23b22be 100644
  
  struct PGOInput {
    struct PoseDelta {
-@@ -63,4 +63,4 @@ private:
+@@ -65,4 +65,4 @@ private:
    mutable Eigen::SparseMatrix<float> HS_;
+ };
+ 
+-}  // namespace cuvslam::math
++}}  // namespace cuvslam::math
+diff --git a/libs/math/point_to_plane_factor.h b/libs/math/point_to_plane_factor.h
+index 4477329..3013da4 100644
+--- a/libs/math/point_to_plane_factor.h
++++ b/libs/math/point_to_plane_factor.h
+@@ -21,7 +21,7 @@
+ #include "cuda_modules/cuda_helper.h"
+ #include "cuda_modules/cuda_kernels/cuda_kernels.h"
+ 
+-namespace cuvslam::math {
++namespace cuvslam { namespace math {
+ 
+ // Point-to-plane cost (image-space): residual dim = 1, single SE(3) state block (tangent dim 6).
+ // Each factor corresponds to a pixel in a regular grid (stride + image_size). The kernel
+@@ -73,4 +73,4 @@ private:
+   size_t num_factors_;
+ };
+ 
+-}  // namespace cuvslam::math
++}}  // namespace cuvslam::math
+diff --git a/libs/math/point_to_point_icp_factor.h b/libs/math/point_to_point_icp_factor.h
+index da1e687..21dbd73 100644
+--- a/libs/math/point_to_point_icp_factor.h
++++ b/libs/math/point_to_point_icp_factor.h
+@@ -21,7 +21,7 @@
+ #include "cuda_modules/cuda_helper.h"
+ #include "cuda_modules/cuda_kernels/cuda_kernels.h"
+ 
+-namespace cuvslam::math {
++namespace cuvslam { namespace math {
+ 
+ // Point-to-point ICP cost: residual dim = 1, single SE(3) state block (tangent dim 6).
+ //
+@@ -63,4 +63,4 @@ private:
+   size_t num_factors_;
  };
  
 -}  // namespace cuvslam::math
@@ -3144,7 +3469,7 @@ index 6b66b60..c1e333d 100644
 -}  // namespace cuvslam::math
 +}}  // namespace cuvslam::math
 diff --git a/libs/math/robust_cost_function.cpp b/libs/math/robust_cost_function.cpp
-index bd21972..2a8f8f4 100644
+index 2a0b043..1d6f512 100644
 --- a/libs/math/robust_cost_function.cpp
 +++ b/libs/math/robust_cost_function.cpp
 @@ -17,7 +17,7 @@
@@ -3156,7 +3481,7 @@ index bd21972..2a8f8f4 100644
  
  float ComputeGemanMcClureLoss(float x_squared, const float delta, const float mu) {
    const float delta_squared = delta * delta;
-@@ -92,4 +92,4 @@ float ComputeDStudentLoss(float x_squared, const float delta, const float nu) {
+@@ -94,4 +94,4 @@ float ComputeDStudentLoss(float x_squared, const float delta, const float nu) {
    return (delta + nu) / (delta + x_squared);
  }
  
@@ -3201,19 +3526,19 @@ index 41d32d2..daa9d8c 100644
 -}  // namespace cuvslam::math
 +}}  // namespace cuvslam::math
 diff --git a/libs/math/test/pgo_test.cpp b/libs/math/test/pgo_test.cpp
-index 8fb8656..80317f7 100644
+index 3dd3b12..8cb1ae4 100644
 --- a/libs/math/test/pgo_test.cpp
 +++ b/libs/math/test/pgo_test.cpp
-@@ -25,7 +25,7 @@
+@@ -24,7 +24,7 @@
+ #include "common/vector_3t.h"
  #include "math/pgo.h"
  #include "math/twist.h"
- 
 -namespace test::math {
 +namespace test { namespace math {
  using namespace cuvslam;
  using namespace cuvslam::math;
  
-@@ -232,4 +232,4 @@ TEST(PGO, DISABLED_PGOTestPlanar) {
+@@ -229,4 +229,4 @@ TEST(PGO, DISABLED_PGOTestPlanar) {
    }
  }
  
@@ -3276,6 +3601,25 @@ index 6407eec..63e32a3 100644
  
 -}  // namespace test::math
 +}}  // namespace test::math
+diff --git a/libs/math/test/twist_to_angle_test.cpp b/libs/math/test/twist_to_angle_test.cpp
+index 9e8e4a4..bbf48c8 100644
+--- a/libs/math/test/twist_to_angle_test.cpp
++++ b/libs/math/test/twist_to_angle_test.cpp
+@@ -22,7 +22,7 @@
+ #include "common/isometry_utils.h"
+ #include "math/twist.h"
+ 
+-namespace test::math {
++namespace test { namespace math {
+ using namespace cuvslam;
+ 
+ namespace {
+@@ -118,4 +118,4 @@ TEST(TwistToAngleTest, PoseCovToXYZRollPitchYawCovMatchesSigmaPointSamplingAtMul
+   }
+ }
+ 
+-}  // namespace test::math
++}}  // namespace test::math
 diff --git a/libs/math/test/twist_to_quaternion_test.cpp b/libs/math/test/twist_to_quaternion_test.cpp
 index 74c4370..02e2fd7 100644
 --- a/libs/math/test/twist_to_quaternion_test.cpp
@@ -3330,10 +3674,10 @@ index edfd5e0..306ea21 100644
 -}  // namespace cuvslam::math
 +}}  // namespace cuvslam::math
 diff --git a/libs/math/twist.cpp b/libs/math/twist.cpp
-index 908a042..3c7f743 100644
+index bbef69d..e2feb40 100644
 --- a/libs/math/twist.cpp
 +++ b/libs/math/twist.cpp
-@@ -69,7 +69,7 @@ void Log(cuvslam::Vector<T, Dim>& result, const cuvslam::Isometry3T& trans) {
+@@ -70,7 +70,7 @@ void Log(cuvslam::Vector<T, Dim>& result, const cuvslam::Isometry3T& trans) {
  
  }  // namespace
  
@@ -3342,7 +3686,7 @@ index 908a042..3c7f743 100644
  
  void Exp(Matrix3T& result, const Vector3T& twist) {
    const float theta = (std::max)(twist.norm(), epsilon());
-@@ -205,4 +205,4 @@ Matrix6T se3_twist_right_jacobian(const Vector6T& twist) { return se3_twist_left
+@@ -206,4 +206,4 @@ Matrix6T se3_twist_right_jacobian(const Vector6T& twist) { return se3_twist_left
  
  Matrix6T se3_twist_right_inverse_jacobian(const Vector6T& twist) { return se3_twist_left_inverse_jacobian(-twist); }
  
@@ -3368,7 +3712,7 @@ index 8e02900..77eded2 100644
 -}  // namespace cuvslam::math
 +}}  // namespace cuvslam::math
 diff --git a/libs/math/twist_to_angle.cpp b/libs/math/twist_to_angle.cpp
-index 7bec640..7213d4b 100644
+index 4c66486..d28a607 100644
 --- a/libs/math/twist_to_angle.cpp
 +++ b/libs/math/twist_to_angle.cpp
 @@ -23,7 +23,7 @@
@@ -3380,14 +3724,14 @@ index 7bec640..7213d4b 100644
  
  /*
    jacobian implies that Q = [qx, qy, qz, qw]
-@@ -145,4 +145,4 @@ Matrix6T PoseCovToRollPitchYawCov(const Matrix6T& pose_cov, const Isometry3T& po
+@@ -184,4 +184,4 @@ Matrix6T PoseCovToXYZRollPitchYawCov(const Matrix6T& pose_cov, const Isometry3T&
    return J * pose_cov * J.transpose();
  }
  
 -}  // namespace cuvslam::math
 +}}  // namespace cuvslam::math
 diff --git a/libs/math/twist_to_angle.h b/libs/math/twist_to_angle.h
-index f33a243..9297bac 100644
+index 2c381df..cd268de 100644
 --- a/libs/math/twist_to_angle.h
 +++ b/libs/math/twist_to_angle.h
 @@ -20,7 +20,7 @@
@@ -3398,10 +3742,10 @@ index f33a243..9297bac 100644
 +namespace cuvslam { namespace math {
  
  /**
-  * returns a covariance for [roll, pitch, yaw, x, y, z] variable
-@@ -28,4 +28,4 @@ namespace cuvslam::math {
+  * Converts an SE(3) twist covariance from [rx, ry, rz, tx, ty, tz] order to
+@@ -29,4 +29,4 @@ namespace cuvslam::math {
  
- Matrix6T PoseCovToRollPitchYawCov(const Matrix6T& pose_cov, const Isometry3T& pose);
+ Matrix6T PoseCovToXYZRollPitchYawCov(const Matrix6T& pose_cov, const Isometry3T& pose);
  
 -}  // namespace cuvslam::math
 +}}  // namespace cuvslam::math
@@ -3425,10 +3769,10 @@ index 8870b4a..f11e2e7 100644
 -}  // namespace cuvslam::math
 +}}  // namespace cuvslam::math
 diff --git a/libs/odometry/ground_integrator.cpp b/libs/odometry/ground_integrator.cpp
-index 14f3802..823ecf0 100644
+index af8ee27..9acc33e 100644
 --- a/libs/odometry/ground_integrator.cpp
 +++ b/libs/odometry/ground_integrator.cpp
-@@ -46,7 +46,7 @@ Isometry3T ground_align(const Isometry3T& pose_on_ground_unaligned_G) {
+@@ -44,7 +44,7 @@ Isometry3T ground_align(const Isometry3T& pose_on_ground_unaligned_G) {
  
  }  // namespace
  
@@ -3437,14 +3781,14 @@ index 14f3802..823ecf0 100644
  
  GroundIntegrator::GroundIntegrator(const Isometry3T& world_from_ground, const Isometry3T& initial_pose_on_ground_W,
                                     const Isometry3T& initial_pose_in_space_W)
-@@ -72,4 +72,4 @@ Isometry3T GroundIntegrator::GetPoseOnGround() const {
+@@ -70,4 +70,4 @@ Isometry3T GroundIntegrator::GetPoseOnGround() const {
    return pose_on_plane_W_;
  }
  
 -}  // namespace cuvslam::odom
 +}}  // namespace cuvslam::odom
 diff --git a/libs/odometry/ground_integrator.h b/libs/odometry/ground_integrator.h
-index b073887..a2fe44e 100644
+index 366040d..c2d8729 100644
 --- a/libs/odometry/ground_integrator.h
 +++ b/libs/odometry/ground_integrator.h
 @@ -19,7 +19,7 @@
@@ -3501,29 +3845,29 @@ index b67b052..629a977 100644
 -}  // namespace cuvslam::odom
 +}}  // namespace cuvslam::odom
 diff --git a/libs/odometry/ivisual_odometry.h b/libs/odometry/ivisual_odometry.h
-index 1807130..77e4234 100644
+index bde2426..7c0ce25 100644
 --- a/libs/odometry/ivisual_odometry.h
 +++ b/libs/odometry/ivisual_odometry.h
-@@ -27,7 +27,7 @@
- 
+@@ -29,7 +29,7 @@
  #include "odometry/ipredictor.h"
+ #include "odometry/svo_config.h"
  
 -namespace cuvslam::odom {
 +namespace cuvslam { namespace odom {
  
  class IVisualOdometry {
  public:
-@@ -51,4 +51,4 @@ public:
+@@ -56,4 +56,4 @@ public:
    virtual const std::unique_ptr<VOFrameStat>& get_last_stat() const = 0;
  };
  
 -}  // namespace cuvslam::odom
 +}}  // namespace cuvslam::odom
 diff --git a/libs/odometry/mono_visual_odometry.cpp b/libs/odometry/mono_visual_odometry.cpp
-index 3d53ec1..ec71161 100644
+index 9722550..9775999 100644
 --- a/libs/odometry/mono_visual_odometry.cpp
 +++ b/libs/odometry/mono_visual_odometry.cpp
-@@ -27,7 +27,7 @@
+@@ -28,7 +28,7 @@
  #include "odometry/svo_config.h"
  #endif
  
@@ -3532,14 +3876,14 @@ index 3d53ec1..ec71161 100644
  
  MonoVisualOdometry::MonoVisualOdometry(const camera::Rig& rig, const Settings& settings, bool use_gpu)
      : intrinsics_(*(rig.intrinsics[0])), settings_(settings), solver_(std::make_unique<pipelines::SolverSfMMono>(rig)) {
-@@ -128,4 +128,4 @@ bool MonoVisualOdometry::do_predict(PredictorRef predictor, int64_t timestamp, I
+@@ -138,4 +138,4 @@ bool MonoVisualOdometry::do_predict(PredictorRef predictor, int64_t timestamp, I
    return false;
  }
  
 -}  // namespace cuvslam::odom
 +}}  // namespace cuvslam::odom
 diff --git a/libs/odometry/mono_visual_odometry.h b/libs/odometry/mono_visual_odometry.h
-index bddced4..f105509 100644
+index e5efb7c..cea115e 100644
 --- a/libs/odometry/mono_visual_odometry.h
 +++ b/libs/odometry/mono_visual_odometry.h
 @@ -28,7 +28,7 @@
@@ -3551,7 +3895,7 @@ index bddced4..f105509 100644
  
  class MonoVisualOdometry : public IVisualOdometry {
  public:
-@@ -54,4 +54,4 @@ private:
+@@ -55,4 +55,4 @@ private:
    bool do_predict(PredictorRef predictor, int64_t timestamp, Isometry3T& sof_prediction);
  };
  
@@ -3596,10 +3940,10 @@ index b8deda2..b88a545 100644
 -}  // namespace cuvslam::odom
 +}}  // namespace cuvslam::odom
 diff --git a/libs/odometry/multi_visual_odometry_base.cpp b/libs/odometry/multi_visual_odometry_base.cpp
-index 07f6379..54c3e03 100644
+index a241145..d60fe0f 100644
 --- a/libs/odometry/multi_visual_odometry_base.cpp
 +++ b/libs/odometry/multi_visual_odometry_base.cpp
-@@ -21,7 +21,7 @@
+@@ -23,7 +23,7 @@
  #include "pipelines/feature_predictor.h"
  #include "sof/sof_create.h"
  
@@ -3608,14 +3952,14 @@ index 07f6379..54c3e03 100644
  
  MultiVisualOdometryBase::MultiVisualOdometryBase(const camera::Rig& rig, const camera::FrustumIntersectionGraph& fig,
                                                   const Settings& settings, bool use_gpu)
-@@ -123,4 +123,4 @@ const std::unique_ptr<IVisualOdometry::VOFrameStat>& MultiVisualOdometryBase::ge
+@@ -138,4 +138,4 @@ const std::unique_ptr<IVisualOdometry::VOFrameStat>& MultiVisualOdometryBase::ge
    return last_frame_stat_;
  }
  
 -}  // namespace cuvslam::odom
 +}}  // namespace cuvslam::odom
 diff --git a/libs/odometry/multi_visual_odometry_base.h b/libs/odometry/multi_visual_odometry_base.h
-index f8977a0..79b8fa6 100644
+index 5c83d6c..448a1cd 100644
 --- a/libs/odometry/multi_visual_odometry_base.h
 +++ b/libs/odometry/multi_visual_odometry_base.h
 @@ -31,7 +31,7 @@
@@ -3627,7 +3971,45 @@ index f8977a0..79b8fa6 100644
  
  class MultiVisualOdometryBase : public IVisualOdometry {
  public:
-@@ -70,4 +70,4 @@ private:
+@@ -71,4 +71,4 @@ private:
+   const uint32_t profiler_color_ = 0xFFFF00;
+ };
+ 
+-}  // namespace cuvslam::odom
++}}  // namespace cuvslam::odom
+diff --git a/libs/odometry/multisensor_odometry.cpp b/libs/odometry/multisensor_odometry.cpp
+index 6d0950f..a449125 100644
+--- a/libs/odometry/multisensor_odometry.cpp
++++ b/libs/odometry/multisensor_odometry.cpp
+@@ -23,7 +23,7 @@
+ #include "pipelines/feature_predictor.h"
+ #include "sof/sof_create.h"
+ 
+-namespace cuvslam::odom {
++namespace cuvslam { namespace odom {
+ 
+ namespace {
+ 
+@@ -211,4 +211,4 @@ std::optional<pipelines::SolverSfMMultisensor::ImuState> MultisensorOdometry::Ge
+   return solver_.GetImuState();
+ }
+ 
+-}  // namespace cuvslam::odom
++}}  // namespace cuvslam::odom
+diff --git a/libs/odometry/multisensor_odometry.h b/libs/odometry/multisensor_odometry.h
+index 0645d9b..e1225ab 100644
+--- a/libs/odometry/multisensor_odometry.h
++++ b/libs/odometry/multisensor_odometry.h
+@@ -31,7 +31,7 @@
+ #include "odometry/pose_prediction.h"
+ #include "odometry/svo_config.h"
+ 
+-namespace cuvslam::odom {
++namespace cuvslam { namespace odom {
+ 
+ // Multisensor odometry using the cuNLS-based MultisensorPoseEstimator solver.
+ // The available sensor set (IMU presence, depth presence) is selected at construction
+@@ -83,4 +83,4 @@ private:
    const uint32_t profiler_color_ = 0xFFFF00;
  };
  
@@ -3672,10 +4054,10 @@ index 00a386f..5f46b92 100644
 -}  // namespace cuvslam::odom
 +}}  // namespace cuvslam::odom
 diff --git a/libs/odometry/rgbd_odometry.cpp b/libs/odometry/rgbd_odometry.cpp
-index b81fdc4..adcd261 100644
+index db9f845..e11f515 100644
 --- a/libs/odometry/rgbd_odometry.cpp
 +++ b/libs/odometry/rgbd_odometry.cpp
-@@ -21,7 +21,7 @@
+@@ -23,7 +23,7 @@
  #include "pipelines/feature_predictor.h"
  #include "sof/sof_create.h"
  
@@ -3684,14 +4066,14 @@ index b81fdc4..adcd261 100644
  
  RGBDOdometry::RGBDOdometry(const camera::Rig& rig, const camera::FrustumIntersectionGraph& fig,
                             const Settings& settings, bool use_gpu)
-@@ -173,4 +173,4 @@ bool RGBDOdometry::do_predict(PredictorRef predictor, int64_t timestamp, Isometr
+@@ -190,4 +190,4 @@ bool RGBDOdometry::do_predict(PredictorRef predictor, int64_t timestamp, Isometr
    return false;
  }
  
 -}  // namespace cuvslam::odom
 +}}  // namespace cuvslam::odom
 diff --git a/libs/odometry/rgbd_odometry.h b/libs/odometry/rgbd_odometry.h
-index 020f3a3..fd9aeb2 100644
+index 6ff5fc8..92a7030 100644
 --- a/libs/odometry/rgbd_odometry.h
 +++ b/libs/odometry/rgbd_odometry.h
 @@ -27,7 +27,7 @@
@@ -3703,14 +4085,14 @@ index 020f3a3..fd9aeb2 100644
  
  class RGBDOdometry : public IVisualOdometry {
  public:
-@@ -66,4 +66,4 @@ private:
+@@ -67,4 +67,4 @@ private:
    const uint32_t profiler_color_ = 0xFFFF00;
  };
  
 -}  // namespace cuvslam::odom
 +}}  // namespace cuvslam::odom
 diff --git a/libs/odometry/stereo_inertial_odometry.cpp b/libs/odometry/stereo_inertial_odometry.cpp
-index 198a997..f2d64ad 100644
+index d9f40a3..90b1e0c 100644
 --- a/libs/odometry/stereo_inertial_odometry.cpp
 +++ b/libs/odometry/stereo_inertial_odometry.cpp
 @@ -20,7 +20,7 @@
@@ -3722,17 +4104,17 @@ index 198a997..f2d64ad 100644
  
  StereoInertialOdometry::StereoInertialOdometry(const camera::Rig& rig, const camera::FrustumIntersectionGraph& fig,
                                                 const Settings& svo_settings, bool use_gpu, bool debug_imu_mode,
-@@ -51,4 +51,4 @@ void StereoInertialOdometry::add_imu_measurement(const imu::ImuMeasurement& m) {
- 
- std::optional<Vector3T> StereoInertialOdometry::get_gravity() const { return solver_.get_gravity(); }
+@@ -55,4 +55,4 @@ std::optional<pipelines::SolverSfMInertial::ImuState> StereoInertialOdometry::Ge
+   return solver_.GetImuState();
+ }
  
 -}  // namespace cuvslam::odom
 +}}  // namespace cuvslam::odom
 diff --git a/libs/odometry/stereo_inertial_odometry.h b/libs/odometry/stereo_inertial_odometry.h
-index f3999a1..b81408d 100644
+index b513d8b..a6f0986 100644
 --- a/libs/odometry/stereo_inertial_odometry.h
 +++ b/libs/odometry/stereo_inertial_odometry.h
-@@ -27,7 +27,7 @@
+@@ -28,7 +28,7 @@
  #include "odometry/multi_visual_odometry_base.h"
  #include "odometry/svo_config.h"
  
@@ -3741,17 +4123,17 @@ index f3999a1..b81408d 100644
  
  // TODO: StereoInertialOdometry shouldn't be inherited from MultiVisualOdometryBase
  class StereoInertialOdometry : public MultiVisualOdometryBase {
-@@ -49,4 +49,4 @@ private:
+@@ -51,4 +51,4 @@ private:
    pipelines::SolverSfMInertial solver_;
  };
  
 -}  // namespace cuvslam::odom
 +}}  // namespace cuvslam::odom
 diff --git a/libs/odometry/svo_config.h b/libs/odometry/svo_config.h
-index b7fc123..076cc1f 100644
+index 924d988..9244edc 100644
 --- a/libs/odometry/svo_config.h
 +++ b/libs/odometry/svo_config.h
-@@ -24,7 +24,7 @@
+@@ -30,7 +30,7 @@
  #include "sba/sba_config.h"
  #include "sof/sof_config.h"
  
@@ -3760,7 +4142,7 @@ index b7fc123..076cc1f 100644
  
  struct KeyFrameSettings {
    // The current frame becomes keyframe if the percent of survivor tracks
-@@ -44,4 +44,4 @@ struct Settings {
+@@ -99,4 +99,4 @@ struct Settings {
    bool use_prediction = true;
  };
  
@@ -3784,8 +4166,46 @@ index 9c6a1d7..def8ea4 100644
  
 -}  // namespace cuvslam::odom
 +}}  // namespace cuvslam::odom
+diff --git a/libs/pipelines/depth_maps_context.cpp b/libs/pipelines/depth_maps_context.cpp
+index d43670f..43a9bee 100644
+--- a/libs/pipelines/depth_maps_context.cpp
++++ b/libs/pipelines/depth_maps_context.cpp
+@@ -21,7 +21,7 @@
+ 
+ #include "common/vector_2t.h"
+ 
+-namespace cuvslam::pipelines {
++namespace cuvslam { namespace pipelines {
+ 
+ DepthMapsContext::DepthMapsContext(const camera::Rig& rig) : rig_(rig), triangulator_(rig), track_lifter_(rig) {}
+ 
+@@ -96,4 +96,4 @@ std::vector<map::DepthCameraInfo> DepthMapsContext::build_depth_camera_infos(con
+   return depth_cameras;
+ }
+ 
+-}  // namespace cuvslam::pipelines
++}}  // namespace cuvslam::pipelines
+diff --git a/libs/pipelines/depth_maps_context.h b/libs/pipelines/depth_maps_context.h
+index eb1c714..43382b0 100644
+--- a/libs/pipelines/depth_maps_context.h
++++ b/libs/pipelines/depth_maps_context.h
+@@ -33,7 +33,7 @@
+ #include "pipelines/track_lifter.h"
+ #include "pipelines/triangulator.h"
+ 
+-namespace cuvslam::pipelines {
++namespace cuvslam { namespace pipelines {
+ 
+ // DepthMapsContext bundles the three depth/triangulation primitives used by the multisensor
+ // pipeline so the orchestrating solver can speak in terms of high-level operations:
+@@ -80,4 +80,4 @@ private:
+   map::DepthPointMap depth_point_map_;
+ };
+ 
+-}  // namespace cuvslam::pipelines
++}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/feature_predictor.cpp b/libs/pipelines/feature_predictor.cpp
-index 42baa6d..4bd3e34 100644
+index 08b7ce1..239c904 100644
 --- a/libs/pipelines/feature_predictor.cpp
 +++ b/libs/pipelines/feature_predictor.cpp
 @@ -17,7 +17,7 @@
@@ -3797,14 +4217,14 @@ index 42baa6d..4bd3e34 100644
  
  FeaturePredictor::FeaturePredictor(const map::UnifiedMap& map, const camera::Rig& rig) : map_(map), rig_(rig){};
  
-@@ -58,4 +58,4 @@ void FeaturePredictor::predictObservations(const Isometry3T& world_from_rig, int
+@@ -57,4 +57,4 @@ void FeaturePredictor::predictObservations(const Isometry3T& world_from_rig, int
    }
  }
  
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/feature_predictor.h b/libs/pipelines/feature_predictor.h
-index e8ab0ef..50590b6 100644
+index 104ff91..b1eb750 100644
 --- a/libs/pipelines/feature_predictor.h
 +++ b/libs/pipelines/feature_predictor.h
 @@ -21,7 +21,7 @@
@@ -3816,17 +4236,55 @@ index e8ab0ef..50590b6 100644
  
  class FeaturePredictor : public sof::IFeaturePredictor {
  public:
-@@ -37,4 +37,4 @@ private:
+@@ -38,4 +38,4 @@ private:
    profiler::VioProfiler::DomainHelper profiler_domain_ = profiler::VioProfiler::DomainHelper("FeaturePredictor");
  };
  
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
+diff --git a/libs/pipelines/imu_fusion_context.cpp b/libs/pipelines/imu_fusion_context.cpp
+index 05b964c..23ef638 100644
+--- a/libs/pipelines/imu_fusion_context.cpp
++++ b/libs/pipelines/imu_fusion_context.cpp
+@@ -23,7 +23,7 @@
+ 
+ #include "pipelines/service_sba.h"
+ 
+-namespace cuvslam::pipelines {
++namespace cuvslam { namespace pipelines {
+ 
+ using Vector15T = Eigen::Matrix<float, 15, 1>;
+ 
+@@ -588,4 +588,4 @@ void ImuFusionContext::run_imu_sba_init(const map::UnifiedMap::SubMap& recent_ma
+   }
+ }
+ 
+-}  // namespace cuvslam::pipelines
++}}  // namespace cuvslam::pipelines
+diff --git a/libs/pipelines/imu_fusion_context.h b/libs/pipelines/imu_fusion_context.h
+index f1f43e5..655b3f0 100644
+--- a/libs/pipelines/imu_fusion_context.h
++++ b/libs/pipelines/imu_fusion_context.h
+@@ -41,7 +41,7 @@
+ 
+ #include "pipelines/tracker_state_machine.h"
+ 
+-namespace cuvslam::pipelines {
++namespace cuvslam { namespace pipelines {
+ 
+ // ImuFusionContext owns the IMU-side state and operations that wrap the visual RGBD pose estimator
+ // for SolverSfMMultisensor. It encapsulates:
+@@ -159,4 +159,4 @@ private:
+   profiler::VioProfiler::DomainHelper profiler_domain_ = profiler::VioProfiler::DomainHelper("ImuFusionContext");
+ };
+ 
+-}  // namespace cuvslam::pipelines
++}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/inertial_pnp.cpp b/libs/pipelines/inertial_pnp.cpp
-index 67270ea..35869d7 100644
+index e88af31..39729ef 100644
 --- a/libs/pipelines/inertial_pnp.cpp
 +++ b/libs/pipelines/inertial_pnp.cpp
-@@ -27,7 +27,7 @@
+@@ -28,7 +28,7 @@
  
  #include "pipelines/track.h"
  
@@ -3835,26 +4293,26 @@ index 67270ea..35869d7 100644
  
  bool InertialPnP::Solve(const imu::ImuCalibration& calib, const std::unordered_map<TrackId, Track>& tracks3d,
                          const std::vector<camera::Observation>& observations, const camera::Rig& rig,
-@@ -85,4 +85,4 @@ bool InertialPnP::Solve(const imu::ImuCalibration& calib, const std::unordered_m
+@@ -103,4 +103,4 @@ bool InertialPnP::Solve(const imu::ImuCalibration& calib, const std::unordered_m
    return status;
  }
  
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/inertial_pnp.h b/libs/pipelines/inertial_pnp.h
-index 962a59e..c6cb280 100644
+index 23324d4..00293ce 100644
 --- a/libs/pipelines/inertial_pnp.h
 +++ b/libs/pipelines/inertial_pnp.h
-@@ -31,7 +31,7 @@
+@@ -32,7 +32,7 @@
  
  #include "pipelines/track.h"
  
 -namespace cuvslam::pipelines {
 +namespace cuvslam { namespace pipelines {
  
- class InertialPnP {
- public:
-@@ -45,4 +45,4 @@ private:
+ struct InertialPnPSettings {
+   float robustifier_scale = 0.4f;
+@@ -52,4 +52,4 @@ private:
    profiler::PnPProfiler::DomainHelper profiler_domain_ = profiler::PnPProfiler::DomainHelper("Inertial PnP");
  };
  
@@ -3880,7 +4338,7 @@ index a67e721..f44ab90 100644
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/sba_mono_wrapper.cpp b/libs/pipelines/sba_mono_wrapper.cpp
-index 639259a..b939269 100644
+index 72fab71..19934aa 100644
 --- a/libs/pipelines/sba_mono_wrapper.cpp
 +++ b/libs/pipelines/sba_mono_wrapper.cpp
 @@ -20,7 +20,7 @@
@@ -3892,7 +4350,7 @@ index 639259a..b939269 100644
  
  static bool calcTrackResidualInFrame(const Isometry3T& inverse_camera, const storage::Vec2<float> observation,
                                       const Track& outTrack, float* p_out_residual) {
-@@ -254,4 +254,4 @@ void sparseBA(TrackingMap& map, int max_iter, bool do_winsorization) {
+@@ -253,4 +253,4 @@ void sparseBA(TrackingMap& map, int max_iter, bool do_winsorization) {
    }
  }
  
@@ -3918,7 +4376,7 @@ index 2eaf277..ba350ef 100644
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/service_sba.h b/libs/pipelines/service_sba.h
-index a6b68ba..b9ad7a6 100644
+index 7604db0..69cffff 100644
 --- a/libs/pipelines/service_sba.h
 +++ b/libs/pipelines/service_sba.h
 @@ -33,7 +33,7 @@
@@ -3930,7 +4388,7 @@ index a6b68ba..b9ad7a6 100644
  using namespace cuvslam::map;
  
  int CalcNumFixedKeyframes(size_t map_size, size_t numFixedKeyFrames);
-@@ -351,4 +351,4 @@ using ImuSbaCPUService = ImuSbaService<sba::SchurComplementBundlerGpu, sba_imu::
+@@ -392,4 +392,4 @@ using ImuSbaCPUService = ImuSbaService<sba::SchurComplementBundlerGpu, sba_imu::
  using ImuSbaCPUService = ImuSbaService<sba::SchurComplementBundlerCpu, sba_imu::IMUBundlerCpuFixedVel>;
  #endif
  
@@ -3954,22 +4412,60 @@ index 62ea15a..e2571db 100644
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/sfm_solver_interface.h b/libs/pipelines/sfm_solver_interface.h
-index b9dce91..45f0393 100644
+index 33250e8..62f249d 100644
 --- a/libs/pipelines/sfm_solver_interface.h
 +++ b/libs/pipelines/sfm_solver_interface.h
-@@ -26,7 +26,7 @@
- #include "common/vector_3t.h"
+@@ -30,7 +30,7 @@
+ #include "sba/sba_config.h"
  #include "sof/sof_multicamera_interface.h"
  
 -namespace cuvslam::pipelines {
 +namespace cuvslam { namespace pipelines {
  
- using MulticamObservations = std::unordered_map<CameraId, std::vector<camera::Observation>>;
+ using MulticamObservations = sof::MulticamObservations;
  
-@@ -52,4 +52,4 @@ public:
+@@ -68,4 +68,4 @@ public:
    virtual void reset() = 0;
  };
  
+-}  // namespace cuvslam::pipelines
++}}  // namespace cuvslam::pipelines
+diff --git a/libs/pipelines/test/track_lifter_test.cpp b/libs/pipelines/test/track_lifter_test.cpp
+index 2eb2d04..e9c9189 100644
+--- a/libs/pipelines/test/track_lifter_test.cpp
++++ b/libs/pipelines/test/track_lifter_test.cpp
+@@ -32,7 +32,7 @@
+ #include "pipelines/track_lifter.h"
+ #include "pnp/multisensor_pose_estimator.h"
+ 
+-namespace test::pipelines {
++namespace test { namespace pipelines {
+ 
+ using namespace cuvslam;
+ 
+@@ -162,4 +162,4 @@ TEST(TrackLifterTest, EmptyObservations) {
+   EXPECT_TRUE(landmarks.empty());
+ }
+ 
+-}  // namespace test::pipelines
++}}  // namespace test::pipelines
+diff --git a/libs/pipelines/test/tracker_state_machine_test.cpp b/libs/pipelines/test/tracker_state_machine_test.cpp
+index 56bd875..265dcc8 100644
+--- a/libs/pipelines/test/tracker_state_machine_test.cpp
++++ b/libs/pipelines/test/tracker_state_machine_test.cpp
+@@ -17,7 +17,7 @@
+ #include "pipelines/tracker_state_machine.h"
+ #include "common/include_gtest.h"
+ 
+-namespace cuvslam::pipelines {
++namespace cuvslam { namespace pipelines {
+ namespace {
+ 
+ constexpr int64_t kFrameDt = static_cast<int64_t>(150e6);  // 150 ms KF spacing
+@@ -210,4 +210,4 @@ TEST(StateMachineTest, PeriodicGravityRefinementWhenOk) {
+ }
+ 
+ }  // namespace
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/track.h b/libs/pipelines/track.h
@@ -3991,11 +4487,49 @@ index 00e525d..c6f9046 100644
  
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
+diff --git a/libs/pipelines/track_lifter.cpp b/libs/pipelines/track_lifter.cpp
+index 69f3c56..a950132 100644
+--- a/libs/pipelines/track_lifter.cpp
++++ b/libs/pipelines/track_lifter.cpp
+@@ -22,7 +22,7 @@
+ #include "cuda_modules/cuda_helper.h"
+ #include "cuda_modules/cuda_kernels/cuda_kernels.h"
+ 
+-namespace cuvslam::pipelines {
++namespace cuvslam { namespace pipelines {
+ 
+ namespace {
+ 
+@@ -90,4 +90,4 @@ void TrackLifter::lift_tracks(const pnp::RGBDInfo& depth_info, const Isometry3T&
+   }
+ }
+ 
+-}  // namespace cuvslam::pipelines
++}}  // namespace cuvslam::pipelines
+diff --git a/libs/pipelines/track_lifter.h b/libs/pipelines/track_lifter.h
+index b528393..80e1ace 100644
+--- a/libs/pipelines/track_lifter.h
++++ b/libs/pipelines/track_lifter.h
+@@ -27,7 +27,7 @@
+ #include "profiler/profiler.h"
+ #include "profiler/profiler_enable.h"
+ 
+-namespace cuvslam::pipelines {
++namespace cuvslam { namespace pipelines {
+ 
+ // Self-contained mono-track lifter: turns 2D observations into 3D world-frame landmarks
+ // by sampling a per-camera depth pyramid via the cuda::lift_opencv kernel.
+@@ -53,4 +53,4 @@ private:
+   profiler::PnPProfiler::DomainHelper profiler_domain_ = profiler::PnPProfiler::DomainHelper("TrackLifter");
+ };
+ 
+-}  // namespace cuvslam::pipelines
++}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/track_online_inertial.cpp b/libs/pipelines/track_online_inertial.cpp
-index fdc6875..59ab75f 100644
+index 0f3417d..07bc937 100644
 --- a/libs/pipelines/track_online_inertial.cpp
 +++ b/libs/pipelines/track_online_inertial.cpp
-@@ -35,7 +35,7 @@
+@@ -37,7 +37,7 @@
  #include "pipelines/service_sba_gpu.h"
  #endif
  
@@ -4004,17 +4538,17 @@ index fdc6875..59ab75f 100644
  
  using Vector15T = Eigen::Matrix<float, 15, 1>;
  
-@@ -481,4 +481,4 @@ std::optional<Vector3T> SolverSfMInertial::get_gravity() const {
-   return gravity_rig;
+@@ -784,4 +784,4 @@ std::optional<SolverSfMInertial::ImuState> SolverSfMInertial::GetImuState() cons
+   return ImuState{prev_pose.velocity, prev_pose.gyro_bias, prev_pose.acc_bias};
  }
  
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/track_online_inertial.h b/libs/pipelines/track_online_inertial.h
-index a8394fc..d1d19da 100644
+index 21a7556..085f915 100644
 --- a/libs/pipelines/track_online_inertial.h
 +++ b/libs/pipelines/track_online_inertial.h
-@@ -43,7 +43,7 @@
+@@ -45,7 +45,7 @@
  #include "pipelines/tracker_state_machine.h"
  #include "pipelines/triangulator.h"
  
@@ -4023,7 +4557,7 @@ index a8394fc..d1d19da 100644
  
  class SolverSfMInertial : public ISFMSolver {
  public:
-@@ -119,4 +119,4 @@ private:
+@@ -135,4 +135,4 @@ private:
    profiler::VioProfiler::DomainHelper profiler_domain_ = profiler::VioProfiler::DomainHelper("SolverSfMInertial");
  };
  
@@ -4068,7 +4602,7 @@ index 6189636..6fdeb30 100644
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/track_online_multi.cpp b/libs/pipelines/track_online_multi.cpp
-index a0a5e74..17b6b7c 100644
+index 4f7fb39..8b545d3 100644
 --- a/libs/pipelines/track_online_multi.cpp
 +++ b/libs/pipelines/track_online_multi.cpp
 @@ -31,7 +31,7 @@
@@ -4080,14 +4614,14 @@ index a0a5e74..17b6b7c 100644
  
  SolverSfMMulti::SolverSfMMulti(map::UnifiedMap& map, const camera::Rig& rig, const sba::Settings& sba_settings)
      : rig_(rig), map_(map), triangulator(rig), pnp_(rig) {
-@@ -155,4 +155,4 @@ void SolverSfMMulti::exportTracks(const std::vector<camera::Observation>& observ
+@@ -164,4 +164,4 @@ void SolverSfMMulti::exportTracks(const std::vector<camera::Observation>& observ
    }
  }
  
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/track_online_multi.h b/libs/pipelines/track_online_multi.h
-index 9834649..c838efc 100644
+index f553f13..e622471 100644
 --- a/libs/pipelines/track_online_multi.h
 +++ b/libs/pipelines/track_online_multi.h
 @@ -33,7 +33,7 @@
@@ -4099,14 +4633,52 @@ index 9834649..c838efc 100644
  
  class SolverSfMMulti : public ISFMSolver {
  public:
-@@ -73,4 +73,4 @@ private:
+@@ -75,4 +75,4 @@ private:
+   const uint32_t profiler_color_ = 0x00FF00;
+ };
+ 
+-}  // namespace cuvslam::pipelines
++}}  // namespace cuvslam::pipelines
+diff --git a/libs/pipelines/track_online_multisensor.cpp b/libs/pipelines/track_online_multisensor.cpp
+index 9d80f4a..23a7346 100644
+--- a/libs/pipelines/track_online_multisensor.cpp
++++ b/libs/pipelines/track_online_multisensor.cpp
+@@ -34,7 +34,7 @@
+ #include "pipelines/service_sba_gpu.h"
+ #endif
+ 
+-namespace cuvslam::pipelines {
++namespace cuvslam { namespace pipelines {
+ 
+ namespace {
+ 
+@@ -334,4 +334,4 @@ std::optional<SolverSfMMultisensor::ImuState> SolverSfMMultisensor::GetImuState(
+   return ImuState{imu_->velocity(), imu_->gyro_bias(), imu_->acc_bias()};
+ }
+ 
+-}  // namespace cuvslam::pipelines
++}}  // namespace cuvslam::pipelines
+diff --git a/libs/pipelines/track_online_multisensor.h b/libs/pipelines/track_online_multisensor.h
+index 9b3850b..910994a 100644
+--- a/libs/pipelines/track_online_multisensor.h
++++ b/libs/pipelines/track_online_multisensor.h
+@@ -38,7 +38,7 @@
+ #include "pipelines/imu_fusion_context.h"
+ #include "pipelines/sfm_solver_interface.h"
+ 
+-namespace cuvslam::pipelines {
++namespace cuvslam { namespace pipelines {
+ 
+ // Pipeline solver using cuNLS-based MultisensorPoseEstimator for the pose estimation step.
+ //
+@@ -127,4 +127,4 @@ private:
    const uint32_t profiler_color_ = 0x00FF00;
  };
  
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/track_online_rgbd.cpp b/libs/pipelines/track_online_rgbd.cpp
-index fa33d4a..ddd660b 100644
+index 6a1d3a8..43ade87 100644
 --- a/libs/pipelines/track_online_rgbd.cpp
 +++ b/libs/pipelines/track_online_rgbd.cpp
 @@ -31,7 +31,7 @@
@@ -4118,14 +4690,14 @@ index fa33d4a..ddd660b 100644
  
  SolverSfMRGBD::SolverSfMRGBD(map::UnifiedMap& map, const camera::Rig& rig, const sba::Settings& sba_settings)
      : rig_(rig), map_(map), triangulator(rig), visual_icp_(rig) {
-@@ -161,4 +161,4 @@ void SolverSfMRGBD::exportTracks(const std::vector<camera::Observation>& observa
+@@ -167,4 +167,4 @@ void SolverSfMRGBD::exportTracks(const std::vector<camera::Observation>& observa
    }
  }
  
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/track_online_rgbd.h b/libs/pipelines/track_online_rgbd.h
-index ff0e78d..bceabec 100644
+index 978a1a7..7962f19 100644
 --- a/libs/pipelines/track_online_rgbd.h
 +++ b/libs/pipelines/track_online_rgbd.h
 @@ -35,7 +35,7 @@
@@ -4137,14 +4709,14 @@ index ff0e78d..bceabec 100644
  
  struct SFMInputs {
    const MulticamObservations& observations;
-@@ -77,4 +77,4 @@ private:
+@@ -80,4 +80,4 @@ private:
    const uint32_t profiler_color_ = 0x00FF00;
  };
  
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/tracker_state_machine.cpp b/libs/pipelines/tracker_state_machine.cpp
-index 1932263..b901d10 100644
+index 88dfa54..10bc099 100644
 --- a/libs/pipelines/tracker_state_machine.cpp
 +++ b/libs/pipelines/tracker_state_machine.cpp
 @@ -19,7 +19,7 @@
@@ -4154,16 +4726,16 @@ index 1932263..b901d10 100644
 -namespace cuvslam::pipelines {
 +namespace cuvslam { namespace pipelines {
  
- StateMachine::StateMachine(const StateMachineSettings& s) : s_(s) {}
+ void StateMachine::set_gravity_init_fn(GravityInitFn fn) { gravity_init_fn_ = std::move(fn); }
  
-@@ -89,4 +89,4 @@ StateMachine::State StateMachine::update_frame_state(bool is_keyframe, bool trac
- 
- const StateMachine::State& StateMachine::get_state() const { return state_; }
+@@ -115,4 +115,4 @@ StateMachine::State StateMachine::on_event(Event e, int64_t ts_ns, bool is_keyfr
+   return state_;
+ }
  
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/tracker_state_machine.h b/libs/pipelines/tracker_state_machine.h
-index 5872c96..ec30070 100644
+index 64e58de..5182cb5 100644
 --- a/libs/pipelines/tracker_state_machine.h
 +++ b/libs/pipelines/tracker_state_machine.h
 @@ -22,7 +22,7 @@
@@ -4174,15 +4746,15 @@ index 5872c96..ec30070 100644
 +namespace cuvslam { namespace pipelines {
  
  struct StateMachineSettings {
-   int64_t gravity_update_period_ns = 5e8;  // 1 sec = 1e9 ns
-@@ -67,4 +67,4 @@ private:
-   StateMachineSettings s_;
+   // Hard cap on inter-frame gap. Anything larger triggers a full reset (the IMU preintegration is
+@@ -99,4 +99,4 @@ private:
+   State state_ = State::Uninitialized;
  };
  
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/triangulator.cpp b/libs/pipelines/triangulator.cpp
-index fd4aabc..da5f0a1 100644
+index 9c8c3cf..8370ee61 100644
 --- a/libs/pipelines/triangulator.cpp
 +++ b/libs/pipelines/triangulator.cpp
 @@ -21,7 +21,7 @@
@@ -4220,11 +4792,11 @@ index 7012bb3..333cb24 100644
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/visualizer.cpp b/libs/pipelines/visualizer.cpp
-index f02c802..d92f370 100644
+index 98d2c22..6872482 100644
 --- a/libs/pipelines/visualizer.cpp
 +++ b/libs/pipelines/visualizer.cpp
-@@ -24,7 +24,7 @@
- #include <rerun/archetypes/line_strips3d.hpp>
+@@ -25,7 +25,7 @@
+ #include <rerun/archetypes/mesh3d.hpp>
  #include <rerun/archetypes/points3d.hpp>
  
 -namespace cuvslam::pipelines {
@@ -4232,17 +4804,17 @@ index f02c802..d92f370 100644
  
  namespace {
  // Storage for accumulated trajectory positions by type
-@@ -287,4 +287,4 @@ void clearTrajectory(const std::string& viewport_name, TrajectoryType trajectory
-   recording.log(viewport_name + "/axes", rerun::Clear());
- }
+@@ -443,4 +443,4 @@ void logPoints3D(const std::vector<Vector3T>& points, const std::string& viewpor
+ 
+ #endif  // USE_CUNLS
  
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pipelines/visualizer.h b/libs/pipelines/visualizer.h
-index e5b8130..6425904 100644
+index 7bda8a8..7bb386e 100644
 --- a/libs/pipelines/visualizer.h
 +++ b/libs/pipelines/visualizer.h
-@@ -33,7 +33,7 @@
+@@ -36,7 +36,7 @@
  
  #include "visualizer/visualizer.hpp"
  
@@ -4251,15 +4823,15 @@ index e5b8130..6425904 100644
  void logObservations(const std::vector<camera::Observation>& observations, const camera::Rig& rig,
                       const std::string& viewport_name, const Color& color);
  
-@@ -93,5 +93,5 @@ void logTrajectory(const Isometry3T& rig_from_world, const std::string& viewport
-  */
- void clearTrajectory(const std::string& viewport_name, TrajectoryType trajectory_type);
+@@ -129,5 +129,5 @@ void logPoints3D(const std::vector<Vector3T>& points, const std::string& viewpor
+                  float point_radius = 0.01f);
+ #endif
  
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
  #endif
 diff --git a/libs/pipelines/winsorizer.cpp b/libs/pipelines/winsorizer.cpp
-index 82254c3..6cb666b 100644
+index 42f8a7f..ca59b5a 100644
 --- a/libs/pipelines/winsorizer.cpp
 +++ b/libs/pipelines/winsorizer.cpp
 @@ -23,7 +23,7 @@
@@ -4297,10 +4869,10 @@ index d581e95..321aa01 100644
 -}  // namespace cuvslam::pipelines
 +}}  // namespace cuvslam::pipelines
 diff --git a/libs/pnp/lift_tracks.cpp b/libs/pnp/lift_tracks.cpp
-index 703f2e0..da3d918 100644
+index aa087e5..25f33dc 100644
 --- a/libs/pnp/lift_tracks.cpp
 +++ b/libs/pnp/lift_tracks.cpp
-@@ -22,7 +22,7 @@
+@@ -20,7 +20,7 @@
  
  #include "pnp/visual_icp.h"
  
@@ -4309,14 +4881,14 @@ index 703f2e0..da3d918 100644
  
  void VisualICP::lift_mono_tracks(const IcpInfo& inputs, const Isometry3T& world_from_rig,
                                   const std::vector<camera::Observation>& observations,
-@@ -62,4 +62,4 @@ void VisualICP::lift_mono_tracks(const IcpInfo& inputs, const Isometry3T& world_
+@@ -60,4 +60,4 @@ void VisualICP::lift_mono_tracks(const IcpInfo& inputs, const Isometry3T& world_
    }
  }
  
 -}  // namespace cuvslam::pnp
 +}}  // namespace cuvslam::pnp
 diff --git a/libs/pnp/mono_pnp.cpp b/libs/pnp/mono_pnp.cpp
-index 66c2e36..4094caa 100644
+index dc19913..7f887b1 100644
 --- a/libs/pnp/mono_pnp.cpp
 +++ b/libs/pnp/mono_pnp.cpp
 @@ -31,7 +31,7 @@
@@ -4366,7 +4938,7 @@ index a9d5dd7..418c98f 100644
 -}  // namespace cuvslam::pnp
 +}}  // namespace cuvslam::pnp
 diff --git a/libs/pnp/multicam_pnp.cpp b/libs/pnp/multicam_pnp.cpp
-index cb3f4f1..65ad512 100644
+index b06a0f5..fe1d887 100644
 --- a/libs/pnp/multicam_pnp.cpp
 +++ b/libs/pnp/multicam_pnp.cpp
 @@ -24,7 +24,7 @@
@@ -4378,17 +4950,17 @@ index cb3f4f1..65ad512 100644
  
  using Mat36 = Eigen::Matrix<float, 3, 6>;
  using Mat23 = Eigen::Matrix<float, 2, 3>;
-@@ -313,4 +313,4 @@ bool PNPSolver::solve(Isometry3T& rig_from_world, Matrix6T& static_info_exp,
+@@ -321,4 +321,4 @@ bool PNPSolver::solve(Isometry3T& rig_from_world, Matrix6T& static_info_exp,
    return status;
  }
  
 -}  // namespace cuvslam::pnp
 +}}  // namespace cuvslam::pnp
 diff --git a/libs/pnp/multicam_pnp.h b/libs/pnp/multicam_pnp.h
-index 10bcf5e..591f45f 100644
+index d050493..e379ad5 100644
 --- a/libs/pnp/multicam_pnp.h
 +++ b/libs/pnp/multicam_pnp.h
-@@ -25,7 +25,7 @@
+@@ -29,7 +29,7 @@
  #include "profiler/profiler.h"
  #include "profiler/profiler_enable.h"
  
@@ -4397,14 +4969,90 @@ index 10bcf5e..591f45f 100644
  
  struct PNPSettings {
    PNPSettings() = default;
-@@ -77,4 +77,4 @@ private:
+@@ -86,4 +86,4 @@ private:
    profiler::PnPProfiler::DomainHelper profiler_domain_ = profiler::PnPProfiler::DomainHelper("PNPSolver");
  };
  
 -}  // namespace cuvslam::pnp
 +}}  // namespace cuvslam::pnp
+diff --git a/libs/pnp/multisensor_pose_estimator.cpp b/libs/pnp/multisensor_pose_estimator.cpp
+index 28872da..528c39d 100644
+--- a/libs/pnp/multisensor_pose_estimator.cpp
++++ b/libs/pnp/multisensor_pose_estimator.cpp
+@@ -36,7 +36,7 @@
+ #include "math/point_to_plane_factor.h"
+ #include "math/point_to_point_icp_factor.h"
+ 
+-namespace cuvslam::pnp {
++namespace cuvslam { namespace pnp {
+ 
+ namespace {
+ 
+@@ -405,4 +405,4 @@ bool MultisensorPoseEstimator::solve(Isometry3T& rig_from_world, Matrix6T& stati
+   return true;
+ }
+ 
+-}  // namespace cuvslam::pnp
++}}  // namespace cuvslam::pnp
+diff --git a/libs/pnp/multisensor_pose_estimator.h b/libs/pnp/multisensor_pose_estimator.h
+index 2cbf438..900239c 100644
+--- a/libs/pnp/multisensor_pose_estimator.h
++++ b/libs/pnp/multisensor_pose_estimator.h
+@@ -37,7 +37,7 @@
+ #include "profiler/profiler.h"
+ #include "profiler/profiler_enable.h"
+ 
+-namespace cuvslam::pnp {
++namespace cuvslam { namespace pnp {
+ 
+ // Per-camera depth data for the RGBD pose estimator.
+ struct RGBDInfo {
+@@ -177,4 +177,4 @@ private:
+       profiler::PnPProfiler::DomainHelper("MultisensorPoseEstimator");
+ };
+ 
+-}  // namespace cuvslam::pnp
++}}  // namespace cuvslam::pnp
+diff --git a/libs/pnp/test/multisensor_pose_estimator_test.cpp b/libs/pnp/test/multisensor_pose_estimator_test.cpp
+index e4acc5f..84e9a9a 100644
+--- a/libs/pnp/test/multisensor_pose_estimator_test.cpp
++++ b/libs/pnp/test/multisensor_pose_estimator_test.cpp
+@@ -29,7 +29,7 @@
+ 
+ #include "pnp/multisensor_pose_estimator.h"
+ 
+-namespace test::pnp {
++namespace test { namespace pnp {
+ 
+ using namespace cuvslam;
+ 
+@@ -202,4 +202,4 @@ TEST(MultisensorPoseEstimatorTest, MultiCameraReprojectionConvergence) {
+   EXPECT_LT(trans_err, 0.02f) << "Translation error too large: " << trans_err;
+ }
+ 
+-}  // namespace test::pnp
++}}  // namespace test::pnp
+diff --git a/libs/pnp/test/point_to_point_icp_test.cpp b/libs/pnp/test/point_to_point_icp_test.cpp
+index e807090..8286f4c 100644
+--- a/libs/pnp/test/point_to_point_icp_test.cpp
++++ b/libs/pnp/test/point_to_point_icp_test.cpp
+@@ -21,7 +21,7 @@
+ #include "cuda_modules/cuda_helper.h"
+ #include "cuda_modules/cuda_kernels/cuda_kernels.h"
+ 
+-namespace test::pnp {
++namespace test { namespace pnp {
+ 
+ namespace {
+ 
+@@ -362,4 +362,4 @@ TEST(PointToPointICPTest, CamFromRigComposition) {
+   EXPECT_NEAR(res1[0], res2[0], 1e-4f) << "cam_from_rig composition mismatch";
+ }
+ 
+-}  // namespace test::pnp
++}}  // namespace test::pnp
 diff --git a/libs/pnp/visual_icp.cpp b/libs/pnp/visual_icp.cpp
-index 42650c6..5e0902f 100644
+index 6a0ac4e..d638741 100644
 --- a/libs/pnp/visual_icp.cpp
 +++ b/libs/pnp/visual_icp.cpp
 @@ -24,7 +24,7 @@
@@ -4416,17 +5064,17 @@ index 42650c6..5e0902f 100644
  
  using Mat36 = Eigen::Matrix<float, 3, 6>;
  using Mat23 = Eigen::Matrix<float, 2, 3>;
-@@ -336,4 +336,4 @@ bool VisualICP::solve(Isometry3T& rig_from_world, Matrix6T& static_info_exp,
+@@ -333,4 +333,4 @@ bool VisualICP::solve(Isometry3T& rig_from_world, Matrix6T& static_info_exp,
    return status;
  }
  
 -}  // namespace cuvslam::pnp
 +}}  // namespace cuvslam::pnp
 diff --git a/libs/pnp/visual_icp.h b/libs/pnp/visual_icp.h
-index 167c9b9..096e867 100644
+index bb0efc7..7596222 100644
 --- a/libs/pnp/visual_icp.h
 +++ b/libs/pnp/visual_icp.h
-@@ -30,7 +30,7 @@
+@@ -34,7 +34,7 @@
  #include "profiler/profiler.h"
  #include "profiler/profiler_enable.h"
  
@@ -4435,14 +5083,14 @@ index 167c9b9..096e867 100644
  
  struct IcpInfo {
    CameraId depth_id;
-@@ -100,4 +100,4 @@ private:
+@@ -109,4 +109,4 @@ private:
    profiler::PnPProfiler::DomainHelper profiler_domain_ = profiler::PnPProfiler::DomainHelper("VisualICP");
  };
  
 -}  // namespace cuvslam::pnp
 +}}  // namespace cuvslam::pnp
 diff --git a/libs/pnp/visualizer.cpp b/libs/pnp/visualizer.cpp
-index 3018407..d696325 100644
+index 75c1e22..f383282 100644
 --- a/libs/pnp/visualizer.cpp
 +++ b/libs/pnp/visualizer.cpp
 @@ -32,7 +32,7 @@
@@ -4461,7 +5109,7 @@ index 3018407..d696325 100644
 -}  // namespace cuvslam::pnp
 +}}  // namespace cuvslam::pnp
 diff --git a/libs/pnp/visualizer.h b/libs/pnp/visualizer.h
-index f8bb3b1..961e47e 100644
+index 7595f5a..3e30482 100644
 --- a/libs/pnp/visualizer.h
 +++ b/libs/pnp/visualizer.h
 @@ -32,7 +32,7 @@
@@ -4766,10 +5414,10 @@ index 7929d93..178d94f 100644
 -}  // namespace cuvslam::sba
 +}}  // namespace cuvslam::sba
 diff --git a/libs/sba/mono_sba_solver.cpp b/libs/sba/mono_sba_solver.cpp
-index 97ba8b8..31aa86a 100644
+index 0484940..0338c47 100644
 --- a/libs/sba/mono_sba_solver.cpp
 +++ b/libs/sba/mono_sba_solver.cpp
-@@ -27,7 +27,7 @@ const float LAMBDA_MAX = 1.0E+7f;
+@@ -28,7 +28,7 @@ const float LAMBDA_MAX = 1.0E+7f;
  
  }  // namespace
  
@@ -4778,7 +5426,7 @@ index 97ba8b8..31aa86a 100644
  
  void MonoSBASolver::addFrame(FrameId id, bool constrained, const Isometry3T& a, const std::map<TrackId, bool>& filtered,
                               const std::vector<camera::Observation>& trackCoords) {
-@@ -905,4 +905,4 @@ bool MonoSBASolver::invert3x3(const Matrix3T& i, Matrix3T& o) const {
+@@ -906,4 +906,4 @@ bool MonoSBASolver::invert3x3(const Matrix3T& i, Matrix3T& o) const {
    return invertable;
  }
  
@@ -4804,7 +5452,7 @@ index 9202af9..0f2e34a 100644
 -}  // namespace cuvslam::sba
 +}}  // namespace cuvslam::sba
 diff --git a/libs/sba/sba_config.h b/libs/sba/sba_config.h
-index a42777f..c9e4990 100644
+index acf2d50..19b2ddc 100644
 --- a/libs/sba/sba_config.h
 +++ b/libs/sba/sba_config.h
 @@ -20,7 +20,7 @@
@@ -4816,7 +5464,7 @@ index a42777f..c9e4990 100644
  
  enum Mode { Disabled, OriginalCPU, OriginalGPU, InertialCPU, InertialGPU };
  
-@@ -47,4 +47,4 @@ struct Settings {
+@@ -49,4 +49,4 @@ struct Settings {
    bool use_sba_winsorizer = false;
  };
  
@@ -4842,7 +5490,7 @@ index 2e84f9d..663b789 100644
 -}  // namespace cuvslam::sba
 +}}  // namespace cuvslam::sba
 diff --git a/libs/sba/schur_complement_bundler_cpu.cpp b/libs/sba/schur_complement_bundler_cpu.cpp
-index 5d3bf25..9af1550 100644
+index ccf5316..aa20965 100644
 --- a/libs/sba/schur_complement_bundler_cpu.cpp
 +++ b/libs/sba/schur_complement_bundler_cpu.cpp
 @@ -24,7 +24,7 @@
@@ -4917,68 +5565,30 @@ index abc33e4..3848460 100644
  
 -}  // namespace cuvslam::sba
 +}}  // namespace cuvslam::sba
-diff --git a/libs/slam/async_localizer/async_localizer.cpp b/libs/slam/async_localizer/async_localizer.cpp
-index a38aa25..cee9d61 100644
---- a/libs/slam/async_localizer/async_localizer.cpp
-+++ b/libs/slam/async_localizer/async_localizer.cpp
-@@ -33,7 +33,7 @@
- #pragma GCC diagnostic ignored "-Wunused-parameter"
- #endif
- 
--namespace cuvslam::slam {
-+namespace cuvslam { namespace slam {
- 
- void AsyncLocalizer::LoopClosureStatus::SetLC(KeyFrameId _from_keyframe_id,
-                                               const LocalizerAndMapper::LoopClosureStatus& _slam_loop_closure_status) {
-@@ -588,4 +588,4 @@ void AsyncLocalizer::IncTrackedLandmarks(const LocalizerAndMapper::LoopClosureSt
-   }
- }
- 
--}  // namespace cuvslam::slam
-+}}  // namespace cuvslam::slam
-diff --git a/libs/slam/async_localizer/async_localizer.h b/libs/slam/async_localizer/async_localizer.h
-index 1b3fa03..0774e42 100644
---- a/libs/slam/async_localizer/async_localizer.h
-+++ b/libs/slam/async_localizer/async_localizer.h
-@@ -35,7 +35,7 @@
- #include "slam/view/view_manager.h"
- #include "sof/gradient_pyramid.h"
- 
--namespace cuvslam::slam {
-+namespace cuvslam { namespace slam {
- 
- using namespace cuvslam;
- 
-@@ -210,4 +210,4 @@ protected:
-   void PrepareProbes();
- };
- 
--}  // namespace cuvslam::slam
-+}}  // namespace cuvslam::slam
 diff --git a/libs/slam/async_slam/async_slam.cpp b/libs/slam/async_slam/async_slam.cpp
-index d823b69..b186e9a 100644
+index 00852fe..e5c11dd 100644
 --- a/libs/slam/async_slam/async_slam.cpp
 +++ b/libs/slam/async_slam/async_slam.cpp
-@@ -39,7 +39,7 @@
- #pragma GCC diagnostic ignored "-Wunused-parameter"
- #endif
+@@ -65,7 +65,7 @@ void LogSlamPose(const Isometry3T& slam_pose) {
+ 
+ }  // namespace
  
 -namespace cuvslam::slam {
 +namespace cuvslam { namespace slam {
  
  AsyncSlam::AsyncSlam(const camera::Rig& rig, const std::vector<CameraId>& cameras, const AsyncSlamOptions& options)
-     : rig_(rig), cameras_(cameras), slam_(rig, FeatureDescriptorType::kShiTomasi6, options.use_gpu), tail_(slam_) {
-@@ -611,4 +611,4 @@ void AsyncSlam::VO_IncrementFrameData(FrameId frame_id, uint64_t timestamp_ns, c
+     : rig_(rig),
+@@ -595,4 +595,4 @@ void AsyncSlam::VO_IncrementFrameData(FrameId frame_id, uint64_t timestamp_ns, c
    data.from_keyframe = data.from_keyframe * pose_estimate_rel;
  }
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/async_slam/async_slam.h b/libs/slam/async_slam/async_slam.h
-index 5297d9b..bbfaf76 100644
+index cdfea5f..616628b 100644
 --- a/libs/slam/async_slam/async_slam.h
 +++ b/libs/slam/async_slam/async_slam.h
-@@ -37,7 +37,7 @@
+@@ -36,7 +36,7 @@
  #include "slam/view/view_manager.h"
  #include "slam/view/view_pose_graph.h"
  
@@ -4986,15 +5596,34 @@ index 5297d9b..bbfaf76 100644
 +namespace cuvslam { namespace slam {
  
  struct AsyncSlamOptions {
-   std::string map_cache_path = "";  // if non-empty, connect to LMDB at this path
-@@ -241,4 +241,4 @@ private:
-   bool CopyToDatabase_internal(const std::string& path);
+   std::string map_cache_path;  // if non-empty, connect to LMDB at this path
+@@ -214,4 +214,4 @@ private:
+   static std::string FrameInformationString(const sof::Images& images);
  };
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
+diff --git a/libs/slam/async_slam/async_slam_localize.cpp b/libs/slam/async_slam/async_slam_localize.cpp
+index 31807a5..eccad65 100644
+--- a/libs/slam/async_slam/async_slam_localize.cpp
++++ b/libs/slam/async_slam/async_slam_localize.cpp
+@@ -34,7 +34,7 @@
+     return;                                                        \
+   }
+ 
+-namespace cuvslam::slam {
++namespace cuvslam { namespace slam {
+ 
+ namespace {
+ 
+@@ -173,4 +173,4 @@ void AsyncSlam::LocalizeInMapCmd::Execute(AsyncSlam& async_slam, FrameId, const
+   }
+ }
+ 
+-}  // namespace cuvslam::slam
++}}  // namespace cuvslam::slam
 diff --git a/libs/slam/async_slam/tail.cpp b/libs/slam/async_slam/tail.cpp
-index b6c3dd8..6766595 100644
+index ac112a3..20c5e3a 100644
 --- a/libs/slam/async_slam/tail.cpp
 +++ b/libs/slam/async_slam/tail.cpp
 @@ -17,7 +17,7 @@
@@ -5004,19 +5633,19 @@ index b6c3dd8..6766595 100644
 -namespace cuvslam::slam {
 +namespace cuvslam { namespace slam {
  
- Tail::Tail(const LocalizerAndMapper& slam) : slam_{slam} {}
+ Tail::Tail(uint64_t retention_time_ns) : retention_time_ns_(retention_time_ns) {}
  
-@@ -71,4 +71,4 @@ void Tail::MakeShortAndFollowBody() {
-   tail_.front().second = new_pose;
+@@ -121,4 +121,4 @@ void Tail::PruneOldTail() {
+   }
  }
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/async_slam/tail.h b/libs/slam/async_slam/tail.h
-index 7c7b3fb..260e3c2 100644
+index 96babae..74d1939 100644
 --- a/libs/slam/async_slam/tail.h
 +++ b/libs/slam/async_slam/tail.h
-@@ -25,7 +25,7 @@
+@@ -28,7 +28,7 @@
  
  #include "slam/slam/slam.h"
  
@@ -5025,7 +5654,7 @@ index 7c7b3fb..260e3c2 100644
  
  // Nodes that were sent to the slam stream but from which notifications
  // about addition to the pos graph were not still received.
-@@ -54,4 +54,4 @@ private:
+@@ -62,4 +62,4 @@ private:
    mutable std::mutex tail_guard_;
  };
  
@@ -5145,6 +5774,44 @@ index fb81752..0f09f92 100644
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
+diff --git a/libs/slam/localizer/localizer.cpp b/libs/slam/localizer/localizer.cpp
+index a597637..4c8064a 100644
+--- a/libs/slam/localizer/localizer.cpp
++++ b/libs/slam/localizer/localizer.cpp
+@@ -25,7 +25,7 @@
+ #include "slam/slam/loop_closure_solver/iloop_closure_solver.h"
+ #include "slam/view/map_to_view.h"
+ 
+-namespace cuvslam::slam {
++namespace cuvslam { namespace slam {
+ 
+ void Localizer::LoopClosureStatus::SetLC(KeyFrameId _from_keyframe_id,
+                                          const LocalizerAndMapper::LoopClosureStatus& _slam_loop_closure_status) {
+@@ -259,4 +259,4 @@ void Localizer::PrepareProbes() {
+   SlamStdout("Prepared %zu probes for localization", shifts_.size());
+ }
+ 
+-}  // namespace cuvslam::slam
++}}  // namespace cuvslam::slam
+diff --git a/libs/slam/localizer/localizer.h b/libs/slam/localizer/localizer.h
+index 3b28183..4b1989d 100644
+--- a/libs/slam/localizer/localizer.h
++++ b/libs/slam/localizer/localizer.h
+@@ -31,7 +31,7 @@
+ #include "slam/view/view_manager.h"
+ #include "sof/gradient_pyramid.h"
+ 
+-namespace cuvslam::slam {
++namespace cuvslam { namespace slam {
+ 
+ using namespace cuvslam;
+ 
+@@ -136,4 +136,4 @@ private:
+   void PrepareProbes();
+ };
+ 
+-}  // namespace cuvslam::slam
++}}  // namespace cuvslam::slam
 diff --git a/libs/slam/map/database/lmdb_slam_database.cpp b/libs/slam/map/database/lmdb_slam_database.cpp
 index f4acf9e..1db31a0 100644
 --- a/libs/slam/map/database/lmdb_slam_database.cpp
@@ -5241,7 +5908,7 @@ index 632f26d..d0e4bc5 100644
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/map/descriptor/st_descriptor_merge_details.cpp b/libs/slam/map/descriptor/st_descriptor_merge_details.cpp
-index f25ff17..6bf889d 100644
+index f6ec54f..b2ba8e0 100644
 --- a/libs/slam/map/descriptor/st_descriptor_merge_details.cpp
 +++ b/libs/slam/map/descriptor/st_descriptor_merge_details.cpp
 @@ -28,7 +28,7 @@ namespace {
@@ -5314,26 +5981,26 @@ index 84bd288..6f78f3c 100644
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/map/map.cpp b/libs/slam/map/map.cpp
-index 5d5b191..fc57a2f 100644
+index 94d308f..0bfcade 100644
 --- a/libs/slam/map/map.cpp
 +++ b/libs/slam/map/map.cpp
-@@ -20,7 +20,7 @@
+@@ -24,7 +24,7 @@
  #include "slam/map/descriptor/st_descriptor_gpu_ops.h"
  #include "slam/map/descriptor/st_descriptor_ops.h"
  
 -namespace cuvslam::slam {
 +namespace cuvslam { namespace slam {
- Map::Map(const camera::Rig& rig, FeatureDescriptorType descriptor_type, bool use_gpu) {
-   uint32_t n_shift_only_iterations;
-   uint32_t n_full_mapping_iterations;
-@@ -114,4 +114,4 @@ std::pair<KeyFrameId, Isometry3T> Map::GetRootKeyframe() const {
-   return std::pair(min_keyframe_id, *pose);
+ 
+ namespace {
+ 
+@@ -167,4 +167,4 @@ void Map::logPoseGraph() const {
+ #endif
  }
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/map/map.h b/libs/slam/map/map.h
-index 28b1f00..c3358cd 100644
+index d6f854a..a20ee5b 100644
 --- a/libs/slam/map/map.h
 +++ b/libs/slam/map/map.h
 @@ -24,7 +24,7 @@
@@ -5345,52 +6012,52 @@ index 28b1f00..c3358cd 100644
  
  enum class FeatureDescriptorType { kNone, kShiTomasi2, kShiTomasi6 };
  
-@@ -53,4 +53,4 @@ struct Map {
+@@ -52,4 +52,4 @@ struct Map {
    std::pair<KeyFrameId, Isometry3T> GetRootKeyframe() const;
  };
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/map/pose_graph/pose_graph.cpp b/libs/slam/map/pose_graph/pose_graph.cpp
-index d16e56f..704ec00 100644
+index b7ba8b4..2a4bdf2 100644
 --- a/libs/slam/map/pose_graph/pose_graph.cpp
 +++ b/libs/slam/map/pose_graph/pose_graph.cpp
-@@ -20,7 +20,7 @@
- #include "common/log_types.h"
- #include "math/twist.h"
+@@ -30,7 +30,7 @@ struct Gravity {
+ };
  
+ }  // namespace
 -namespace cuvslam::slam {
 +namespace cuvslam { namespace slam {
  
- void PoseGraph::KeyFrame::AddLandmark(LandmarkId landmark_id) {
-   auto it = std::lower_bound(landmarks.begin(), landmarks.end(), landmark_id);
-@@ -814,4 +814,4 @@ void PoseGraph::QueryEdgeId(KeyFrameId from_keyframe, KeyFrameId to_keyframe, co
+ void PoseGraphKeyFrame::AddLandmark(LandmarkId landmark_id) {
+   const auto it = std::lower_bound(landmarks.begin(), landmarks.end(), landmark_id);
+@@ -478,4 +478,4 @@ void PoseGraph::QueryKeyframePoses(const std::function<void(const KeyFrameId&, c
    }
  }
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/map/pose_graph/pose_graph.h b/libs/slam/map/pose_graph/pose_graph.h
-index 10a4ad8..a02038f 100644
+index 3ab8c56..d6c996e 100644
 --- a/libs/slam/map/pose_graph/pose_graph.h
 +++ b/libs/slam/map/pose_graph/pose_graph.h
-@@ -33,7 +33,7 @@
- #include "slam/map/pose_graph/slam_optimize_options.h"
+@@ -32,7 +32,7 @@
+ #include "slam/map/pose_graph/pose_graph_hypothesis.h"
  #include "slam/map/pose_graph/slam_posegraph_keyframe_info.h"
  
 -namespace cuvslam::slam {
 +namespace cuvslam { namespace slam {
  
  using EdgeId = size_t;
- const EdgeId InvalidEdgeId = ~EdgeId(0);
-@@ -254,4 +254,4 @@ private:
-   Gravity dummy_gravity;
+ constexpr EdgeId InvalidEdgeId = ~static_cast<EdgeId>(0);
+@@ -213,4 +213,4 @@ private:
+   void RemoveEdge(KeyFrameId from_keyframe, KeyFrameId to_keyframe);
  };
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/map/pose_graph/pose_graph_hypothesis.cpp b/libs/slam/map/pose_graph/pose_graph_hypothesis.cpp
-index 441545d..3a79c8b 100644
+index b4a8d9b..26e02fa 100644
 --- a/libs/slam/map/pose_graph/pose_graph_hypothesis.cpp
 +++ b/libs/slam/map/pose_graph/pose_graph_hypothesis.cpp
 @@ -19,7 +19,7 @@
@@ -5402,14 +6069,14 @@ index 441545d..3a79c8b 100644
  
  const Isometry3T* PoseGraphHypothesis::GetKeyframePose(KeyFrameId keyframe) const {
    const auto it = pose_graph_verts_.find(keyframe);
-@@ -116,4 +116,4 @@ void PoseGraphHypothesis::swap(PoseGraphHypothesis& to_swap) noexcept {
+@@ -84,4 +84,4 @@ void PoseGraphHypothesis::swap(PoseGraphHypothesis& to_swap) noexcept {
    pose_graph_verts_.swap(to_swap.pose_graph_verts_);
  }
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/map/pose_graph/pose_graph_hypothesis.h b/libs/slam/map/pose_graph/pose_graph_hypothesis.h
-index bba175b..649308c 100644
+index a25695f..253ca5c 100644
 --- a/libs/slam/map/pose_graph/pose_graph_hypothesis.h
 +++ b/libs/slam/map/pose_graph/pose_graph_hypothesis.h
 @@ -26,7 +26,7 @@
@@ -5421,35 +6088,35 @@ index bba175b..649308c 100644
  
  class PoseGraphHypothesis {
  public:
-@@ -59,4 +59,4 @@ protected:
+@@ -54,4 +54,4 @@ protected:
    const std::string format_and_version_ = "PoseGraphHypothesis v0.0";
  };
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/map/pose_graph/pose_graph_optimize.cpp b/libs/slam/map/pose_graph/pose_graph_optimize.cpp
-index 14e0ba1..9334982 100644
+index e716250..6785ac3 100644
 --- a/libs/slam/map/pose_graph/pose_graph_optimize.cpp
 +++ b/libs/slam/map/pose_graph/pose_graph_optimize.cpp
-@@ -26,7 +26,7 @@
- #pragma GCC diagnostic ignored "-Wunused-parameter"
- #endif
+@@ -24,7 +24,7 @@
+ 
+ #include "slam/map/pose_graph/pose_graph.h"
  
 -namespace cuvslam::slam {
 +namespace cuvslam { namespace slam {
  using namespace cuvslam::math;
  
- bool PoseGraph::OptimizeInternal(const PoseGraphHypothesis& pose_graph_hypothesis_src,
-@@ -217,4 +217,4 @@ bool PoseGraph::Optimize(const PoseGraphHypothesis& pose_graph_hypothesis_src,
-                           keyframes_to_optimize, edges_to_optimize);
+ bool PoseGraph::OptimizeSubgraph(const std::vector<KeyFrameId>& keyframes_to_optimize,
+@@ -204,4 +204,4 @@ bool PoseGraph::Optimize(const PoseGraphHypothesis& pose_graph_hypothesis_src,
+                           planar_constraint, pose_graph_hypothesis_dst, vo_to_head);
  }
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
-diff --git a/libs/slam/map/pose_graph/pose_graph_optimize_subgraph.cpp b/libs/slam/map/pose_graph/pose_graph_optimize_subgraph.cpp
-index 05a54fa..cc4e4a2 100644
---- a/libs/slam/map/pose_graph/pose_graph_optimize_subgraph.cpp
-+++ b/libs/slam/map/pose_graph/pose_graph_optimize_subgraph.cpp
+diff --git a/libs/slam/map/pose_graph/pose_graph_reduce.cpp b/libs/slam/map/pose_graph/pose_graph_reduce.cpp
+index 96142c7..11fef3d 100644
+--- a/libs/slam/map/pose_graph/pose_graph_reduce.cpp
++++ b/libs/slam/map/pose_graph/pose_graph_reduce.cpp
 @@ -21,7 +21,7 @@
  
  #include "slam/map/pose_graph/pose_graph.h"
@@ -5523,7 +6190,7 @@ index b401ddc..921cb33 100644
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/map/spatial_index/lsi_grid.cpp b/libs/slam/map/spatial_index/lsi_grid.cpp
-index 48e3eb5..71f4942 100644
+index 10dee84..16b0a2b 100644
 --- a/libs/slam/map/spatial_index/lsi_grid.cpp
 +++ b/libs/slam/map/spatial_index/lsi_grid.cpp
 @@ -82,7 +82,7 @@ bool IsLandmarkInAnyFrustum(const camera::Rig& rig, const std::vector<CameraId>&
@@ -5535,14 +6202,14 @@ index 48e3eb5..71f4942 100644
  
  LSIGrid::GridLandmark::GridLandmark() { probes_types.fill(0); }
  
-@@ -1337,4 +1337,4 @@ bool LSIGrid::GetLandmarkOrStagedCoords(LandmarkId landmark_id, const PoseGraphH
+@@ -1058,4 +1058,4 @@ bool LSIGrid::GetLandmarkOrStagedCoords(LandmarkId landmark_id, const PoseGraphH
    return true;
  }
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/map/spatial_index/lsi_grid.h b/libs/slam/map/spatial_index/lsi_grid.h
-index c02a53b..06cef17 100644
+index e77f7fb..2b1a2a3 100644
 --- a/libs/slam/map/spatial_index/lsi_grid.h
 +++ b/libs/slam/map/spatial_index/lsi_grid.h
 @@ -31,7 +31,7 @@
@@ -5554,7 +6221,7 @@ index c02a53b..06cef17 100644
  
  enum LandmarkProbe { LP_SOLVER_OK = 0, LP_TRACKING_FAILED = 1, LP_RANSAC_FAILED = 2, LP_PNP_FAILED = 3, LP_MAX = 4 };
  
-@@ -363,4 +363,4 @@ inline LSIGrid::GridLandmark* LSIGrid::TryToReadLandmark(LandmarkId landmark_id)
+@@ -338,4 +338,4 @@ inline LSIGrid::GridLandmark* LSIGrid::TryToReadLandmark(LandmarkId landmark_id)
    return readed;
  }
  
@@ -5580,7 +6247,7 @@ index 742a024..91b7e36 100644
 -}  // namespace cuvslam::slam::grid
 +}}}  // namespace cuvslam::slam::grid
 diff --git a/libs/slam/map/spatial_index/visualizer.cpp b/libs/slam/map/spatial_index/visualizer.cpp
-index 4574e33..c5470b1 100644
+index f6be81f..f9bac92 100644
 --- a/libs/slam/map/spatial_index/visualizer.cpp
 +++ b/libs/slam/map/spatial_index/visualizer.cpp
 @@ -19,7 +19,7 @@
@@ -5593,7 +6260,7 @@ index 4574e33..c5470b1 100644
  void LSIGridVisualizer::LogCell(const LSIGrid& lsi, HashCellId hash_cell_id,
                                  const PoseGraphHypothesis& pose_graph_hypothesis) {
 @@ -44,4 +44,4 @@ void LSIGridVisualizer::LogCell(const LSIGrid& lsi, HashCellId hash_cell_id,
-   rec.log("world/" + name + "/p", rerun::Points3D(positions).with_colors({color}));
+   rec.log("world/lsi_landmarks/" + name + "/p", rerun::Points3D(positions).with_colors({color}));
  }
  
 -}  // namespace cuvslam::slam
@@ -5613,40 +6280,6 @@ index 43cfba8..8107590 100644
  public:
    static void LogCell(const LSIGrid& lsi, HashCellId hash_cell_id, const PoseGraphHypothesis& pose_graph_hypothesis);
  };
- 
--}  // namespace cuvslam::slam
-+}}  // namespace cuvslam::slam
-diff --git a/libs/slam/merge_map/merge_dbs.cpp b/libs/slam/merge_map/merge_dbs.cpp
-index e8b4aad..8a1396a 100644
---- a/libs/slam/merge_map/merge_dbs.cpp
-+++ b/libs/slam/merge_map/merge_dbs.cpp
-@@ -19,7 +19,7 @@
- 
- #include "slam/slam/slam.h"
- 
--namespace cuvslam::slam {
-+namespace cuvslam { namespace slam {
- 
- bool MergeDatabases(const camera::Rig& rig, const std::vector<std::string>& dbs, const std::string& slam_db_out) {
-   const auto slam = std::make_shared<LocalizerAndMapper>(rig, FeatureDescriptorType::kNone, false);
-@@ -58,4 +58,4 @@ bool MergeDatabases(const camera::Rig& rig, const std::vector<std::string>& dbs,
-   return true;
- }
- 
--}  // namespace cuvslam::slam
-+}}  // namespace cuvslam::slam
-diff --git a/libs/slam/merge_map/merge_dbs.h b/libs/slam/merge_map/merge_dbs.h
-index 7e8a75c..748f106 100644
---- a/libs/slam/merge_map/merge_dbs.h
-+++ b/libs/slam/merge_map/merge_dbs.h
-@@ -22,8 +22,8 @@
- 
- #include "camera/rig.h"
- 
--namespace cuvslam::slam {
-+namespace cuvslam { namespace slam {
- 
- bool MergeDatabases(const camera::Rig& rig, const std::vector<std::string>& dbs, const std::string& slam_db_out);
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
@@ -5727,7 +6360,7 @@ index c81d349..cc6e99e 100644
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/slam/loop_closure_solver/lcs_simple.cpp b/libs/slam/slam/loop_closure_solver/lcs_simple.cpp
-index a32121f..53b548f 100644
+index 4239e53..4b7d0d4 100644
 --- a/libs/slam/slam/loop_closure_solver/lcs_simple.cpp
 +++ b/libs/slam/slam/loop_closure_solver/lcs_simple.cpp
 @@ -25,7 +25,7 @@
@@ -5739,7 +6372,7 @@ index a32121f..53b548f 100644
  
  ILoopClosureSolverPtr CreateLoopClosureSolverSimple(const camera::Rig& rig, RansacType ransac_type, bool randomized,
                                                      LSIGrid::FetchStrategy fetch_strategy) {
-@@ -360,4 +360,4 @@ int LoopClosureSolverSimple::FundamentalRansacFilter(const std::vector<LandmarkI
+@@ -367,4 +367,4 @@ int LoopClosureSolverSimple::FundamentalRansacFilter(const std::vector<LandmarkI
    return inner_count;
  }
  
@@ -5841,7 +6474,7 @@ index b932129..53de48a 100644
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/slam/loop_closure_solver/pnp_ransac_hypothesis.h b/libs/slam/slam/loop_closure_solver/pnp_ransac_hypothesis.h
-index 608a380..42fdab8 100644
+index 9793297..a589695 100644
 --- a/libs/slam/slam/loop_closure_solver/pnp_ransac_hypothesis.h
 +++ b/libs/slam/slam/loop_closure_solver/pnp_ransac_hypothesis.h
 @@ -28,7 +28,7 @@
@@ -5853,17 +6486,17 @@ index 608a380..42fdab8 100644
  
  struct PnpRansacTrackData {
    Vector3T xyz;
-@@ -109,4 +109,4 @@ public:
+@@ -110,4 +110,4 @@ public:
  protected:
  };
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/slam/slam.cpp b/libs/slam/slam/slam.cpp
-index 6026e1f..cebf669 100644
+index 62b8364..06bae81 100644
 --- a/libs/slam/slam/slam.cpp
 +++ b/libs/slam/slam/slam.cpp
-@@ -26,7 +26,7 @@
+@@ -25,7 +25,7 @@
  #include "slam/map/spatial_index/lsi_grid.h"
  #include "slam/slam/slam_check_hypothesis.h"
  
@@ -5871,15 +6504,15 @@ index 6026e1f..cebf669 100644
 +namespace cuvslam { namespace slam {
  
  LocalizerAndMapper::LocalizerAndMapper(const camera::Rig& rig, FeatureDescriptorType descriptor_type, bool use_gpu)
-     : rig_(rig),
-@@ -931,4 +931,4 @@ const LocalizerAndMapper::TrackOnKeyframe* LocalizerAndMapper::StagingTrack3d::F
+     : rig_(rig), map_(rig, descriptor_type, use_gpu), pnp_(rig), random_generator_(random_device_()) {}
+@@ -631,4 +631,4 @@ const LocalizerAndMapper::TrackOnKeyframe* LocalizerAndMapper::StagingTrack3d::F
    return nullptr;
  }
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/slam/slam.h b/libs/slam/slam/slam.h
-index 13007ad..875ba08 100644
+index 753cf49..d47fcfe 100644
 --- a/libs/slam/slam/slam.h
 +++ b/libs/slam/slam/slam.h
 @@ -36,7 +36,7 @@
@@ -5891,8 +6524,8 @@ index 13007ad..875ba08 100644
  
  enum PoseGraphOptimizerType { Dummy, Simple };
  
-@@ -376,4 +376,4 @@ private:
-   bool ReduceLandmarks(const char* weight_func);
+@@ -362,4 +362,4 @@ private:
+   bool ReduceLandmarks();
  };
  
 -}  // namespace cuvslam::slam
@@ -5936,10 +6569,10 @@ index 4bf0f89..14d3738 100644
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/slam/slam_map_building.cpp b/libs/slam/slam/slam_map_building.cpp
-index 7df8b39..273682c 100644
+index 76281dc..5e04b88 100644
 --- a/libs/slam/slam/slam_map_building.cpp
 +++ b/libs/slam/slam/slam_map_building.cpp
-@@ -28,7 +28,7 @@
+@@ -29,7 +29,7 @@
  #include "slam/map/pose_graph/pose_graph.h"
  #include "slam/slam/slam.h"
  
@@ -5948,12 +6581,31 @@ index 7df8b39..273682c 100644
  
  void LocalizerAndMapper::AddKeyframe(const Isometry3T& from_last_keyframe, const VOFrameData& frame_data,
                                       const Images& images) {
-@@ -253,4 +253,4 @@ bool LocalizerAndMapper::SetAbsolutePose(const Isometry3T& global_pose) {
-   return true;
+@@ -229,4 +229,4 @@ void LocalizerAndMapper::MoveReadyStagedLandmarksToLSI(uint64_t timestamp_ns) {
+   map_.landmarks_spatial_index_->RemoveDeadLandmarks(func_remove_from_keyframe);
  }
  
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
+diff --git a/libs/slam/test/async_slam_concurrency_test.cpp b/libs/slam/test/async_slam_concurrency_test.cpp
+index 9360837..bb21179 100644
+--- a/libs/slam/test/async_slam_concurrency_test.cpp
++++ b/libs/slam/test/async_slam_concurrency_test.cpp
+@@ -25,7 +25,7 @@
+ #include "slam/async_slam/async_slam.h"
+ #include "sof/image_context.h"
+ 
+-namespace test::slam {
++namespace test { namespace slam {
+ namespace {
+ 
+ using namespace std::chrono_literals;
+@@ -142,4 +142,4 @@ TEST(AsyncSlam, TrackResultCanRunWhileLocalizeInMapIsInFlight) {
+   }
+ }
+ 
+-}  // namespace test::slam
++}}  // namespace test::slam
 diff --git a/libs/slam/test/p3p_test.cpp b/libs/slam/test/p3p_test.cpp
 index 4d016b6..9ec11fa 100644
 --- a/libs/slam/test/p3p_test.cpp
@@ -6012,26 +6664,26 @@ index 9f37e67..dcffb5f 100644
 -}  // namespace test::slam
 +}}  // namespace test::slam
 diff --git a/libs/slam/test/rigid_transform_3d_test.cpp b/libs/slam/test/rigid_transform_3d_test.cpp
-index e7ff327..926ba05 100644
+index f87799c..87b82a5 100644
 --- a/libs/slam/test/rigid_transform_3d_test.cpp
 +++ b/libs/slam/test/rigid_transform_3d_test.cpp
-@@ -22,7 +22,7 @@
+@@ -21,7 +21,7 @@
+ 
  #include "common/include_gtest.h"
  #include "math/transform_between_pointclouds.h"
- 
 -namespace test::slam {
 +namespace test { namespace slam {
  using namespace cuvslam;
  using Eigen::MatrixXf;
  using Eigen::VectorXf;
-@@ -119,4 +119,4 @@ std::endl; std::cout << "A least-squares solution of m*x = rhs is:" << std::endl
+@@ -117,4 +117,4 @@ std::endl; std::cout << "A least-squares solution of m*x = rhs is:" << std::endl
    printf("d");
  }
  
 -}  // namespace test::slam
 +}}  // namespace test::slam
 diff --git a/libs/slam/test/slam_test.cpp b/libs/slam/test/slam_test.cpp
-index da3b2b0..006ece9 100644
+index 8f99f00..b1e1149 100644
 --- a/libs/slam/test/slam_test.cpp
 +++ b/libs/slam/test/slam_test.cpp
 @@ -18,7 +18,7 @@
@@ -6047,6 +6699,25 @@ index da3b2b0..006ece9 100644
    // can't find keyframe with landmarks
    ASSERT_FALSE(mapper.ApplyLoopClosureResult(status.result_pose, status.result_pose_covariance, status.landmarks));
  }
+-}  // namespace test::slam
++}}  // namespace test::slam
+diff --git a/libs/slam/test/tail_test.cpp b/libs/slam/test/tail_test.cpp
+index 6499030..cd350b1 100644
+--- a/libs/slam/test/tail_test.cpp
++++ b/libs/slam/test/tail_test.cpp
+@@ -17,7 +17,7 @@
+ #include "slam/async_slam/tail.h"
+ #include "common/include_gtest.h"
+ 
+-namespace test::slam {
++namespace test { namespace slam {
+ namespace {
+ 
+ cuvslam::Isometry3T PoseAtX(float x) {
+@@ -73,4 +73,4 @@ TEST(Tail, ZeroRetentionKeepsOnlyTheLatestTimestampUsable) {
+   EXPECT_TRUE(tail.IsTimestampRetained(2'000));
+ }
+ 
 -}  // namespace test::slam
 +}}  // namespace test::slam
 diff --git a/libs/slam/test/thread_safe_queue_test.cpp b/libs/slam/test/thread_safe_queue_test.cpp
@@ -6069,7 +6740,7 @@ index c5c7533..1441801 100644
 -}  // namespace test::slam
 +}}  // namespace test::slam
 diff --git a/libs/slam/view/map_to_view.cpp b/libs/slam/view/map_to_view.cpp
-index 588a615..3d80b92 100644
+index 7892aa7..f31b6a6 100644
 --- a/libs/slam/view/map_to_view.cpp
 +++ b/libs/slam/view/map_to_view.cpp
 @@ -18,7 +18,7 @@
@@ -6081,18 +6752,18 @@ index 588a615..3d80b92 100644
  void PublishAllLandmarksToView(const Map& map, int64_t timestamp_ns, ViewLandmarks& view) {
    const size_t view_capacity = view.landmarks.capacity();
    if (view_capacity == 0) {
-@@ -137,4 +137,4 @@ void PublishLocalizerProbesToView(const Map& map, int64_t timestamp_ns, const st
-   view.num_probes = static_cast<uint32_t>(i);
-   view.size = cell_size;
+@@ -123,4 +123,4 @@ void PublishLoopClosureToView(const Map& map, const std::vector<LandmarkInSolver
+   }
  }
+ 
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/view/map_to_view.h b/libs/slam/view/map_to_view.h
-index ca339ba..fde52df 100644
+index 54f802a..b13e613 100644
 --- a/libs/slam/view/map_to_view.h
 +++ b/libs/slam/view/map_to_view.h
-@@ -25,7 +25,7 @@
- #include "slam/view/view_localizer_probes.h"
+@@ -24,7 +24,7 @@
+ #include "slam/view/view_landmarks.h"
  #include "slam/view/view_pose_graph.h"
  
 -namespace cuvslam::slam {
@@ -6100,10 +6771,10 @@ index ca339ba..fde52df 100644
  // Do it smart - select sparse up to view.landmarks.size()
  void PublishAllLandmarksToView(const Map& map, int64_t timestamp_ns, ViewLandmarks& view);
  void PublishLandmarksToView(const Map& map, int64_t timestamp_ns,
-@@ -35,4 +35,4 @@ void PublishPoseGraphToView(const Map& map, int64_t timestamp_ns, ViewPoseGraph&
+@@ -32,4 +32,4 @@ void PublishLandmarksToView(const Map& map, int64_t timestamp_ns,
+                             ViewLandmarks& view);
+ void PublishPoseGraphToView(const Map& map, int64_t timestamp_ns, ViewPoseGraph& view);
  void PublishLoopClosureToView(const Map& map, const std::vector<LandmarkInSolver>& landmarks, ViewLandmarks& view);
- void PublishLocalizerProbesToView(const Map& map, int64_t timestamp_ns, const std::vector<ViewLocalizerProbe>& probes,
-                                   ViewLocalizerProbes& view);
 -}  // namespace cuvslam::slam
 +}}  // namespace cuvslam::slam
 diff --git a/libs/slam/view/view_landmarks.h b/libs/slam/view/view_landmarks.h
@@ -6120,25 +6791,6 @@ index 1adb629..fb210fe 100644
  // view for LC landmarks
  using ViewLandmark = Slam::Landmark;
 @@ -34,4 +34,4 @@ struct ViewLandmarks : Slam::Landmarks {
-   uint64_t get_timestamp() const { return timestamp_ns; }
- };
- 
--}  // namespace cuvslam::slam
-+}}  // namespace cuvslam::slam
-diff --git a/libs/slam/view/view_localizer_probes.h b/libs/slam/view/view_localizer_probes.h
-index da8e987..17b0d26 100644
---- a/libs/slam/view/view_localizer_probes.h
-+++ b/libs/slam/view/view_localizer_probes.h
-@@ -21,7 +21,7 @@
- 
- #include "slam/view/view_pose_graph.h"
- 
--namespace cuvslam::slam {
-+namespace cuvslam { namespace slam {
- 
- // view for LC landmarks
- struct ViewLocalizerProbe {
-@@ -44,4 +44,4 @@ public:
    uint64_t get_timestamp() const { return timestamp_ns; }
  };
  
@@ -6460,7 +7112,7 @@ index ccf5ff0..e41469a 100644
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/image_context.cpp b/libs/sof/image_context.cpp
-index 67f1250..9631099 100644
+index c3eedf2..75d9fa0 100644
 --- a/libs/sof/image_context.cpp
 +++ b/libs/sof/image_context.cpp
 @@ -17,7 +17,7 @@
@@ -6472,14 +7124,14 @@ index 67f1250..9631099 100644
  
  ImageContext::ImageContext(const ImageShape& shape, bool use_gpu, bool support_depth) : support_depth_(support_depth) {
    if (use_gpu) {
-@@ -369,4 +369,4 @@ bool ImageContext::process_mask_gpu(const ImageSource& mask_source, ImageMatrix<
+@@ -375,4 +375,4 @@ bool ImageContext::process_mask_gpu(const ImageSource& mask_source, ImageMatrix<
  
  #endif
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/image_context.h b/libs/sof/image_context.h
-index 8879d20..e9eb4f5 100644
+index e9dd3af..d24d460 100644
 --- a/libs/sof/image_context.h
 +++ b/libs/sof/image_context.h
 @@ -34,7 +34,7 @@
@@ -6491,10 +7143,10 @@ index 8879d20..e9eb4f5 100644
  
  class ImageContext {
  public:
-@@ -113,4 +113,4 @@ private:
+@@ -115,4 +115,4 @@ using ImageContextPtr = std::shared_ptr<ImageContext>;
  
- using ImageContextPtr = std::shared_ptr<ImageContext>;
- using Images = std::unordered_map<CameraId, sof::ImageContextPtr>;
+ // Camera-indexed vector sized to rig.num_cameras; nullptr means this camera is absent in the frame.
+ using Images = std::vector<sof::ImageContextPtr>;
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/image_manager.cpp b/libs/sof/image_manager.cpp
@@ -6612,10 +7264,10 @@ index 96de699..e2b9998 100644
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/internal/sof_mono_base.h b/libs/sof/internal/sof_mono_base.h
-index 33f66d9..1199b9c 100644
+index 5cd062d..10b4bb3 100644
 --- a/libs/sof/internal/sof_mono_base.h
 +++ b/libs/sof/internal/sof_mono_base.h
-@@ -27,7 +27,7 @@
+@@ -28,7 +28,7 @@
  #include "sof/sof.h"
  #include "sof/sof_mono_interface.h"
  
@@ -6624,14 +7276,14 @@ index 33f66d9..1199b9c 100644
  
  class MonoSOFBase : public IMonoSOF {
  public:
-@@ -60,4 +60,4 @@ protected:
+@@ -64,4 +64,4 @@ protected:
  void KillTracksOnBorder(size_t w, size_t h, size_t border_top, size_t border_bottom, size_t border_left,
                          size_t border_right, TracksVector& tracks);
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/internal/sof_mono_cpu.h b/libs/sof/internal/sof_mono_cpu.h
-index e0b6417..02ab21d 100644
+index 7aa7b99..1000915 100644
 --- a/libs/sof/internal/sof_mono_cpu.h
 +++ b/libs/sof/internal/sof_mono_cpu.h
 @@ -38,7 +38,7 @@
@@ -6650,7 +7302,7 @@ index e0b6417..02ab21d 100644
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/internal/sof_mono_gpu.h b/libs/sof/internal/sof_mono_gpu.h
-index 5294dd3..19fc2da 100644
+index 2b64f9e..3cb9128 100644
 --- a/libs/sof/internal/sof_mono_gpu.h
 +++ b/libs/sof/internal/sof_mono_gpu.h
 @@ -41,7 +41,7 @@
@@ -6669,7 +7321,7 @@ index 5294dd3..19fc2da 100644
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/internal/sof_multicamera_base.h b/libs/sof/internal/sof_multicamera_base.h
-index 161e9ba..3d945d0 100644
+index 10eb14b..fd1832c 100644
 --- a/libs/sof/internal/sof_multicamera_base.h
 +++ b/libs/sof/internal/sof_multicamera_base.h
 @@ -30,7 +30,7 @@
@@ -6681,14 +7333,14 @@ index 161e9ba..3d945d0 100644
  
  class MultiSOFBase : public IMultiSOF {
  protected:
-@@ -78,4 +78,4 @@ protected:
+@@ -79,4 +79,4 @@ protected:
    const uint32_t profiler_color_ = 0x00FF00;
  };
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/internal/sof_multicamera_cpu.h b/libs/sof/internal/sof_multicamera_cpu.h
-index 49abb5f..16c68f2 100644
+index 7de2249..8ed99a0 100644
 --- a/libs/sof/internal/sof_multicamera_cpu.h
 +++ b/libs/sof/internal/sof_multicamera_cpu.h
 @@ -39,7 +39,7 @@
@@ -6707,7 +7359,7 @@ index 49abb5f..16c68f2 100644
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/internal/sof_multicamera_gpu.h b/libs/sof/internal/sof_multicamera_gpu.h
-index 64db717..311632f 100644
+index c83ca00..d3f2a9a 100644
 --- a/libs/sof/internal/sof_multicamera_gpu.h
 +++ b/libs/sof/internal/sof_multicamera_gpu.h
 @@ -38,7 +38,7 @@
@@ -6745,7 +7397,7 @@ index 97fd25f..528bdb4 100644
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/kf_selector.cpp b/libs/sof/kf_selector.cpp
-index 9ee910e..5dd9dc3 100644
+index 38df6fe..2b79d87 100644
 --- a/libs/sof/kf_selector.cpp
 +++ b/libs/sof/kf_selector.cpp
 @@ -19,7 +19,7 @@
@@ -6757,17 +7409,17 @@ index 9ee910e..5dd9dc3 100644
  
  #ifndef NDEBUG
  bool IsSorted(const TracksVector& v) {
-@@ -122,4 +122,4 @@ void KFSelector::reset() { first_kf_selected_ = false; }
+@@ -134,4 +134,4 @@ void KFSelector::reset() { first_kf_selected_ = false; }
  
  bool KFSelector::first_kf_selected() const { return first_kf_selected_; }
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/kf_selector.h b/libs/sof/kf_selector.h
-index ab9548c..4a8dc77 100644
+index ccee74a..cca0f3a 100644
 --- a/libs/sof/kf_selector.h
 +++ b/libs/sof/kf_selector.h
-@@ -22,7 +22,7 @@
+@@ -23,7 +23,7 @@
  
  #include "sof/sof.h"
  
@@ -6776,7 +7428,7 @@ index ab9548c..4a8dc77 100644
  
  class KFSelector {
  public:
-@@ -46,4 +46,4 @@ private:
+@@ -44,4 +44,4 @@ private:
    const uint32_t profiler_color_ = 0x00FF00;
  };
  
@@ -6821,7 +7473,7 @@ index 4c38c25..ecac9e1 100644
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/lk_tracker.cpp b/libs/sof/lk_tracker.cpp
-index 813690b..7fc1fe1 100644
+index d7213a3..f2b0fd0 100644
 --- a/libs/sof/lk_tracker.cpp
 +++ b/libs/sof/lk_tracker.cpp
 @@ -21,7 +21,7 @@
@@ -6833,7 +7485,7 @@ index 813690b..7fc1fe1 100644
  
  const int MAX_POINT_TRACK_ITERATIONS = 10;
  const float LK_CONVERGENCE_THRESHOLD = 0.08f;
-@@ -282,4 +282,4 @@ bool LKTrackerHorizontal::trackPoint(const GradientPyramidT& prevFrameGradPyrami
+@@ -290,4 +290,4 @@ bool LKTrackerHorizontal::trackPoint(const GradientPyramidT& prevFrameGradPyrami
    return isConverged;
  }
  
@@ -6916,7 +7568,7 @@ index f069f3c..dcb3f8c 100644
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/selector_mono.cpp b/libs/sof/selector_mono.cpp
-index b3f1b13..2ccab72 100644
+index 24d27c0..a781aa7 100644
 --- a/libs/sof/selector_mono.cpp
 +++ b/libs/sof/selector_mono.cpp
 @@ -17,7 +17,7 @@
@@ -6928,14 +7580,14 @@ index b3f1b13..2ccab72 100644
  
  namespace {
  #ifndef NDEBUG
-@@ -147,4 +147,4 @@ void SelectorMono::set_tracks(const TracksVector& cur_frame_tracks) {
-   last_kf_tracks_ = cur_frame_tracks;
+@@ -150,4 +150,4 @@ void SelectorMono::set_tracks(const TracksVector& cur_frame_tracks) {
+   last_feature_initialization_tracks_ = cur_frame_tracks;
  }
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/selector_mono.h b/libs/sof/selector_mono.h
-index c60daf6..2fcf674 100644
+index ab631bd..73a72a9 100644
 --- a/libs/sof/selector_mono.h
 +++ b/libs/sof/selector_mono.h
 @@ -20,7 +20,7 @@
@@ -6946,15 +7598,15 @@ index c60daf6..2fcf674 100644
 +namespace cuvslam { namespace sof {
  
  struct SelectorMonoSettings {
-   // The current frame becomes keyframe if the percent of survivor tracks
+   // Initialize new feature tracks if the percent of survivor tracks
 @@ -57,4 +57,4 @@ private:
-   TracksVector last_kf_tracks_;          // expected to be ordered by TrackeId
+   TracksVector last_feature_initialization_tracks_;         // expected to be ordered by TrackId
  };
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/selector_stereo.cpp b/libs/sof/selector_stereo.cpp
-index 9aa737b..12c37b2 100644
+index 77319cb..45370ff 100644
 --- a/libs/sof/selector_stereo.cpp
 +++ b/libs/sof/selector_stereo.cpp
 @@ -71,7 +71,7 @@ float CalcSurvivorTracksPercentage(const TracksVector& frame1, uint32_t n_surviv
@@ -6966,14 +7618,14 @@ index 9aa737b..12c37b2 100644
  SelectorStereo::SelectorStereo(const SelectorStereoSettings& settings) : settings_(settings) {}
  
  void SelectorStereo::set_image_width(uint32_t /* width */) {}
-@@ -121,4 +121,4 @@ void KillTracksOnBorder(size_t w, size_t h, size_t border_top, size_t border_bot
+@@ -124,4 +124,4 @@ void KillTracksOnBorder(size_t w, size_t h, size_t border_top, size_t border_bot
    }
  }
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/selector_stereo.h b/libs/sof/selector_stereo.h
-index 4ca80c1..5af23bb 100644
+index d13e40f..b108529 100644
 --- a/libs/sof/selector_stereo.h
 +++ b/libs/sof/selector_stereo.h
 @@ -20,7 +20,7 @@
@@ -6984,15 +7636,15 @@ index 4ca80c1..5af23bb 100644
 +namespace cuvslam { namespace sof {
  
  struct SelectorStereoSettings {
-   // The current frame becomes keyframe if the percent of survivor tracks
+   // Initialize new primary-camera feature tracks if the percent of survivor tracks
 @@ -43,4 +43,4 @@ private:
-   TracksVector last_kf_tracks_;
+   TracksVector last_feature_initialization_tracks_;
  };
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/sof.cpp b/libs/sof/sof.cpp
-index 43505cc..8476b48 100644
+index d16cebe..e5557f1 100644
 --- a/libs/sof/sof.cpp
 +++ b/libs/sof/sof.cpp
 @@ -23,7 +23,7 @@
@@ -7002,73 +7654,76 @@ index 43505cc..8476b48 100644
 -namespace cuvslam::sof {
 +namespace cuvslam { namespace sof {
  
- std::unique_ptr<IFeatureTracker> CreateTracker(const char* name) {
-   if (std::string("klt") == name) {
-@@ -49,4 +49,4 @@ std::unique_ptr<IFeatureTracker> CreateTracker(const char* name) {
+ TrackerType ParseTrackerType(const std::string& name) {
+   if (name == "lk") return TrackerType::LK;
+@@ -47,4 +47,4 @@ std::unique_ptr<IFeatureTracker> CreateTracker(TrackerType type) {
    return nullptr;
  }
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/sof.h b/libs/sof/sof.h
-index 29afa6f..8e6ccd8 100644
+index 359a549..40c9227 100644
 --- a/libs/sof/sof.h
 +++ b/libs/sof/sof.h
-@@ -25,7 +25,7 @@
+@@ -26,7 +26,7 @@
  #include "common/types.h"
  #include "common/unaligned_types.h"
  
 -namespace cuvslam::sof {
 +namespace cuvslam { namespace sof {
  
- class IFeatureTracker;
- std::unique_ptr<IFeatureTracker> CreateTracker(const char*);
-@@ -163,4 +163,4 @@ private:
+ enum class TrackerType { LK, KLT, LKHorizontal, KLTHorizontal };
+ 
+@@ -168,4 +168,4 @@ private:
    size_t num_alive_ = 0;  // number of non-dead tracks
  };
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/sof_config.cpp b/libs/sof/sof_config.cpp
-index b14ce9b..ee107a2 100644
+index af70809..e6ca4f7 100644
 --- a/libs/sof/sof_config.cpp
 +++ b/libs/sof/sof_config.cpp
-@@ -19,7 +19,7 @@
+@@ -17,7 +17,7 @@
  
- #include <unordered_map>
+ #include "sof/sof_config.h"
  
 -namespace cuvslam::sof {
 +namespace cuvslam { namespace sof {
  
- camera::MulticameraMode ParseMulticameraMode(const std::string& mode, camera::MulticameraMode default_mode) {
-   const std::unordered_map<std::string, camera::MulticameraMode> modes{
-@@ -44,4 +44,4 @@ void OverrideMulticameraSettings(Settings& settings, const std::optional<camera:
+ void OverrideMulticameraSettings(Settings& settings, const std::optional<camera::MulticameraMode>& multicam_mode,
+                                  const camera::MulticamManualSetup& multicam_setup) {
+@@ -27,4 +27,4 @@ void OverrideMulticameraSettings(Settings& settings, const std::optional<camera:
    }
  }
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/sof_config.h b/libs/sof/sof_config.h
-index 5571e8e..288e2c2 100644
+index 48d74d5..060c092 100644
 --- a/libs/sof/sof_config.h
 +++ b/libs/sof/sof_config.h
 @@ -27,7 +27,7 @@
  #include "sof/selector_stereo.h"
- #include "sof/sof_mono_interface.h"
+ #include "sof/sof.h"
  
 -namespace cuvslam::sof {
 +namespace cuvslam { namespace sof {
  
  struct Settings {
    // number of tracks for left selection
-@@ -61,4 +61,4 @@ camera::MulticameraMode ParseMulticameraMode(const std::string& mode,
+@@ -58,7 +58,7 @@ struct Settings {
  void OverrideMulticameraSettings(Settings& settings, const std::optional<camera::MulticameraMode>& multicam_mode,
                                   const camera::MulticamManualSetup& multicam_setup);
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
+ 
+ // Included after Settings is fully defined to break the circular dependency
+ // with sof_mono_interface.h (which uses Settings in its function signatures).
 diff --git a/libs/sof/sof_config_gflags.h b/libs/sof/sof_config_gflags.h
-index 7f583c6..098f4cc 100644
+index 1b871eb..fcc32e9 100644
 --- a/libs/sof/sof_config_gflags.h
 +++ b/libs/sof/sof_config_gflags.h
 @@ -38,7 +38,7 @@ DEFINE_string(lr_tracker, "lk", "L-R feature tracker");
@@ -7081,7 +7736,7 @@ index 7f583c6..098f4cc 100644
  void ParseSettings(Settings& settings) {
    settings.num_desired_tracks = FLAGS_num_desired_tracks;
 @@ -53,4 +53,4 @@ void ParseSettings(Settings& settings) {
-   settings.multicam_mode = ParseMulticameraMode(FLAGS_multicam_mode);
+   settings.multicam_mode = camera::ParseMulticameraMode(FLAGS_multicam_mode);
  }
  
 -}  // namespace cuvslam::sof
@@ -7125,26 +7780,26 @@ index 1418d03..56818ac 100644
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/sof_mono_base.cpp b/libs/sof/sof_mono_base.cpp
-index f5a7e63..c65ecdd 100644
+index 78c791e..8255d11 100644
 --- a/libs/sof/sof_mono_base.cpp
 +++ b/libs/sof/sof_mono_base.cpp
-@@ -17,7 +17,7 @@
+@@ -19,7 +19,7 @@
  
- #include "sof/internal/sof_mono_base.h"
+ #include "odometry/svo_config.h"
  
 -namespace cuvslam::sof {
 +namespace cuvslam { namespace sof {
  
  void MonoSOFBase::PredictFeatureLocations(const Isometry3T& predicted_world_from_rig) {
    const auto numTracks = tracks_.size();
-@@ -122,4 +122,4 @@ void MonoSOFBase::KillTracksWithinMask() {
-   }
+@@ -141,4 +141,4 @@ bool MonoSOFBase::SelectKeyframe(const MonoSOFFrameSettings& frame_settings) {
+   return feature_selector_->select(tracks_);
  }
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/sof_mono_cpu.cpp b/libs/sof/sof_mono_cpu.cpp
-index ffa482e..1e074f0 100644
+index cf74b1d..26c761f 100644
 --- a/libs/sof/sof_mono_cpu.cpp
 +++ b/libs/sof/sof_mono_cpu.cpp
 @@ -20,7 +20,7 @@
@@ -7156,14 +7811,14 @@ index ffa482e..1e074f0 100644
  
  // threshold to determine that tracking have failed
  const size_t FAILED_ACTIVE_TRACK_COUNT = 20;
-@@ -300,4 +300,4 @@ void MonoSOFCPU::reset() {
+@@ -305,4 +305,4 @@ void MonoSOFCPU::reset() {
    feature_selector_->reset_selector();
  }
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/sof_mono_gpu.cpp b/libs/sof/sof_mono_gpu.cpp
-index a8c5dce..6a89ad8 100644
+index 7a3cf65..caf0f9f 100644
 --- a/libs/sof/sof_mono_gpu.cpp
 +++ b/libs/sof/sof_mono_gpu.cpp
 @@ -20,7 +20,7 @@
@@ -7175,33 +7830,38 @@ index a8c5dce..6a89ad8 100644
  
  // threshold to determine that tracking have failed
  const size_t FAILED_ACTIVE_TRACK_COUNT = 20;
-@@ -347,4 +347,4 @@ void MonoSOFGPU::ransacFilter(const camera::ICameraModel &intrinsics, const Trac
+@@ -357,4 +357,4 @@ void MonoSOFGPU::ransacFilter(const camera::ICameraModel &intrinsics, const Trac
    assert(seqIt == sampleSequence.cend());
  }
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/sof_mono_interface.h b/libs/sof/sof_mono_interface.h
-index f88ff29..1ddd0de 100644
+index 51eb985..9061421 100644
 --- a/libs/sof/sof_mono_interface.h
 +++ b/libs/sof/sof_mono_interface.h
-@@ -24,7 +24,7 @@
- #include "sof/image_context.h"
+@@ -25,11 +25,11 @@
  #include "sof/sof.h"
+ #include "sof/sof_config.h"
+ 
+-namespace cuvslam::odom {
++namespace cuvslam { namespace odom {
+ struct KeyFrameSettings;
+ }
  
 -namespace cuvslam::sof {
 +namespace cuvslam { namespace sof {
  
  struct ImageAndSource {
    ImageAndSource(const ImageSource& source_, ImageContextPtr image_) : source(source_), image(image_) {}
-@@ -50,4 +50,4 @@ public:
+@@ -62,4 +62,4 @@ public:
    virtual CameraId camera_id() const = 0;
  };
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/sof_multicamera_base.cpp b/libs/sof/sof_multicamera_base.cpp
-index c9edd9f..c298231 100644
+index bb418b4..da6f206 100644
 --- a/libs/sof/sof_multicamera_base.cpp
 +++ b/libs/sof/sof_multicamera_base.cpp
 @@ -17,7 +17,7 @@
@@ -7213,17 +7873,17 @@ index c9edd9f..c298231 100644
  
  MultiSOFBase::MultiSOFBase(const camera::Rig& rig, const camera::FrustumIntersectionGraph& fid,
                             const Settings& sof_settings, const odom::KeyFrameSettings& keyframe_settings)
-@@ -142,4 +142,4 @@ bool MultiSOFBase::is_keyframe(const MulticamTracksVector& tracks, const int64_t
+@@ -155,4 +155,4 @@ bool MultiSOFBase::is_keyframe(const MulticamTracksVector& tracks, const int64_t
    return false;
  }
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/sof_multicamera_cpu.cpp b/libs/sof/sof_multicamera_cpu.cpp
-index 3cde47f..eb7faef 100644
+index ce7ef09..8ffd762 100644
 --- a/libs/sof/sof_multicamera_cpu.cpp
 +++ b/libs/sof/sof_multicamera_cpu.cpp
-@@ -20,7 +20,7 @@
+@@ -22,7 +22,7 @@
  #include "sof/internal/sof_multicamera_cpu.h"
  #include "sof/sof_create.h"
  
@@ -7232,45 +7892,45 @@ index 3cde47f..eb7faef 100644
  
  MultiSOFCPU::MultiSOFCPU(const camera::Rig& rig, const camera::FrustumIntersectionGraph& fid,
                           sof::FeaturePredictorPtr feature_predictor, const Settings& sof_settings,
-@@ -94,4 +94,4 @@ void MultiSOFCPU::reset() {
+@@ -114,4 +114,4 @@ void MultiSOFCPU::reset() {
    reset_keyframe_selector();
  }
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/sof_multicamera_gpu.cpp b/libs/sof/sof_multicamera_gpu.cpp
-index d161217..92662eb 100644
+index d52ab23..0f3f403 100644
 --- a/libs/sof/sof_multicamera_gpu.cpp
 +++ b/libs/sof/sof_multicamera_gpu.cpp
-@@ -20,7 +20,7 @@
+@@ -21,7 +21,7 @@
  #include "sof/internal/sof_multicamera_gpu.h"
  #include "sof/sof_create.h"
  
 -namespace cuvslam::sof {
 +namespace cuvslam { namespace sof {
  
- std::unique_ptr<GPULKFeatureTracker> CreateGPUTracker(const char* name) {
-   if (std::string("lk") == name) {
-@@ -168,4 +168,4 @@ void MultiSOFGPU::reset() {
+ std::unique_ptr<GPULKFeatureTracker> CreateGPUTracker(TrackerType type) {
+   switch (type) {
+@@ -190,4 +190,4 @@ void MultiSOFGPU::reset() {
    reset_keyframe_selector();
  }
  
 -}  // namespace cuvslam::sof
 +}}  // namespace cuvslam::sof
 diff --git a/libs/sof/sof_multicamera_interface.h b/libs/sof/sof_multicamera_interface.h
-index caf957d..232600d 100644
+index 5eff2aa..da92315 100644
 --- a/libs/sof/sof_multicamera_interface.h
 +++ b/libs/sof/sof_multicamera_interface.h
-@@ -30,7 +30,7 @@
- #include "sof/kf_selector.h"
+@@ -31,7 +31,7 @@
+ #include "sof/sof_config.h"
  #include "sof/sof_mono_interface.h"
  
 -namespace cuvslam::sof {
 +namespace cuvslam { namespace sof {
  
- class IMultiSOF {
- public:
-@@ -45,4 +45,4 @@ public:
+ // Camera-indexed vector sized to rig.num_cameras; an empty inner vector means no observations for that camera.
+ using MulticamObservations = std::vector<std::vector<camera::Observation>>;
+@@ -50,4 +50,4 @@ public:
    virtual ~IMultiSOF() = default;
  };
  
@@ -7371,27 +8031,27 @@ index 02d9f1d..bd1409f 100644
  
 -}  // namespace test::sof
 +}}  // namespace test::sof
-diff --git a/libs/sof/test/lk_tracker_test.cpp b/libs/sof/test/lk_tracker_test.cpp
-index a41b220..0524e8d 100644
---- a/libs/sof/test/lk_tracker_test.cpp
-+++ b/libs/sof/test/lk_tracker_test.cpp
-@@ -44,7 +44,7 @@ DEFINE_string(test_file, "sof/left.png", "test image");
- DEFINE_string(left, "sof/left.png", "left test image");
- DEFINE_string(right, "sof/right.png", "right test image");
+diff --git a/libs/sof/test/kf_selector_test.cpp b/libs/sof/test/kf_selector_test.cpp
+index 5f0b4fd..3bbab97 100644
+--- a/libs/sof/test/kf_selector_test.cpp
++++ b/libs/sof/test/kf_selector_test.cpp
+@@ -23,7 +23,7 @@
+ #include <cstdint>
+ #include <vector>
  
 -namespace test::sof {
 +namespace test { namespace sof {
+ namespace {
+ 
  using namespace cuvslam;
- 
- static void TestShift(cuvslam::sof::IFeatureTracker& tracker) {
-@@ -307,4 +307,4 @@ TEST(KLTTracker, SequenceNewLK) { TestSequence(*cuvslam::sof::CreateTracker("klt
- 
- TEST(KLTTracker, SequenceOldLK) { TestSequence(*cuvslam::sof::CreateTracker("lk")); }
+@@ -133,4 +133,4 @@ TEST(KFSelector, ForcedNonKeyframeSkipsMaxTimeRule) {
+   EXPECT_TRUE(selector.select(current_tracks, kLateTimestampNs, last_kf_tracks, 0, settings));
+ }
  
 -}  // namespace test::sof
 +}}  // namespace test::sof
 diff --git a/libs/sof/test/st_tracker_test.cpp b/libs/sof/test/st_tracker_test.cpp
-index 6b70642..87e2d0b 100644
+index 4e84c98..e33081c 100644
 --- a/libs/sof/test/st_tracker_test.cpp
 +++ b/libs/sof/test/st_tracker_test.cpp
 @@ -23,7 +23,7 @@
@@ -7409,28 +8069,6 @@ index 6b70642..87e2d0b 100644
  }
 -}  // namespace test::sof
 +}}  // namespace test::sof
-diff --git a/libs/testing/testing_main.cpp b/libs/testing/testing_main.cpp
-index 37ea88f..4e46e16 100644
---- a/libs/testing/testing_main.cpp
-+++ b/libs/testing/testing_main.cpp
-@@ -30,7 +30,7 @@ DEFINE_VARIABLE(gflags::uint64, U64, cuvslam_test_seed, CUVSLAM_TEST_RAND_SEED,
- 
- DEFINE_string(logger_filename, "", "Log filename");
- 
--namespace test::utils {
-+namespace test { namespace utils {
- 
- class cuVSLAMTestRandSeedClass {
-   mutable unsigned int init_;
-@@ -59,7 +59,7 @@ class GTestEvenListener : public ::testing::EmptyTestEventListener {
-   }
- };
- 
--}  // namespace test::utils
-+}}  // namespace test::utils
- 
- using namespace test::utils;
- 
 diff --git a/libs/utils/image_loader.cpp b/libs/utils/image_loader.cpp
 index 8ad9f4e..f59791f 100644
 --- a/libs/utils/image_loader.cpp
@@ -7488,30 +8126,49 @@ index 735b3f8..0c5d92a 100644
  
 -}  // namespace cuvslam::utils
 +}}  // namespace cuvslam::utils
-diff --git a/libs/utils/test/image_transform_test.cpp b/libs/utils/test/image_transform_test.cpp
-index 7dbe393..17e5694 100644
---- a/libs/utils/test/image_transform_test.cpp
-+++ b/libs/utils/test/image_transform_test.cpp
-@@ -18,7 +18,7 @@
- #include "utils/image_transform.h"
- #include "common/include_gtest.h"
+diff --git a/libs/utils/test/cunls_smoke_test.cpp b/libs/utils/test/cunls_smoke_test.cpp
+index 6609cbf..0dcc11f 100644
+--- a/libs/utils/test/cunls_smoke_test.cpp
++++ b/libs/utils/test/cunls_smoke_test.cpp
+@@ -27,7 +27,7 @@
+ #include <cunls/minimizer/problem.h>
+ #include <cunls/state/vector_state_batch.h>
  
 -namespace test::utils {
 +namespace test { namespace utils {
  
- using namespace cuvslam;
- using namespace cuvslam::utils;
-@@ -78,4 +78,4 @@ TEST_F(ImageTransformTestLinearToLog, DISABLED_LinearToLogTest) {
-   }
+ static constexpr int kDim = 3;
+ static constexpr size_t kNumVectors = 100;
+@@ -155,4 +155,4 @@ TEST(CuNLSSmokeTest, LevenbergMarquardtMinimize) {
+   std::cout << "[CuNLS] LevenbergMarquardtMinimize PASSED" << std::endl;
+ }
+ 
+-}  // namespace test::utils
++}}  // namespace test::utils
+diff --git a/libs/utils/test/cuvslam_yaml_config_test.cpp b/libs/utils/test/cuvslam_yaml_config_test.cpp
+index a211cc0..bb96f22 100644
+--- a/libs/utils/test/cuvslam_yaml_config_test.cpp
++++ b/libs/utils/test/cuvslam_yaml_config_test.cpp
+@@ -22,7 +22,7 @@
+ #include "common/include_gtest.h"
+ #include "cuvslam/cuvslam2_internal.h"
+ 
+-namespace test::utils {
++namespace test { namespace utils {
+ 
+ TEST(CuvslamYamlConfig, LoadsPerFrameKeyframeOverrideInternals) {
+   const std::string path = ::testing::TempDir() + "/internals_keyframe_override.yaml";
+@@ -39,4 +39,4 @@ TEST(CuvslamYamlConfig, LoadsPerFrameKeyframeOverrideInternals) {
+   EXPECT_TRUE(*internals.kf_override_frame_selection);
  }
  
 -}  // namespace test::utils
 +}}  // namespace test::utils
 diff --git a/libs/visualizer/visualizer.cpp b/libs/visualizer/visualizer.cpp
-index 116bae3..1233045 100644
+index c1ef5ab..40dc418 100644
 --- a/libs/visualizer/visualizer.cpp
 +++ b/libs/visualizer/visualizer.cpp
-@@ -21,7 +21,7 @@
+@@ -23,7 +23,7 @@
  
  #include "common/log.h"
  
@@ -7520,7 +8177,7 @@ index 116bae3..1233045 100644
  
  // RerunVisualizer implementation
  RerunVisualizer& RerunVisualizer::getInstance() {
-@@ -58,7 +58,7 @@ void RerunVisualizer::shutdown() {
+@@ -66,7 +66,7 @@ void RerunVisualizer::shutdown() {
    }
  }
  
