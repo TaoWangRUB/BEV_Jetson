@@ -557,7 +557,48 @@ than assumes, because a trigger swap is precisely the event that can degrade ske
   part of this change. **The C++ is edited but not compiled** (no ROS 2 on this host); it builds or
   fails in the §4.5 board session like the rest of the node.
 
-- [ ] 3R.17 **Re-run the offline rig verification before the board session**, unchanged from 4.1b:
+- [~] 3R.17 **Run 2026-09-01 as a dry run on the round-2 candidate — PASS, and it found something the
+  check was not looking for.** Left partial: the real run is against the promoted files after 3R.16.
+
+  Frustum, round-2 candidate (`closed.yaml` + `chains/`): **0.936 / 0.934 / 0.916 / 0.945**, all four
+  pairs, clear of the hard-coded 0.5 gate. Round-1 tracked config reproduces 4.1b exactly
+  (0.939/0.951/0.926/0.949). So the recalibration costs nothing in frustum overlap.
+
+  **But the pairing labels flipped between rounds**, and chasing that down found that round 1 and
+  round 2 place **cam2 and cam3 on opposite sides of cam1**:
+
+  | camera | physical | round 1 x | round 2 x |
+  |---|---|---|---|
+  | cam2 | front_right | **+0.109** | **−0.108** |
+  | cam3 | back_left   | **−0.100** | **+0.113** |
+
+  cam4 differs by only 2.15°; cam2 and cam3 differ by ~179° about the rig-vertical axis. **Nothing in
+  the pipeline caught this** — not the ring closure (1.58°), not the epipolar residuals, not the
+  frustum graph, which scores ~0.94 *either way* because each fisheye contributes two carves and one
+  always ends up facing a neighbour.
+
+  **Round 2 is the correct one**, and the chain is traceable end to end: `board_sender.sh` maps
+  port→topic explicitly (`CAMOF=( [c]=cam1 [d]=cam2 [e]=cam3 [f]=cam4 )`); `pair_left.yaml` puts cam3
+  at x = +0.113 in cam1's frame and `pair_front.yaml` puts cam1 at x = +0.109 in cam2's;
+  `closed.yaml` reflects both. And the frames the solve consumed are **raw and inverted** — verified
+  by pulling a frame out of `stage1_cam1_sel.bag`, where the printed text reads upside-down and the
+  floor is at the top. The VO node receives that same raw frame (the capture node memcpys, it does
+  not rotate), so the 180° mount roll makes **+x physically LEFT** in cam1's frame, and round 2
+  satisfies every sign. Round 1 is consistent with a solve on ISP-rotated (upright) frames
+  (`csi_sender.sh FLIP=2`) — the mechanism is not proven, and does not need to be, because 3R.16
+  replaces the file.
+
+  **Consequence for 3R.16: replace the extrinsics wholesale. Never merge a round-1 value into a
+  round-2 file** — the two are in mirrored frames and any mixture is geometrically incoherent while
+  passing every check that exists.
+
+  Added a check that is actually sensitive to it: `check_rig_poses.py` now takes the extrinsics and
+  `rig_layout.yaml` as optional arguments and asserts each camera's position *sign* against the
+  physical ring order. Verified both ways — round 2 exits 0, round 1 exits 1 naming both cameras.
+  `verify_rig_build.sh` also takes the three paths as arguments now, so a candidate solve can be
+  gated **before** promotion instead of only after.
+
+  Original text: re-run the offline rig verification before the board session, unchanged from 4.1b:
   `scripts/vo/verify_rig_build.sh` (cuVSLAM's own frustum test on the poses the C++ emits — the
   0.939/0.951/0.926/0.949 figures will move and must stay clear of the hard-coded 0.5 gate) and
   `scripts/vo/check_rig_poses.py`. This is the only part of §4 checkable without a build, and running
