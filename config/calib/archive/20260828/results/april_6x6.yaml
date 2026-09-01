@@ -1,0 +1,14 @@
+# AprilGrid target for Kalibr / tartancalib / quarterKalibr.
+#
+# The physical board: 6x6 tags, each tag 5.5 cm, gaps 1.65 cm -> 41.25 cm per side
+# (6 * 5.5 + 5 * 1.65). tagSpacing is a RATIO, not a length: 1.65 / 5.5 = 0.3.
+#
+# MEASURE THE PRINT before trusting this. Printers rescale silently, and an error here
+# goes straight into the metric scale of every extrinsic and into the VIO's scale.
+# Mount it flat (foam board); a curled print is a systematic error nothing downstream
+# can recover.
+target_type: 'aprilgrid'
+tagCols: 6
+tagRows: 6
+tagSize: 0.055        # m, black tag square
+tagSpacing: 0.3       # ratio of gap to tag size

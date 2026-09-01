@@ -10,7 +10,17 @@
 # "port X (no signal)" placeholder instead of stalling the grid (compositor ignore-inactive-pads).
 # Ctrl-C to stop. Needs gstreamer1.0 + gst-libav (avdec_h264).
 
-CW=480; CH=360                                 # per-cell size
+# Per-cell size, overridable. For a FOCUS check use one camera at native size, so nothing is
+# downscaled between the sensor and your eye:
+#   PORTS="c" CW=1456 CH=1088 JITTER=20 ./csi_receiver.sh
+CW=${CW:-480}; CH=${CH:-360}
+
+# rtpjitterbuffer trades latency for tolerance of reordering. 100 ms is comfortable on a direct
+# cable; drop it for a livelier preview while turning a focus ring, raise it on wifi.
+JITTER=${JITTER:-100}
+# Kernel socket receive buffer per stream: four simultaneous I-frames arrive faster than the
+# decoders drain them, and anything past the buffer is dropped by the kernel silently.
+RCVBUF=${RCVBUF:-8388608}
 CAPS="application/x-rtp,media=video,encoding-name=H264,payload=96"
 declare -A UDP=( [a]=5000 [b]=5001 [c]=5002 [d]=5003 [e]=5004 [f]=5005 )
 
@@ -51,7 +61,7 @@ done
 # top layer: the live cameras, overlaid on their cell (covers the placeholder when streaming)
 for p in "${CAMS[@]}"; do
   PROPS="$PROPS sink_${i}::xpos=${X[$p]} sink_${i}::ypos=${Y[$p]} sink_${i}::width=$CW sink_${i}::height=$CH"
-  BRANCHES="$BRANCHES udpsrc port=${UDP[$p]} caps=$CAPS ! rtpjitterbuffer latency=100 ! rtph264depay ! avdec_h264 !"
+  BRANCHES="$BRANCHES udpsrc port=${UDP[$p]} caps=$CAPS buffer-size=$RCVBUF ! rtpjitterbuffer latency=$JITTER ! rtph264depay ! avdec_h264 !"
   BRANCHES="$BRANCHES videoflip method=$RXFLIP ! videoconvert ! videoscale ! video/x-raw,width=$CW,height=$CH !"
   BRANCHES="$BRANCHES textoverlay text=\"port $p\" valignment=top halignment=left font-desc=\"Sans Bold 16\" shaded-background=true ! comp.sink_${i}"
   i=$((i+1))

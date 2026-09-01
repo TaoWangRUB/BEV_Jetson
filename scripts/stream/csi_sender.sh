@@ -21,7 +21,23 @@
 # -> cold power-cycle.
 
 HOST_IP="${1:-10.42.0.1}"
-W=640; H=480; FPS=30; BR=4000000
+
+# Overridable, because 640x480 is a "is this camera alive?" preview and some jobs need more.
+# Judging LENS FOCUS is the one that bites: at 640x480 the downscale removes exactly the high
+# spatial frequencies you are trying to peak, so a soft lens looks fine. Focus at native:
+#   W=1456 H=1088 BR=16000000 ./csi_sender.sh
+W=${W:-640}; H=${H:-480}; FPS=${FPS:-30}; BR=${BR:-4000000}
+
+# Kernel socket send buffer per stream. GStreamer's default is 0 = "whatever the kernel gives
+# you" (net.core.wmem_default, 212992 on a stock Tegra). Four cameras emitting an I-frame in the
+# same millisecond overrun that and the surplus is dropped IN THE KERNEL with no error anywhere -
+# it surfaces only as smeared video. That matters most at the full resolution above, where a
+# transport smear is indistinguishable from the soft focus you are trying to measure.
+# (Lesson already paid for in auvidea-j106-tx2/hw-trigger/scripts/sender.sh.)
+SNDBUF=${SNDBUF:-4194304}
+# Keep RTP payloads under the 1500-byte MTU so nothing is IP-fragmented; a fragmented RTP packet
+# loses the whole frame if any one fragment is dropped.
+RTP_MTU=${RTP_MTU:-1400}
 declare -A DEVOF=( [a]=1-0010 [b]=1-0012 [c]=2-0010 [d]=2-0012 [e]=7-0010 [f]=7-0012 )
 # IMX296 sits at 0x1a/0x18 instead of the IMX219 0x10/0x12, so the same physical port has a
 # different i2c name depending on which sensor is fitted. Match either.
@@ -87,8 +103,8 @@ for p in "${PORTS[@]}"; do
     "video/x-raw(memory:NVMM),width=$W,height=$H,framerate=$FPS/1,format=NV12" ! \
     nvvidconv flip-method=$FLIP ! "video/x-raw(memory:NVMM),format=NV12" ! \
     nvv4l2h264enc bitrate=$BR insert-sps-pps=1 iframeinterval=15 idrinterval=15 maxperf-enable=1 ! \
-    h264parse ! rtph264pay config-interval=1 pt=96 ! \
-    udpsink host="$HOST_IP" port="${UDP[$p]}" sync=false async=false &
+    h264parse ! rtph264pay config-interval=1 pt=96 mtu=$RTP_MTU ! \
+    udpsink host="$HOST_IP" port="${UDP[$p]}" sync=false async=false buffer-size=$SNDBUF &
   echo "  port $p (sensor-id ${SID[$p]}) -> udp $HOST_IP:${UDP[$p]}"
   sleep 3   # stagger Argus session starts; simultaneous opens lose the race (a camera fails to stream,
             # and at 6 sessions the failure cascades: CANCELLED -> DISCONNECTED -> daemon socket reset,

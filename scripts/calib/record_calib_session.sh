@@ -19,7 +19,7 @@ OUT="${1:-bags/calib_$(date +%Y%m%d_%H%M%S)}"
 EXPOSURE_US="${EXPOSURE_US:-}"        # default: read from the trigger generator
 EVERY_N="${EVERY_N:-8}"               # 30 Hz / 8 = 3.75 Hz images; solvers want ~4 Hz
 TRIGCTL="${TRIGCTL:-/home/nvidia/tools/j106-trigctl.py}"
-TRIG_PORT="${TRIG_PORT:-/dev/ttyTHS1}"
+TRIG_PORT="${TRIG_PORT:-/dev/ttyACM0}"   # F401 (USB CDC) since 2026-08-31; the H7 was /dev/ttyTHS1
 SUDO="echo nvidia | sudo -S"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -128,12 +128,19 @@ echo "  recording to $OUT"
 # Ring order (config/rig/rig_layout.yaml): c=front-left, d=front-right, e=back-left,
 # f=back-right, so neighbours are c -> d -> f -> e. cam2 and cam3 are DIAGONAL.
 stage() {
-  printf '\n  \033[1mStage %s/8: show the target to %s\033[0m\n' "$1" "$2"
+  printf '\n  \033[1mStage %s/9: show the target to %s\033[0m\n' "$1" "$2"
   printf '    %s\n' "$3"
   read -r -p "    press ENTER when that stage is done "
 }
-say "Eight stages. Fill the frame, move the target around within it, and keep it OUT of
-the other cameras' view during the single-camera stages."
+say "Nine stages. Fill the frame, move the target around within it, and keep it OUT of
+the other cameras' view during the single-camera stages.
+
+WORK THE PERIPHERY. The 2026-08-28 session left 13-21 of 64 cells per camera short of
+quota, all peripheral - which is exactly where a >180 degree lens is unconstrained and
+where a calibration that never saw the target is confidently wrong. You do NOT need the
+whole board in frame: Kalibr accepts an observation at 7 tags, so push the grid into the
+corners where only a third of it is visible. Tilt 30-45 degrees in BOTH axes, and pause
+at each pose."
 stage 1 "cam1 ONLY (port c, front-left)"   "intrinsics for the front-left camera"
 stage 2 "cam2 ONLY (port d, front-right)"  "intrinsics for the front-right camera"
 stage 3 "cam4 ONLY (port f, back-right)"   "intrinsics for the back-right camera"
@@ -142,6 +149,14 @@ stage 5 "cam3 AND cam1 (back-left + front-left)"   "left-side overlap"
 stage 6 "cam1 AND cam2 (front-left + front-right)" "front overlap"
 stage 7 "cam2 AND cam4 (front-right + back-right)" "right-side overlap"
 stage 8 "cam4 AND cam3 (back-right + back-left)"   "rear overlap"
+stage 9 "THREE OR MORE cameras at once"           "board at a rig corner, ~0.8-1.2 m, so two adjacent pairs and their shared camera all see it"
+
+# Stage 9 exists because the four pairwise stages cannot see their own error. They closed
+# the ring to 3.63 deg / 9.2 mm, and a Monte-Carlo over each pair's reported spread says
+# random error would leave only ~0.5 deg - so most of it is SYSTEMATIC bias inside each
+# recording, which is invisible while every constraint is pairwise and gets absorbed
+# silently by the ring closure. Three cameras on one board at one instant makes it
+# observable instead.
 
 say "IMU excitation — hold the target in view of any camera and rotate the rig about
 all three axes, then translate along all three. Kalibr needs the target visible while

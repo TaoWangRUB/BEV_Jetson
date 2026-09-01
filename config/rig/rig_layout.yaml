@@ -20,10 +20,27 @@ cameras:
 # overlap it needs does not exist.
 ring_order: [cam1, cam2, cam4, cam3]     # c (FL) -> d (FR) -> f (BR) -> e (BL)
 
+# RE-VERIFIED 2026-08-31, after the cameras were reconnected and the lenses refocused.
+# Checked from the images rather than from boot order, because a reconnect is exactly what
+# can swap two ribbons while every software-visible mapping stays put:
+#   - the nappy box sits at cam1's RIGHT edge and cam2's LEFT edge  (the FL/FR overlap)
+#   - the rover wheel sits at cam1's LEFT edge and cam3's RIGHT edge (the FL/BL overlap)
+# So the ring order below holds and no pair is swapped. A swap would have the pairwise
+# calibration solving a DIAGONAL pair as if it were a stereo baseline.
+#
+# NOT established, and per the operator probably NOT true: that the physical module on a
+# given port is the one that was there before. Intrinsics belong to the module, so no
+# per-camera intrinsic from before 2026-08-31 may be carried across a port here.
+
 # The modules are mounted INVERTED, so raw images are upside-down. Confirmed on the
-# hardware 2026-08-28. The capture path rotates 180 on the ISP (csi_sender FLIP=2), and
-# the roll is folded into rig_extrinsics_vo.yaml rather than applied as a hidden extra
-# step somewhere downstream.
+# hardware 2026-08-28, and RE-CONFIRMED 2026-08-31 after the reconnect by the only
+# unambiguous test: printed text. As captured, the text on the box in view reads
+# upside-down and the floor is at the TOP of the frame; both come right after a 180
+# rotation. Do not re-derive this from "which way up does the scene look" - that
+# inference was made once here and was wrong.
+#
+# The capture path rotates 180 on the ISP (csi_sender FLIP=2), and the roll is folded into
+# rig_extrinsics_vo.yaml rather than applied as a hidden extra step somewhere downstream.
 camera_roll_deg: 180
 
 imu:

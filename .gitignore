@@ -17,3 +17,8 @@ __pycache__/
 bags/
 scripts/calib/capture/
 config/rig/rig_extrinsics_tuned.yaml
+
+# Recorded sessions: hundreds of GB, and calib_20260831 is a symlink to /mnt/DataStore.
+# The SOLVER OUTPUTS are preserved under config/calib/archive/ instead - see its README.
+datasets/
+cyclonedds.log

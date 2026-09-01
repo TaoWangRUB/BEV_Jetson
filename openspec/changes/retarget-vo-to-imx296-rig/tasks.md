@@ -61,6 +61,12 @@
 
 ## 3. Calibrate, in stages (the quarterKalibr method — never a joint 4-camera solve)
 
+> **Superseded 2026-08-31 for the hardware now on the rig.** The cameras were reconnected, the
+> lenses refocused and the trigger source changed to an F401, so 3.4/3.5/3.5b/3.6/3.7 describe a
+> rig that no longer exists. They are kept as the method of record and as the prior every new
+> number is cross-checked against — see **§3R**, which re-runs them. Nothing downstream may be
+> run against these results.
+
 - [~] 3.1 **Two capture paths, one per purpose.** First attempt ran everything on the board — capture, IMU, bag recorder, live preview with tag detection — and it does not fit: load hit 8 on six cores, the preview died, and the recorder crawled. Frames were never lost, but the operator was flying blind and the first stage came back 23 % usable with 22 of 36 image cells untouched, all at the periphery.
 
   So the work is split by what each machine is for:
@@ -86,7 +92,44 @@
 
   **Still open:** the ~1° of systematic per-recording bias. It needs a recording where **three or more cameras see the board simultaneously**, which makes the bias observable instead of absorbed. Also worth calipers on the printed board — a print-scale error is common-mode across all four recordings, invisible to every consistency check run so far, and scales VO output directly.
 - [x] 3.6 **Δ MEASURED: −8.06 ms**, and verified as a genuine timestamp offset — shifting every camera stamp by a known +10.000 ms moved the estimate by −10.000 ms (residual −1.2 µs). Kalibr fits a continuous spline, so the 200 Hz IMU rate does not quantise it. Solved from 911 images at 9.40 Hz and 19 717 IMU samples at **199.50 Hz** (an earlier "204 Hz" was my arithmetic — IMU count over the *image* span). Residuals 0.366 px / 0.00156 rad s⁻¹ / 0.0424 m s⁻².
-- [ ] 3.6b **Establish what causes the −8.06 ms.** Half the J106-measured 16.1 ms readout is 8.05 ms — a 10 µs coincidence with our figure, and the leading hypothesis that Argus' SOF is not the instant we assume. The DLPF group delay (2.9 ms gyro, unapplied) is the other term. This matters beyond tidiness: a readout offset is **constant** and Δ absorbs it permanently, while a mis-modelled exposure **moves with the trigger pulse width**, which is the exposure on this rig. Settling it needs the trigger echo into a GPIO (`hw-trigger/WIRING.md` §4.4).
+- [x] 3.6b **ANSWERED 2026-09-01 — the offset is the IMU's DLPF group delay, and no GPIO echo was
+  needed for the conclusion.** Two independent measurements, each with the prediction stated first:
+
+  1. **Delta vs exposure** (3R.14b): a mis-modelled exposure term predicted a 2.5 ms shift over a
+     5 ms exposure change. Measured **0.13 ms**. The camera-side stamping is correct.
+  2. **Delta vs gyro DLPF bandwidth**: the MPU-9250's group delay is *reported and deliberately not
+     applied*, so it should land inside Delta and move with the bandwidth.
+
+     | gyro DLPF | datasheet group delay | Delta measured |
+     |---|---|---|
+     | 184 Hz (index 1) | 2.90 ms | **+3.7556 ms** |
+     | 41 Hz (index 3) | 5.90 ms | **+6.5479 ms** |
+     | change | **+3.00 ms** | **+2.792 ms** |
+
+     Delta tracked the group delay to **93 %** of the predicted slope. Mechanism confirmed.
+
+  **The trigger echo was wired anyway (route A, open-drain), and it is what makes the accounting
+  complete** rather than merely consistent. `PA5` on the F401 drives `TIM2_CH1` open-drain into
+  `gpio-389` (`GPIO_PQ5_PI5`, M110 J21 pin 8, 1.8 V unbuffered), with the pull-up supplied by a DTB
+  change (`LABEL j106echo`) so nothing drives that pad above 1.8 V — no divider, no resistor.
+  `scripts/trig-echo-stamp.py` timestamps the falling edge, `trig-echo-delta.py` compares it with
+  the frame log:
+
+      e = t_sof - t_edge - exposure     (0 if SOF marks the end of exposure)
+      5 ms  ->  +0.3112 ms
+      10 ms ->  +0.3097 ms
+      20 ms ->  +0.3109 ms
+
+  **A constant +0.31 ms, varying by 1.5 us over a 4x exposure change.** So SOF sits a fixed 0.31 ms
+  after end-of-exposure and the camera contributes only `w - e` = **-0.26 ms** to Delta. Transport
+  was excluded separately: the camera's messages arrive ~55 ms later relative to their stamps than
+  the IMU's, but both are stamped at source, so DDS latency cannot reach Delta — and if it could,
+  the signature would be 55 ms, not 4.
+
+  Residual worth stating: 0.05 - 0.31 + 2.90 = **2.64 ms** predicted against **3.76 ms** measured,
+  so ~1.1 ms is still unaccounted for. The *slope* is what confirms the mechanism; the remaining
+  offset is plausibly the accel path (1.88 ms, unchanged between the two runs) diluting a fit that
+  uses both. Not chased further - it is inside Delta, which is applied as one measured constant.
 - [x] 3.7 **Stage 4 done — four virtual stereo pairs generated, measured, and rebuilt on the closed rig.** Each fisheye carved into two virtual pinholes at ±45°; the facing pair is *derived* from the extrinsic (optical axes 1.0–1.4° apart) rather than assumed. Config in `config/rig/virtual_stereo_imx296.yaml`, generator + checker + disparity in `scripts/calib/`.
 
   **768×576, fov 70° (from the horizontal 160°), focal 548.4 px.** The first attempt carved by the *diagonal* 190°, which asks each pinhole to reach 95° off-axis where the lens delivers 80 — every rectified view came back with a black wedge (90 % non-black vs 100 % now). The lens is D190/**H160** and the split is by yaw, so the horizontal field governs.
@@ -108,6 +151,348 @@
 - [x] 3.9 **Orientation settled: the 180° roll IS needed** — confirmed on the hardware. My inference from a live frame (desk and cables at the bottom ⇒ upright) was **wrong**; the modules are mounted inverted, as the IMX219 rig was. So `flip_180` and the roll folded into `rig_extrinsics_vo.yaml` stay. Recorded in `config/rig/rig_layout.yaml` together with the camera positions and the measured IMU axes.
 - [ ] 3.10 Optional cross-check: solve one camera's intrinsics with the existing OpenCV checkerboard path (`intrinsic_calib.py`) and compare. Independent tooling on independent data is worth having if a tartancalib result looks odd — it is not on the critical path.
 
+## 3R. Recalibration after the 2026-08-31 hardware change
+
+The rig changed under the calibration: **cameras were reconnected, the lenses were refocused, and
+the trigger source is now an F401.** Every number in §3 was measured on the previous state, so §3
+above is retained as the *method of record and the prior* — not as the calibration in force. Nothing
+in §4.5 or §5 may be run against it.
+
+What each change invalidates, and why:
+
+| change | invalidates | why |
+|---|---|---|
+| lenses refocused | **all four intrinsics** (3.4), and through them the pairwise extrinsics (3.5), the closure (3.5b) and the virtual-stereo carve (3.7) | focus moves focal length, principal point and the distortion curve together; on an M12 barrel it also rotates the lens, so the distortion centre and the optical axis both shift |
+| cameras reconnected | the **port ↔ module ↔ camN** identity, and the mount pose if a module was disturbed | intrinsics belong to a *module*, extrinsics to a *mounting position*. A module that moved ports carries its intrinsics with it; a mount that was nudged does not |
+| trigger source → F401 | the exposure constant (1.10), the frame-time provenance (1.9), and **Δ** (3.6) | the stamp is `SOF − exposure/2` and the exposure *is* the trigger pulse width. A different pulse width moves every stamp by half the difference, and Δ absorbs exactly that |
+
+Sync itself (0.4) and the capture node (§1) are **not** assumed broken — but 3R.2 re-measures rather
+than assumes, because a trigger swap is precisely the event that can degrade skew silently.
+
+### A. Re-establish identity and the trigger (board, ~1 h)
+
+- [x] 3R.1 **Port → position → camN re-verified 2026-08-31, from the images themselves.**
+  `c = front-left (cam1), d = front-right (cam2), e = back-left (cam3), f = back-right (cam4)`,
+  as the operator states and as `config/rig/rig_layout.yaml` already had it. Kernel bind order also
+  unchanged (`/dev/video0..3` = `imx296 2-001a, 2-0018, 7-001a, 7-0018`), though 1.1 still resolves
+  it at runtime rather than trusting that.
+
+  **Verified by overlap, not by boot order**, which is what a reconnect can silently break: one raw
+  frame from each port, debayered and rotated 180°. The nappy box sits at cam1's **right** edge and
+  cam2's **left** edge (a front-left/front-right pair shares exactly that region); the rover wheel and
+  can sit at cam1's **left** and cam3's **right** (front-left/back-left share that one). So the ring
+  order `c → d → f → e` holds and no ribbon pair was swapped — which is the failure that matters,
+  because a swap would have the pairwise stage solving a **diagonal** pair as a stereo baseline.
+
+  **The 180° roll survives the reconnect**, and it was checked the unambiguous way — printed text.
+  As captured, the nappy box reads upside-down and the floor sits at the *top* of the frame; both
+  come right only after `ROTATE_180`. So 3.9's `camera_roll_deg: 180` and `flip_180` stay. (Rendered
+  both ways deliberately: 3.9 records that this same inference was made from a live frame once
+  before and was **wrong**, so a judgement about "which way up does this look" is not good enough —
+  text is.)
+
+  **Module identity is NOT established, and per the operator the module on port c is probably not
+  the one that was there before** — only the port sequence c/d/f/e is unchanged. That is fine and
+  changes nothing about the plan: every intrinsic is re-measured per port, so whatever sits on port c
+  simply becomes cam1. The one consequence is that **the old `camN.yaml` cannot be attributed to the
+  new `camN`**, which guts 3R.7.
+- [x] 3R.2 **Sync baseline re-measured on the F401 — PASS, and identical to the H7.**
+  `j106-sync-check.py -n 300`, 10 s, 2026-08-31:
+
+  | node | frames | dropped | interval | jitter (sd) | rate | median skew | max skew | drift |
+  |---|---|---|---|---|---|---|---|---|
+  | video0 (c) | 300 | 0 | 33330.7 µs | 5.7 µs | 30.00 fps | — | — | — |
+  | video1 (d) | 300 | 0 | 33330.7 µs | 5.7 µs | 30.00 fps | 0.0 µs | 1.0 µs | −0.01 µs/s |
+  | video2 (e) | 300 | 0 | 33330.7 µs | 5.7 µs | 30.00 fps | 0.0 µs | 1.0 µs | −0.01 µs/s |
+  | video3 (f) | 300 | 0 | 33330.7 µs | 5.7 µs | 30.00 fps | 0.0 µs | 1.0 µs | −0.00 µs/s |
+
+  Verdict **SYNCHRONISED** — worst skew 1.0 µs, worst drift 0.01 µs/s, exactly 0.4's numbers. All
+  four channels are compare outputs on one 32-bit counter (TIM2 here, TIM5 on the H7), so the edges
+  are the same hardware event and the skew is a property of that sharing, not of the part.
+
+  Two differences from the H7, both benign and both worth having on record:
+  - **Jitter 5.7 µs sd against the H7's 0.7 µs.** Still 1/175 of the 1 ms gate. Unexplained; the
+    F401's timer tick is 11.9 ns against 8.33 ns, which does not account for it.
+  - **Mean interval 33330.7 µs against a commanded 33333.3**, i.e. the frames arrive ~78 ppm fast
+    *in TX2 CLOCK_MONOTONIC*. That is the difference between the F401's 25 MHz crystal and the TX2's
+    oscillator, and it is harmless here because the stamps are taken by the TX2 kernel at SOF, not
+    by the MCU. Do not "correct" it.
+- [x] 3R.3 **F401 read out, and it is not a like-for-like replacement.** It enumerates as USB CDC
+  (`0483:5740`, descriptor string `STM32F407`) on **`/dev/ttyACM0`** — the H7 was reachable only on
+  the M110 UART `/dev/ttyTHS1`, so `TRIGCTL`/`TRIG_PORT` must change wherever they are hard-coded
+  (`scripts/calib/record_calib_session.sh` defaults to `/dev/ttyTHS1`). `j106-trigctl.py` speaks to
+  both unchanged. Live status 2026-08-31:
+
+  ```
+  clock=hse25-pll84  timer_hz=84000000  running=1
+  period_us=33333    fps_milli=30000    polarity=active_low (idle LED ON)
+  ch1..4_exposure_us=30000  pulse_ns=29985740  ccr=2518802   opto_skew_ns=0
+  ```
+
+  `clock=hse25-pll84` confirms the crystal started rather than the ~1 %-accurate HSI fallback, which
+  would land directly on the frame rate. **Two settings differ from the H7 and both matter:**
+
+  1. **Polarity is now `active_low`**, where the H7 reported `active_high`. The label is not evidence
+     of what the sensor sees, so it was measured: at a fixed scene and gain, cam1's mean raw level
+     went **1001.2 → 1108.1 → 1270.7** for commanded **5000 → 15000 → 30000 µs** — incremental slope
+     **0.0107 and 0.0108 counts/µs**, agreeing to 1 %, on a ~736-count black level. So **the
+     commanded exposure is the asserted exposure**; `active_low` inverts the pin, not the meaning,
+     and the complement hypothesis (period − pulse) is dead — it predicts brightness moving the
+     other way. (The straight line extrapolates to ~947 at E = 0, about 210 counts above the
+     measured black level. Unexplained, not load-bearing for the polarity question, and not worth
+     chasing before the recording.)
+  2. **Exposure is 30000 µs, not the 4986 µs task 1.10 pinned.** That is a 90 % duty cycle, and it
+     moves the exposure-midpoint stamp by **12.5 ms** — 1550× the Δ we are trying to resolve. Every
+     `exposure_us` in the compose services is now wrong, and so is Δ. See 3R.4a for the choice this
+     forces and 3R.14b for the experiment it enables.
+
+  Also confirmed, incidentally: the v4l2 `exposure` control reads **520 µs** while the trigger holds
+  the line for 30000 — which is task 1.10's finding from the other side. The sensor's own exposure
+  register is inert under Fast Trigger, and anything reading it (Argus did) is reading a fiction.
+- [~] 3R.4 **Brightness measured raw; the ISP-path check still owed.**
+  `scripts/port/luma_stability.py` (30 s, four cameras, ISP path, Argus gain locked 16.0/4.0) is
+  still the check that counts and needs 3R.4a settled first. What the raw v4l2 probe already shows,
+  2026-08-31, room lit largely by daylight:
+
+  - **Two of four cameras clip at 30 ms.** cam2 and cam4 face windows and sit at full scale
+    (16383, i.e. p99.5 = max) ; cam1 and cam3 have **zero** clipped pixels. Blown highlights near the
+    target destroy corner detection, so keep the AprilGrid away from the windows or bring the
+    exposure down.
+  - **No mains flicker detectable.** 60 frames at a deliberately short 2000 µs (a long exposure
+    integrates the ripple away, which is the point): after a 5-frame startup step the per-frame mean
+    is flat to **±0.8 counts out of ~1000**, with **no 3-frame beat**. At 30 fps a 50 Hz mains ripple
+    (100 Hz) aliases to 10 Hz and would show as exactly that beat, so **50 Hz flicker is ruled out**.
+    A 60 Hz ripple (120 Hz) aliases to ~0 Hz and would be *invisible* to this test, so this does not
+    prove the absence of flicker in general — it proves there is none to cancel in this room, in
+    daylight. **Re-run at night under artificial light** before treating 1.7's p2p question as
+    closed, and note that this weakens the flicker argument for a long exposure (see 3R.4a).
+
+- [x] 3R.4a **Choose ONE operating exposure, and use it for the calibration, for Δ, and for the VO.**
+  This is now a decision, not a default: the rig was found at 30000 µs and the previous calibration
+  ran at 4986 µs.
+
+  Why it cannot be deferred: the stamp is `SOF − exposure/2`, so Δ is measured *at* an exposure.
+  Calibrating Δ at 30 ms and then flying at 5 ms puts every camera stamp **12.5 ms** out — against a
+  Δ of −8.06 ms and a sync budget of 1 µs. The two ends of the range trade against each other and
+  neither is free:
+
+  | | 30000 µs (as found) | ~5000 µs (the H7 setting) |
+  |---|---|---|
+  | duty cycle | 90 % of the frame period | 15 % |
+  | motion blur | severe under any rig motion — and §5 is a *motion* test | negligible |
+  | signal (cam1 raw mean, black ≈ 736) | 1270.7 | 1001.2 — the room measured genuinely dark |
+  | highlights | **cam2 and cam4 clip at full scale** on the windows | no clipping anywhere |
+  | readout margin | 3.3 ms, just inside the firmware's 1 ms refusal | ample |
+
+  A dark room is the honest argument for 30 ms and is why it was set. Two measurements weaken it:
+  the extra light is bought at the cost of **clipping two of the four cameras**, and there is **no
+  50 Hz flicker to integrate away** (3R.4), so the one argument that would have favoured a long
+  exposure on principle does not apply here. Against it stands a 90 % duty cycle in a change whose
+  §5 is a *motion* test, and blur is not something a calibration undoes afterwards.
+
+  **Prefer more light or more gain over more exposure.** If flicker does turn up at night, the
+  exposures that cancel it are integer multiples of a mains half-cycle — 10 or 20 ms at 50 Hz,
+  8.33 / 16.67 / 25 ms at 60 Hz — which is a better way to buy that property than 30 ms. Settle it
+  before 3R.9: changing it mid-session changes blur and the frame-time model at once, and the two
+  are then inseparable.
+
+  Whatever is chosen: set it explicitly at the start of every session. **Settings do not survive a
+  power cycle** — the F401 boots at 30.000 fps / 5000 µs / `pol 1`, and the current live state is
+  *not* those defaults, so something already re-applies them by hand. `record_calib_session.sh`
+  reads the generator rather than assuming, which is the behaviour to keep.
+
+  **SETTLED 2026-08-31: 5000 µs**, chosen by the operator to eliminate blur, and set live
+  (`ch1..4_exposure_us=5000  pulse_ns=4985740`). So **`EXPOSURE_US=4986`** — the measured pulse
+  width, not the commanded 5000 — everywhere the stamp is computed, and the camera↔IMU stage and
+  the VO both run at this exposure.
+
+  The room is genuinely dark at 5 ms (cam1 raw mean 1001 on a 736 black level, i.e. ~265 counts of
+  signal). **Add light before 3R.9** rather than winding the exposure back up: that is the trade this
+  task exists to prevent making twice.
+
+### B. Settle the optics before spending a session on them (~30 min)
+
+- [ ] 3R.5 **Verify focus at the VO's working distance, then lock the barrels.** Sharpness at the
+  centre *and* at four field points, on a textured target at **1.5–3 m** — not at the 0.3–0.6 m the
+  calibration board sits at, or the rig ends up focused for the calibration rather than for the job.
+  Then thread-lock. This is the point of no return and it is deliberately placed *before* the
+  recording: any focus touch after it invalidates everything that follows, which is exactly how we
+  got here.
+- [ ] 3R.6 **Calipers on the printed AprilGrid** (the open item from 3.5b). Measure five tag pitches
+  and divide. A print-scale error is common-mode across all four recordings, invisible to ring
+  closure and to every consistency check run so far, and it scales VO translation output *directly* —
+  the one error that a metric-scale claim cannot survive. Correct `tagSize` in
+  `config/calib/april_6x6.yaml` if it disagrees with 0.055 m by more than ~0.3 %.
+- [ ] 3R.7 *(optional, and much weakened)* **Reproject frames through the OLD `camN.yaml`.**
+  As planned this had two purposes and 3R.1 removed both: it cannot measure "how far the refocus
+  moved camera N's optics", because the module on port N is probably not the one those intrinsics
+  were solved for; and it is no longer needed to detect a swap, since a swap is assumed. What remains
+  is one gross sanity number for the writeup — *the old calibration no longer describes this rig* —
+  which nothing downstream depends on. Do it only if a new solve looks odd and a second opinion is
+  wanted.
+
+### C. Record (host-side capture, ~2 h at the rig)
+
+- [~] 3R.8 **Preserve the superseded calibration before writing anything new** — the rig-calibration
+  spec requires it (*"Superseded calibrations are retained, not overwritten"*).
+
+  **Archive DONE 2026-08-31.** `config/calib/archive/20260828/` holds every solver result, report and
+  render from the 2026-08-28 session — 83 files, 19 MB, sha256 manifest verified — with
+  `DELETED_INVENTORY.txt` naming each of the 63 raw files removed, and a table mapping each §3R result
+  to the prior it should be checked against. The raw recordings are **deleted**: 30 GB of image bags
+  and 5.6 GB of Kalibr `log.pkl` solver state, neither of which carries a number the reports do not.
+  `datasets/calib_20260828_raw_keep/imu_stream.csv.gz` (26 MB) is the one exception — the only raw
+  stream that could re-fit Δ if 3R.14's solve looks wrong.
+
+  Still to do here: rename `config/calib/imx296_1456x1088/` → `imx296_1456x1088_20260828/`, likewise
+  `rig_extrinsics_imx296.yaml`, the closed rig and `virtual_stereo_imx296.yaml`, each gaining a
+  `superseded_by:` / `superseded_reason:` header naming this hardware change. **Disk: 146 G free
+  after the archive**, against ~21 G for a full-rate session plus solver output — check headroom
+  before recording, not during.
+- [x] 3R.9 **Recordings done 2026-08-31/09-01.** Four single-camera sweeps re-recorded on 09-01
+  after the first set proved unconverged (see 3R.11): 10 370 / 13 926 / 11 507 / 11 174 frames,
+  every one at exactly 15.00 Hz with the board CSVs md5-verified and the board copy deleted.
+
+  **The four pair recordings from 08-31 are reused unchanged** — the lenses and mounts have not
+  been touched since, so those images are still valid; only the intrinsics they are solved against
+  changed, and the new ones are *better* precisely in the image periphery where the pair overlap
+  sits. 996 / 1234 / 1124 / 1433 simultaneous poses, 0.0 µs median skew.
+
+  **Stage 9 (three cameras at once) was dropped, correctly.** The lens is H160 and the cameras sit
+  90° apart, so adjacent pairs overlap by 70° while *diagonal* pairs have a 20° blind gap — and any
+  triple contains a diagonal pair. It is geometrically impossible on this rig, not merely hard. It
+  was my addition, not OmniNxt's.
+- [x] 3R.10 **Camera↔IMU stage recorded four times** (2026-09-01), all via the ROS path with
+  exposure-midpoint stamps and the full 200 Hz IMU in the bag — no CSV reconstruction needed this
+  time: 5 ms (1101 img), 10 ms (812), DLPF 184 Hz (1600), DLPF 41 Hz (757). Excitation verified per
+  run (gyro sd 0.17/0.16/0.33 rad/s, peak 1.91). Results in 3R.14 / 3R.14b / 3.6b.
+- [x] 3R.11 **Stage 1 done — all four intrinsics re-solved on corner-inclusive sweeps (2026-09-01).**
+  The first sweeps (2026-08-31) were re-done after the solve proved unconverged: fx moved 45 px
+  between frame subsets of the *same* recording, with `xi` moving alongside it and `cx/cy` fixed —
+  the signature of the Mei xi/focal ridge, not noise. Cause was no coverage at high incidence.
+
+  | camera | xi | fx | fy | cx | cy | reproj px | cells short |
+  |---|---|---|---|---|---|---|---|
+  | cam1 | 2.0315 | 1618.81 | 1621.96 | 759.05 | 554.43 | 0.287 / 0.281 | 1 |
+  | cam2 | 2.0572 | 1628.77 | 1629.48 | 743.03 | 525.38 | — | — |
+  | cam3 | 1.9667 | 1562.58 | 1564.04 | 740.07 | 558.91 | — | **0** |
+  | cam4 | 2.0011 | 1592.62 | 1595.76 | 728.59 | 550.52 | — | 1 |
+
+  **Subset-stability check (the test that matters), full selection vs a thinner subset of the same
+  recording:** cam1 agrees to **0.06 px** in fx; cam2 5.0; cam4 9.8; **cam3 34.4**. Only cam1 is
+  demonstrably converged. Note cam3 has *perfect* cell coverage and the worst stability — so the
+  8x8 cell grid is a poor proxy for what constrains the model, which is **incidence angle**, not
+  image position. A corner *cell* can be filled by tags at moderate field angle.
+
+  Carried forward: cam2/cam3/cam4 intrinsics are usable but carry 0.3-2.2 % focal uncertainty,
+  which propagates to the pairwise baselines and to metric scale. Revisit if 3R.13's ring residual
+  or the §5.1 scale check disappoints.
+- [~] 3R.12 **Stage 2 — the four pairwise extrinsics.** Running 2026-09-01 on the 08-31 pair
+  recordings with the new intrinsics, via `scripts/calib/pair_extrinsics.py`. First result — left
+  (cam3→cam1): **994 simultaneous views, baseline 155.4 mm, rotation 90.01°**, against round 1's
+  147.8 mm / 90.9°. The 5 % baseline shift is explained by the focal change (1685→1619 px is 4.1 %,
+  and baseline scales with it), and the rotation is now square to 0.01°.
+
+  **Stage 2 — the four pairwise extrinsics**, Kalibr's own detector and `T_t_c` (3.5's
+  hand-rolled board model plateaued at 11 px and a metre of baseline error — do not revisit it).
+  Cross-check the baselines against the previous 147.8/148.7/149.1/149.1 mm: they should still agree
+  to a few mm *and* match the physical mount. A real disagreement here is a mount that moved, and
+  `rig_layout.yaml` needs updating with it.
+- [ ] 3R.13 **Ring closure** (`scripts/calib/close_rig_ring.py`), reporting residual before/after,
+  per-edge corrections, and the per-pair epipolar cost — the closure buys consistency, not accuracy,
+  and 3.5b's discipline of printing what it cost stands. If the new pre-closure residual is much
+  larger than 3.63°, resolve it against 3R.9's three-camera stage *before* accepting the closure;
+  a loop driven to zero is not evidence of a correct answer.
+- [x] 3R.14 **Delta MEASURED 2026-09-01: +3.73 ms** (`timeshift_cam_imu = 0.003731525`), cam1 at
+  4986 us exposure, 1101 images and 14 693 IMU samples at 200.11 Hz, reprojection residual 0.45 px.
+  Repeated on an independent recording at the same DLPF: **+3.7556 ms** — the two agree to **24 us**.
+
+  **The sign and magnitude both changed from last session's -8.06 ms, and the old value does not
+  reproduce.** Two reasons to trust the new one: last session's IMU input had to be rebuilt from CSV
+  because rosbag2 dropped it to 43 Hz (these carry the full 200 Hz in the bag), and it used the
+  intrinsics we have since shown to be unconverged. `T_cam_imu` agrees to ~1e-3 across the two new
+  solves. The "half the readout = 8.05 ms" coincidence is therefore dead — and it was a
+  rolling-shutter quantity on a global-shutter sensor anyway.
+- [x] 3R.14b **Two exposures — Delta is CONSTANT.** +3.7315 ms at 4986 us, +3.8612 ms at 9986 us.
+  A mis-modelled `exposure/2` term predicted a **2.5 ms** shift; the measurement moved **0.13 ms**,
+  so in `Delta = c + k*E` the slope is **k ~ 0.026, i.e. zero**. The exposure-midpoint stamping is
+  correct and Delta is a fixed offset valid at any exposure.
+- [ ] 3R.14c **Align the gyro and accel filter delays, then re-measure Δ.** The two IMU paths
+  currently disagree by **1.02 ms** — gyro 2.90 ms at 184 Hz, accel 1.88 ms at 218 Hz — and
+  `imu_node` says so on every startup (*"group delays are REPORTED, not applied: the gyro lags the
+  accel by 1.02 ms"*). Kalibr fits **one** Δ for both, so no single offset can correct two different
+  lags; this is the leading suspect for the ~1.1 ms still unattributed in 3.6b.
+
+  `accel_dlpf=2` (99 Hz, 2.88 ms) aligns them to **0.02 ms**, a 50× improvement, and incidentally
+  puts the accel's corner near the 100 Hz Nyquist of the 200 Hz sample rate — 218 Hz is well past
+  it, so the present setting aliases. Raising the *gyro* bandwidth instead would be the wrong move:
+  a constant delay is fully absorbed by Δ, so there is nothing to gain, and 250 Hz aliases worse.
+
+  Costs one 90 s recording plus a solve, since Δ moves by ~1 ms when the accel path changes.
+  Recorded in `config/calib/imu_mpu9250.yaml` alongside the measured constant.
+
+- [ ] 3R.15 **Regenerate the four virtual-stereo pairs** on the new closed rig
+  (`scripts/calib/regen_vstereo.sh`, `VS_FOV=160`, 768×576 — the horizontal-160 carve of 3.7, not the
+  diagonal 190). Gates: 100 % non-black per rectified view, disparity sign consistent, median |dy|
+  reported per pair against the previous 0.45/1.79/2.55/0.66 px. Dense-disparity validity on a
+  calibration sweep remains *not* evidence either way (3.7).
+
+### E. Publish, and re-verify what can be verified offline
+
+- [ ] 3R.16 **Write the results into the files the consumers actually read.** This is §3.8 against
+  the new session. Corrected 2026-08-31 after checking the launch file and the VO node:
+
+  - `config/calib/imx296_1456x1088/camN.yaml` — tartancalib camchain converted to our
+    `mu,mv,u0,v0` + `k2..k5`, with `sensor: imx296` and the true image size.
+  - **`config/rig/rig_extrinsics_imx296.yaml`** — the ring-closed `rig_in_cam1` block. This is the
+    file `bev_cuvslam.launch.py` loads (line 22), and the node reads `rig_in_cam1` specifically.
+  - `config/rig/virtual_stereo_imx296.yaml` — regenerated per 3R.15.
+  - Δ as a stated constant with provenance and direction.
+
+  **Do NOT run `fold_roll_for_vo.py` on the Kalibr result.** That script belongs to a different
+  lineage: it takes `rig_extrinsics_calibrated.yaml` (the panorama, feature-based chain, kept in the
+  "nominal image-up" convention) and bakes `Rz180` in to produce `rig_extrinsics_vo.yaml`. Nothing in
+  the current VO path reads that file. The Kalibr extrinsics are solved directly from the images the
+  capture node publishes — raw sensor orientation, inverted — so they are already self-consistent
+  with them, and folding the roll in again would put every camera 180 deg out.
+
+  Confirm from one frame that the reconnect did not remount anything upright (3.9's roll still
+  applies), because that assumption is what makes the previous paragraph true.
+- [ ] 3R.16b **State, and then fix, what frame the odometry comes out in.** `cuvslam_multicam_node`
+  line 164: *"rig frame IS cam1's frame, which is how rig_in_cam1 is expressed"* — and it publishes
+  that pose as `odom -> base_link`. So `base_link` is currently **cam1's raw optical frame**: an
+  optical frame (z forward, x right, y down) that is additionally rolled 180 deg by the inverted
+  mount. Neither the roll nor the optical->FLU convention is applied anywhere.
+
+  Consequences, which differ by task and are why this is not merely cosmetic:
+  - **§5.1 / §5.2 are unaffected.** A translation magnitude against a tape measure, and a
+    return-to-origin drift, are frame-independent.
+  - **Anything wanting a vehicle frame is wrong by that composition** — rviz, `tf` consumers, and any
+    later IMU fusion, where the rig<->IMU rotation of `rig_layout.yaml` is expressed in FLU.
+
+  So: either publish `rig_from_body` alongside (the 180 deg roll composed with optical->FLU, from
+  `config/rig/rig_layout.yaml`), or declare `base_link` to be cam1's optical frame in the launch and
+  README and let the consumer compose it. Decide before §6.2's documentation pass; do not leave it
+  implicit, because a 180 deg roll produces trajectories that look entirely plausible.
+
+- [ ] 3R.17 **Re-run the offline rig verification before the board session**, unchanged from 4.1b:
+  `scripts/vo/verify_rig_build.sh` (cuVSLAM's own frustum test on the poses the C++ emits — the
+  0.939/0.951/0.926/0.949 figures will move and must stay clear of the hard-coded 0.5 gate) and
+  `scripts/vo/check_rig_poses.py`. This is the only part of §4 checkable without a build, and running
+  it first stops a bad rig file from being misdiagnosed as a ROS 2 wiring error on the TX2.
+- [ ] 3R.18 **Exercise 1.5 — the stale-calibration guard — against the new files.** It has never been
+  run; a recalibration is the exact event it exists for. If it can key on a session/date field, add
+  one, so that the *next* refocus is caught by the node instead of by a drifting trajectory.
+
+**Not redone, and why:** the capture node (§1) resolves its mapping at runtime; §2's target, containers
+and model decision are unaffected by focus; 3.7's carve *methodology* and 4.1/4.1b's code stand — only
+the numbers they consume change. 3.10 stays optional.
+
+**Ordering:** A → B → C → D → E. Only A and the recording half of C need the rig; B is 30 minutes that
+prevents a full redo; D and E are host-side. §4.5 and all of §5 stay blocked until 3R.16 lands, and
+the TX2 build attempt (the first thing that will fail, since the node has never been compiled) can be
+done during A, in parallel, since it needs no calibration.
+
 ## 4. Remove the sync workaround
 
 - [x] 4.1 **Done.** Bundler and `sync_slop_ms` gone; sets formed by timestamp over a per-camera history (never by arrival order - separate DDS subscriptions say nothing about which trigger edge a frame came from), gated at `max_skew_us` (default 1000), each image carrying its own exposure-midpoint stamp, failures dropped and counted.
@@ -119,11 +504,13 @@
 - [ ] 4.2 **Deliberately deferred, and the reason is not effort.** The fused node exists to avoid a CPU round-trip (NVMM Y plane straight to CUDA). Adding the virtual-pinhole carve to it means a CUDA remap on the NVMM buffer - a CPU remap would negate the node's entire purpose. Until 4.5/section 5 show the modular path is too slow, the fused node has no justification to be rewritten twice. Note the stamping fix it needs is the same one 4.1 made; `iframe->getTime()` is the WRONG source (consumer-side - it reported cameras ~7 ms apart in capture-loop order), so this task's original wording is superseded by README 4.7.
 - [~] 4.3 Done for the modular node (sets / worst skew / drops / remap time every 5 s); pending for the fused node with 4.2. Report the drop counter and recent worst-case skew from both nodes; make a stopped trigger diagnosable as a trigger fault, not a camera failure (spec: *A stopped trigger is diagnosable*).
 - [~] 4.4 `bev_cuvslam.launch.py` retargeted (ring-closed extrinsics, virtual-stereo config, skew gate, no `sync_slop_ms`). `fused_vo_params.yaml` and the fused run scripts wait on 4.2.
-- [ ] 4.5 Run both nodes on the board: confirm zero dropped sets with the trigger live, worst-case skew < 1 ms, and `/cuvslam/odometry` tracking with no "tracking lost".
+- [ ] 4.5 **Blocked on §3R** (the rig is uncalibrated as it stands). Run both nodes on the board: confirm zero dropped sets with the trigger live, worst-case skew < 1 ms, and `/cuvslam/odometry` tracking with no "tracking lost".
 
 ## 5. Motion test (closes bring-up-end-to-end-vo 3.4 / 3.6)
 
-Tooling ready: `scripts/vo/run_motion_test.sh` (board; refuses to record unless
+**Blocked on §3R**: a scale check against a tape measure is meaningless on a stale calibration, and
+a drift number would be attributed to the VO rather than to the optics. Tooling ready:
+`scripts/vo/run_motion_test.sh` (board; refuses to record unless
 `trigger_mode` is 1) and `scripts/vo/analyze_motion.py` (host). Needs the rig powered and
 physically moved - the remaining items are not doable from here.
 

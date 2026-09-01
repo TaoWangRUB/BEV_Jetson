@@ -67,18 +67,24 @@ services:
       - bash
       - -lc
       - |
-        ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p exposure_us:=4986 &
+        ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us (j106-trigctl.py --port /dev/ttyACM0 status)} &
         trap "kill %1 2>/dev/null" EXIT
         sleep 8
         exec ros2 launch bev_cuvslam bev_cuvslam.launch.py
 
-  # Ports (not sensor-ids) are resolved at runtime; exposure_us is the STM32's MEASURED
-  # trigger pulse width, which in Fast Trigger mode IS the exposure. Read it back with
-  #   sudo j106-trigctl.py --port /dev/ttyTHS1 status     -> chN_exposure_us / pulse_ns
-  # and re-check after any MCU reset: the firmware boots at its compiled-in defaults.
+  # Ports (not sensor-ids) are resolved at runtime; exposure_us is the trigger generator's
+  # MEASURED pulse width, which in Fast Trigger mode IS the exposure. Read it back with
+  #   j106-trigctl.py --port /dev/ttyACM0 status      -> chN_exposure_us / pulse_ns
+  # (F401 since 2026-08-31, USB CDC; the dead H7 was UART-only on /dev/ttyTHS1).
+  #
+  # There is deliberately NO default. The stamp is SOF - exposure/2, so a stale value does
+  # not fail, it silently biases every timestamp by half its error - and the two generators
+  # this rig has run differ by 25 ms, i.e. 12.5 ms of stamp. Re-read after ANY reset: the
+  # firmware boots at its compiled-in defaults and says nothing about it.
+  #   EXPOSURE_US=$(...) docker compose up capture
   capture:
     <<: *bev
-    command: ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p exposure_us:=4986
+    command: ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us (j106-trigctl.py --port /dev/ttyACM0 status)}
 
   # MPU-9250 IMU -> /imu0, stamped at the data-ready edge on CLOCK_MONOTONIC (README 4.7).
   # Needs root for /dev/spidev1.0 + /dev/gpiochip* and for SCHED_FIFO.

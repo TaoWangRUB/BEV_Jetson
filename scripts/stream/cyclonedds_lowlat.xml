@@ -32,13 +32,22 @@
       </Peers>
     </Discovery>
     <Internal>
-      <SocketReceiveBufferSize min="16MB"/>
+      <!-- Foxy ships CycloneDDS 0.7, where this is MinimumSocketReceiveBufferSize.
+           The newer <SocketReceiveBufferSize min="..."/> spelling is REJECTED, and
+           Cyclone rejects the whole file rather than the one element: the visible
+           symptom is "rmw_create_node: failed to create domain" and a node that dies
+           at startup, not a warning about a config key. Both ends here are Foxy. -->
+      <MinimumSocketReceiveBufferSize>16MB</MinimumSocketReceiveBufferSize>
       <Watermarks>
         <WhcHigh>4MB</WhcHigh>
       </Watermarks>
     </Internal>
     <Tracing>
       <Verbosity>warning</Verbosity>
+      <!-- Default is a cyclonedds.log in the CWD; where that is not writable Cyclone
+           fails to create the domain outright ("cannot open for writing" -> rmw_create_node
+           failed), which reads as a DDS fault rather than a permissions one. -->
+      <OutputFile>stderr</OutputFile>
     </Tracing>
   </Domain>
 </CycloneDDS>
