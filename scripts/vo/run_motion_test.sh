@@ -74,6 +74,19 @@ echo "$status" > "$OUT/trigger_status.txt"
   echo "commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)";
   echo "calib_session=$(sed -n 's/^calib_session: //p' config/rig/rig_extrinsics_imx296.yaml)"; } > "$OUT/run_meta.txt"
 
+# STOP THIS RUN WITH Ctrl-C, AND ONLY Ctrl-C.
+#
+# rosbag2 writes metadata.yaml when it shuts down cleanly, and WITHOUT that file the bag is
+# unreadable - rosbags refuses it outright, and the .db3 itself comes back with 0 messages
+# because the last transaction never committed. `docker stop` (SIGTERM) is not enough; the
+# signal has to reach rosbag2 as SIGINT. Verified the hard way on 2026-09-01: a run stopped
+# with docker stop produced a directory that looked complete and contained nothing.
+#
+# Forward SIGINT to the compose child so Ctrl-C here reaches the recorder in the container.
+COMPOSE_PID=""
+forward_int() { [ -n "$COMPOSE_PID" ] && kill -INT "$COMPOSE_PID" 2>/dev/null; }
+trap forward_int INT TERM
+
 echo "preflight OK  trigger_mode=1  active_low  exposure_us=$EXPOSURE_US"
 echo "output: $OUT"
 echo
@@ -85,14 +98,14 @@ echo
 if [ "$RECORD_IMAGES" = 1 ]; then
   MOTION_LABEL="$LABEL" RECORD_IMAGES=1 EXPOSURE_US="$EXPOSURE_US" \
     PUBLISH_EVERY_N="${PUBLISH_EVERY_N:-1}" \
-    docker compose run --rm motion 2>&1 | tee "$OUT/vo.log" || true
+    docker compose run --rm motion 2>&1 | tee "$OUT/vo.log" & COMPOSE_PID=$!; wait $COMPOSE_PID || true
   sudo mv bags/motion_${LABEL}_* "$OUT/" 2>/dev/null || true
 else
   # Fused zero-copy + RECORD=1: bags /cuvslam/odometry and /tf from inside the same
   # container. Both are RELIABLE publishers, so no QoS override is needed here - unlike the
   # image topics, which are best_effort and silently record nothing without one.
   RECORD=1 EXPOSURE_US="$EXPOSURE_US" \
-    docker compose run --rm fused 2>&1 | tee "$OUT/vo.log" || true
+    docker compose run --rm fused 2>&1 | tee "$OUT/vo.log" & COMPOSE_PID=$!; wait $COMPOSE_PID || true
   sudo mv bags/fused_* "$OUT/" 2>/dev/null || true
 fi
 
@@ -100,5 +113,9 @@ echo; echo "=== rate / timing / drops, from the node's own reporting ==="
 grep -E "avg/|sets |dropped|tracking lost" "$OUT/vo.log" | tail -8
 sudo chown -R "$(id -u):$(id -g)" "$OUT" 2>/dev/null || true   # the container writes as root
 echo
+if ! ls "$OUT"/*/metadata.yaml >/dev/null 2>&1; then
+  echo "WARNING: no metadata.yaml in the bag - it was not closed cleanly and is UNREADABLE."
+  echo "         Stop the run with Ctrl-C, not by killing the container."
+fi
 echo "bag under $OUT - copy the whole directory to the host and run:"
 echo "  python3 scripts/vo/analyze_motion.py $OUT"
