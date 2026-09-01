@@ -423,10 +423,19 @@ index 4e9e409..2ee1bad 100644
  // Implementation macro, use other Trace* macros instead
  #define TraceImpl(V, ...)                                             \
 diff --git a/libs/common/parse_utils.cpp b/libs/common/parse_utils.cpp
-index 8281dc7..9ec1ddb 100644
+index 8281dc7..0b042ef 100644
 --- a/libs/common/parse_utils.cpp
 +++ b/libs/common/parse_utils.cpp
-@@ -22,7 +22,7 @@
+@@ -16,13 +16,16 @@
+ 
+ #include "common/parse_utils.h"
+ 
++#include <cerrno>
+ #include <charconv>
+ #include <cstddef>
++#include <cstdlib>
++#include <type_traits>
+ #include <stdexcept>
  #include <string>
  #include <system_error>
  
@@ -435,7 +444,43 @@ index 8281dc7..9ec1ddb 100644
  
  namespace {
  
-@@ -82,4 +82,4 @@ int32_t ParseInt32(std::string_view v) { return Parse<int32_t>(v, "int32"); }
+@@ -61,10 +64,35 @@ T Parse(std::string_view v, std::string_view expected) {
+   T parsed{};
+   const char* begin = v.data();
+   const char* end = begin + v.size();
++#if defined(__cpp_lib_to_chars)
+   const auto [ptr, ec] = std::from_chars(begin, end, parsed);
+   if (ec != std::errc{} || ptr != end) {
+     ThrowParseError(expected, v);
+   }
++#else
++  // libstdc++ implements from_chars for integral types only until gcc-11, and the
++  // TX2 builds with gcc-8 (where __cpp_lib_to_chars is undefined). Integrals keep
++  // the fast path; floating point goes through strtod on a NUL-terminated copy.
++  // strtod is locale-sensitive where from_chars is not, but this build never calls
++  // setlocale, so it stays in the C locale and the decimal point matches.
++  if constexpr (std::is_floating_point<T>::value) {
++    const std::string buf(v);
++    const char* cbegin = buf.c_str();
++    char* conv_end = nullptr;
++    errno = 0;
++    const double value = std::strtod(cbegin, &conv_end);
++    // Reject trailing garbage exactly as the ptr != end check above does.
++    if (conv_end != cbegin + buf.size() || errno == ERANGE) {
++      ThrowParseError(expected, v);
++    }
++    parsed = static_cast<T>(value);
++  } else {
++    const auto [ptr, ec] = std::from_chars(begin, end, parsed);
++    if (ec != std::errc{} || ptr != end) {
++      ThrowParseError(expected, v);
++    }
++  }
++#endif
+   return parsed;
+ }
+ 
+@@ -82,4 +110,4 @@ int32_t ParseInt32(std::string_view v) { return Parse<int32_t>(v, "int32"); }
  
  int64_t ParseInt64(std::string_view v) { return Parse<int64_t>(v, "int64"); }
  

@@ -38,15 +38,36 @@ mkdir -p "${REPO_ROOT}/build"
 # patched below, then handed to cuVSLAM's FetchContent via FETCHCONTENT_SOURCE_DIR_CUNLS
 # so no download or upstream PATCH_COMMAND runs.
 PATCH="${REPO_ROOT}/patch/cuvslam/0001-cuda102-tx2-port.patch"
-if patch -p1 -d "${SRC}" --dry-run --reverse --force <"${PATCH}" >/dev/null 2>&1; then
+# Stamp the tree with the patch that was applied, and keep a copy of it. When the
+# patch is regenerated the tree is left half-patched -- the new patch neither
+# applies nor reverses cleanly -- so roll the recorded one back first. Without this
+# a regenerated patch fails confusingly and the checkout has to be restored by hand
+# (the board's submodule has no git metadata, so `git checkout` is not available).
+CUVSLAM_STAMP="${SRC}/.tx2-port-stamp"
+CUVSLAM_APPLIED="${SRC}/.tx2-port-applied.patch"
+CUVSLAM_SUM="$(sha256sum "${PATCH}" | cut -d' ' -f1)"
+if [[ "$(cat "${CUVSLAM_STAMP}" 2>/dev/null)" == "${CUVSLAM_SUM}" ]]; then
     echo "cuVSLAM CUDA-10.2 port patch already applied."
-elif patch -p1 -d "${SRC}" --dry-run --force <"${PATCH}" >/dev/null 2>&1; then
-    patch -p1 -d "${SRC}" --force <"${PATCH}"
-    echo "Applied cuVSLAM CUDA-10.2 port patch."
 else
-    echo "ERROR: cuVSLAM port patch neither applies cleanly nor is already applied" >&2
-    echo "       — submodule may be out of sync with the pin it was generated from." >&2
-    exit 1
+    if [[ -f "${CUVSLAM_APPLIED}" ]]; then
+        echo "cuVSLAM port patch changed; reverting the previously applied one."
+        patch -p1 -d "${SRC}" --reverse --force <"${CUVSLAM_APPLIED}" >/dev/null || {
+            echo "ERROR: could not revert the previously applied cuVSLAM port patch." >&2
+            echo "       Restore third_party/cuVSLAM to a pristine v17.0.0 checkout." >&2
+            exit 1; }
+        rm -f "${CUVSLAM_APPLIED}" "${CUVSLAM_STAMP}"
+    fi
+    if patch -p1 -d "${SRC}" --dry-run --reverse --force <"${PATCH}" >/dev/null 2>&1; then
+        echo "cuVSLAM CUDA-10.2 port patch already applied (was unstamped)."
+    elif patch -p1 -d "${SRC}" --force <"${PATCH}"; then
+        echo "Applied cuVSLAM CUDA-10.2 port patch."
+    else
+        echo "ERROR: cuVSLAM port patch failed to apply" >&2
+        echo "       — submodule may be out of sync with the pin it was generated from." >&2
+        exit 1
+    fi
+    cp "${PATCH}" "${CUVSLAM_APPLIED}"
+    echo "${CUVSLAM_SUM}" > "${CUVSLAM_STAMP}"
 fi
 
 # --- cuNLS: pre-populate + patch, so FetchContent neither downloads nor fetches cuDSS ---
