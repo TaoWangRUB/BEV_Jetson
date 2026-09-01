@@ -58,10 +58,20 @@ if [[ "${USE_CUNLS}" == "ON" ]]; then
     CUNLS_SRC="${REPO_ROOT}/build/cuNLS-${CUNLS_VER}"
     CUNLS_PATCH="${REPO_ROOT}/patch/cunls/0001-cuda102-tx2-port.patch"
     if [[ ! -f "${CUNLS_TAR}" ]]; then
+        # The L4T host has neither curl nor wget guaranteed; the Foxy image ships wget.
+        CUNLS_URL="https://github.com/nvidia-isaac/cuNLS/archive/refs/tags/${CUNLS_VER}.tar.gz"
         echo "Downloading cuNLS ${CUNLS_VER} ..."
-        curl -sSL -o "${CUNLS_TAR}" \
-          "https://github.com/nvidia-isaac/cuNLS/archive/refs/tags/${CUNLS_VER}.tar.gz" || {
-            echo "ERROR: cuNLS download failed; re-run with USE_CUNLS=OFF to skip it." >&2; exit 1; }
+        if command -v curl >/dev/null 2>&1; then
+            curl -sSL -o "${CUNLS_TAR}.part" "${CUNLS_URL}"
+        elif command -v wget >/dev/null 2>&1; then
+            wget -qO "${CUNLS_TAR}.part" "${CUNLS_URL}"
+        else
+            echo "ERROR: neither curl nor wget available to fetch cuNLS." >&2
+            echo "       Fetch ${CUNLS_URL} manually to ${CUNLS_TAR}," >&2
+            echo "       or re-run with USE_CUNLS=OFF to skip it." >&2
+            exit 1
+        fi || { echo "ERROR: cuNLS download failed; re-run with USE_CUNLS=OFF." >&2; exit 1; }
+        mv "${CUNLS_TAR}.part" "${CUNLS_TAR}"   # only name it once it is complete
     fi
     if [[ ! -d "${CUNLS_SRC}" ]]; then
         tar xzf "${CUNLS_TAR}" -C "${REPO_ROOT}/build"
