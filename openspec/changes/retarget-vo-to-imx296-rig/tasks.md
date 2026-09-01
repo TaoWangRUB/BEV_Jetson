@@ -808,6 +808,38 @@ physically moved - the remaining items are not doable from here.
   running?". `record_calib_session.sh` already checks and sets it; add the same to the VO run path,
   plus the F401 polarity/exposure read-back and an `nvargus-daemon` restart on a leaked session.
 
+- [~] 5.0 **Recording pipeline set up and deployed 2026-09-01; NOT run.** Waiting on rig time.
+
+  `scripts/vo/run_motion_test.sh <label> <tape_m> [--record-images]`, driving a new
+  `motion` compose service that runs capture + VO + recorder in one container.
+
+  Two things it could not have done before. It launched `bev_cuvslam.launch.py`, which starts
+  the **VO node only** — no capture — so it would have recorded an empty run; and it was the
+  last script still on `/dev/ttyTHS1`, the dead H7's port, so its trigger check silently
+  warned and carried on, which is precisely the failure it exists to prevent.
+
+  The preflight now **gates rather than warns**: `trigger_mode=1`, generator running,
+  `polarity=active_low`, and it reads `pulse_ns` back to derive `exposure_us` instead of
+  taking it on faith — the stamp is SOF − exposure/2, so a stale value does not fail, it
+  biases every timestamp by half its error. Verified against the live generator: all three
+  gates match and it derives 4986 µs. It also restarts `nvargus-daemon`, because a SIGKILLed
+  run leaks a session and the next start dies with "Argus setup failed" (4.2).
+
+  `--record-images` bags the four camera streams so a run is **replayable** — move the rig
+  once, then re-run the VO against it as often as needed without being at the rig. This
+  matters now that `Track()` at 87.6 ms is the bottleneck (4.2) and the tuning ahead wants
+  many runs over the same motion.
+
+  **Two passes, kept separate**: one with images for replay, one without for the live 5.1/5.2
+  numbers. The recorder competes for CPU and I/O and can induce drops of its own, which on
+  replay are indistinguishable from the rig misbehaving. Images cost ~95 MB/s at 15 Hz and the
+  SD is known not to absorb 30 Hz of four cameras, so decimate and keep image runs short.
+
+  **No existing bag can substitute.** Every IMX296 recording is 1–2 cameras (a consequence of
+  the `PORTS` fix that cured the 50 % DDS loss); the only 4-camera bag is IMX219 at 1640×1232,
+  free-running, from June. And 5.1/5.2 need ground truth captured at record time, which no bag
+  supplies retroactively.
+
 - [ ] 5.1 Move the rig a measured straight-line distance; record `/cuvslam/odometry` + `/tf` and compare reported translation against the tape measure (spec: *Translation is recovered at true scale*, 5 %).
 - [ ] 5.2 Return the rig to its starting pose and check the trajectory returns near the origin; record the drift.
 - [~] 5.3 **Answered offline, pending live confirmation.** cuVSLAM does not take declared stereo pairs: it samples a grid per camera, back-projects to 2 m and 4 m, and connects pairs exceeding 0.5 (`frustum_intersection_graph.cpp:33`). Re-running that on our ring-closed rig gives **0.939 / 0.951 / 0.926 / 0.949** against a 0.961 ceiling, all 8 virtual cameras paired, no spurious edges. The links form with room to spare and the `CUVSLAM_FRUSTUM_THRESHOLD` patch is not needed for the pinholes. Still to confirm on the live pipeline.
