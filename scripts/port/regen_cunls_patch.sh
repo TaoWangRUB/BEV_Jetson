@@ -149,6 +149,37 @@ for f in ["cunls/common/log.h", "cunls/common/log.cpp"]:
     edit(f, lambda s: s
          .replace("#include <string_view>\n", "")
          .replace("std::string_view", "const std::string &"))
+#  CUDA 10.2 spells the generic SpMV algorithm selector CUSPARSE_MV_ALG_DEFAULT;
+#  it became CUSPARSE_SPMV_ALG_DEFAULT in CUDA 11 and the old name was dropped in
+#  CUDA 12. Alias the current spelling onto the old one on pre-11 toolkits so the
+#  call sites stay unchanged. cusparse_helper.h does not pull in <cusparse.h>
+#  itself, so add it -- CUSPARSE_VERSION must be defined for the guard to work.
+edit("cunls/common/cusparse_helper.h", lambda s: s.replace(
+    '''#include <cuda_runtime.h>
+
+#include "cunls/common/helper.h"''',
+    '''#include <cuda_runtime.h>
+#include <cusparse.h>
+
+// CUDA 10.2 (cuSPARSE 10.3) calls the generic SpMV algorithm selector
+// CUSPARSE_MV_ALG_DEFAULT. CUDA 11 renamed it CUSPARSE_SPMV_ALG_DEFAULT and CUDA 12
+// removed the old spelling, so map new -> old only below 11.
+#if defined(CUSPARSE_VERSION) && CUSPARSE_VERSION < 11000
+#define CUSPARSE_SPMV_ALG_DEFAULT CUSPARSE_MV_ALG_DEFAULT
+#endif
+
+#include "cunls/common/helper.h"'''))
+
+#  structured bindings are C++17; nvcc 10.2's frontend rejects them. (Note the
+#  host pre-flight does NOT catch this -- nvcc 12 accepts it even at -std=c++14.)
+#  layout_ is a std::vector<std::pair<int,int>>.
+edit("cunls/linear_solver/block_sparse_pcg_solver.cu", lambda s: s.replace(
+    "  for (const auto &[count, size] : layout_) {",
+    "  for (const auto &layout_entry : layout_) {\n"
+    "    // C++14: no structured bindings. layout_ is vector<pair<int,int>>.\n"
+    "    const int count = layout_entry.first;\n"
+    "    const int size = layout_entry.second;"))
+
 #  ---- cuSPARSE: CUDA 10.2 ships cuSPARSE 10.3, which predates part of the
 #  generic API cuNLS uses. Three separate gaps, handled three ways.
 

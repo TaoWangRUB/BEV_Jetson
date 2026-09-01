@@ -65,14 +65,25 @@ The host's nvcc accepts `-arch=sm_62 -std=c++14`, which catches device-side C++1
 breakage without a board round-trip. This is how fixes 4 and 5 were found — a plain
 grep for C++17 constructs missed both.
 
+**The host nvcc only warns about C++17.** At `-std=c++14` it accepts structured
+bindings with `warning #3356-D: structured bindings are a C++17 feature` and exits 0,
+while nvcc 10.2's older frontend rejects them outright. So exit status alone is not a
+C++17 oracle — the pre-flight must fail on that warning too:
+
 ```bash
 D=build/cuNLS-Release_07_13_2026
 for f in $(find $D/cunls -name '*.cu'); do
-  nvcc -std=c++14 -arch=sm_62 -Wno-deprecated-gpu-targets -I$D -c "$f" -o /dev/null || echo "FAIL $f"
+  if nvcc -std=c++14 -arch=sm_62 -Wno-deprecated-gpu-targets -I$D -c "$f" -o /dev/null 2>/tmp/e; then
+    grep -qE 'warning #3356|C\+\+17 feature' /tmp/e && echo "C++17 IN $f"
+  else echo "FAIL $f"; fi
 done
 ```
 
-All 54 `.cu` and all 13 compiled `.cpp` pass. (`cudss_helper.cpp` and
+Grepping for C++17 constructs is a weak substitute — three were missed that way. Note
+in particular that structured bindings need `auto\s*(const)?\s*[&*]*\s*\[`: the
+common spelling here is `const auto &[a, b]`, which a plain `auto\s*\[` never matches.
+
+All 54 `.cu` (warning-clean) and all 12 compiled `.cpp` pass. (`cudss_helper.cpp` and
 `cudss_sparse_linear_solver.cpp` still fail on the missing `<cudss.h>` — expected;
 they are excluded from the build.)
 
