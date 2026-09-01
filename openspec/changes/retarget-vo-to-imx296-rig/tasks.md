@@ -650,7 +650,37 @@ done during A, in parallel, since it needs no calibration.
   Verified without a board, since none of it can be run here: the hand-written Mei projection matches `cv2.omnidir.projectPoints` to 5e-13 px over 4000 rays and the built map is bit-identical at 25 sampled pixels; the quaternion conversion round-trips 20000 random rotations through all four trace branches to 1.6e-7; and `scripts/vo/verify_rig_build.sh` re-runs cuVSLAM's own frustum test on the poses the C++ emits, reproducing 0.939/0.951/0.926/0.949 with all 8 cameras paired. That last check exists because a sign error in `rig_from_fisheye * Ry` still yields a valid rig that cuVSLAM would accept while finding no stereo pairs at all - it drops the pairing to ~0.03.
 
   **NOT compiled.** The ROS 2 wiring needs an environment this host does not have.
-- [ ] 4.2 **GATE CONDITION NOW MET (2026-09-01) — this is the next piece of work.** The deferral below
+- [x] 4.2 **DONE 2026-09-01 — the fused zero-copy node runs the carve on the GPU, with zero
+  dropped sets.** Steady **8.8 Hz**, and the timing says something that changes the priorities:
+
+  ```
+  acquire + gpucopy = 26.3 ms
+  Track             = 87.6 ms   <- the bottleneck
+  ```
+
+  **cuVSLAM's own `Track()` on 8 virtual cameras costs 87.6 ms.** It is 3× the entire capture
+  and carve, and neither the remap work nor either resolution axis (4.5b) touches it. The
+  images no longer go over DDS at all — the ~95 MB/s the modular path was shipping is gone.
+
+  What it took, beyond the CUDA kernel: the node was still the IMX219 rig's in every respect
+  (832×624 from a 1640×1232 sensor mode, four RAW fisheyes as `Distortion::Fisheye`, the old
+  `projection_parameters` layout, one unified cam0 timestamp), plus `sensor_ids: [1,2,3,4]`
+  asking for a fifth camera on a four-camera rig. All fixed; the ISP downscale is gone because
+  the intrinsics are solved at 1456×1088 and a downscaled source leaves the carve working and
+  merely wrong.
+
+  **The bug worth remembering:** it first rejected **2673 of 2673** sets at exactly 33.3 ms on
+  a rig with 8 µs of hardware skew. Acquiring one frame per camera in a loop does not give you
+  a set — each consumer has its own queue and the four frames can sit on different edges. The
+  modular node hit the identical wall for a different reason (DDS delivery order). Twice now
+  the answer has been *align, then gate*, and twice the symptom read as "is the trigger
+  running?" while the trigger was perfect.
+
+  Shutdown also fixed: the blocking acquire outlasted launch's 5 s patience, so every run
+  ended in SIGKILL, which leaks an Argus session and makes the *next* start fail with "Argus
+  setup failed" — that cost a debugging cycle today.
+
+  Original text: **GATE CONDITION NOW MET (2026-09-01) — this is the next piece of work.** The deferral below
   was conditional on the modular path proving too slow, and 4.5/4.5b have now shown exactly that:
   ~30 ms of CPU remap per set, half the sets dropped at 30 Hz and a third at 15 Hz, and both
   resolution axes measured to be bad trades. The images are also going out over DDS —
@@ -665,7 +695,7 @@ done during A, in parallel, since it needs no calibration.
   path, so single-process fusion is the right answer here rather than a DDS transport trick.
 
   Original text: **Deliberately deferred, and the reason is not effort.** The fused node exists to avoid a CPU round-trip (NVMM Y plane straight to CUDA). Adding the virtual-pinhole carve to it means a CUDA remap on the NVMM buffer - a CPU remap would negate the node's entire purpose. Until 4.5/section 5 show the modular path is too slow, the fused node has no justification to be rewritten twice. Note the stamping fix it needs is the same one 4.1 made; `iframe->getTime()` is the WRONG source (consumer-side - it reported cameras ~7 ms apart in capture-loop order), so this task's original wording is superseded by README 4.7.
-- [~] 4.3 Done for the modular node (sets / worst skew / drops / remap time every 5 s); pending for the fused node with 4.2. Report the drop counter and recent worst-case skew from both nodes; make a stopped trigger diagnosable as a trigger fault, not a camera failure (spec: *A stopped trigger is diagnosable*).
+- [x] 4.3 Done for the modular node AND, as of 2026-09-01, the fused node (sets / worst skew / dropped counter / windowed Hz + acquire + Track timings). Original: (sets / worst skew / drops / remap time every 5 s); pending for the fused node with 4.2. Report the drop counter and recent worst-case skew from both nodes; make a stopped trigger diagnosable as a trigger fault, not a camera failure (spec: *A stopped trigger is diagnosable*).
 - [~] 4.4 `bev_cuvslam.launch.py` retargeted (ring-closed extrinsics, virtual-stereo config, skew gate, no `sync_slop_ms`). `fused_vo_params.yaml` and the fused run scripts wait on 4.2.
 - [~] 4.5 **FIRST BUILD AND FIRST LIVE RUN, 2026-09-01.** `bev_cuvslam` had never been compiled;
   it now builds and runs on the board. Four findings, two of them defects that are fixed.
