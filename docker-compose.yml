@@ -67,7 +67,7 @@ services:
       - bash
       - -lc
       - |
-        ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us (j106-trigctl.py --port /dev/ttyACM0 status)} &
+        ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p publish_every_n:=${PUBLISH_EVERY_N:-1} -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us (j106-trigctl.py --port /dev/ttyACM0 status)} &
         trap "kill %1 2>/dev/null" EXIT
         sleep 8
         exec ros2 launch bev_cuvslam bev_cuvslam.launch.py
@@ -82,9 +82,17 @@ services:
   # this rig has run differ by 25 ms, i.e. 12.5 ms of stamp. Re-read after ANY reset: the
   # firmware boots at its compiled-in defaults and says nothing about it.
   #   EXPOSURE_US=$(...) docker compose up capture
+  #
+  # PUBLISH_EVERY_N decimates ON THE TRIGGER EDGE (every camera skips the same edges, so
+  # whole synchronised sets survive; timing metadata is still published for every frame).
+  # Default 1. Raise it when the consumer cannot keep up: the modular VO spends ~31 ms per
+  # set on the CPU remap against a 33 ms budget at 30 Hz, and PUBLISH_EVERY_N=2 doubles the
+  # budget to 66 ms at no cost in image quality. Measured alternatives are worse - see
+  # scripts/vo/bench_remap.cpp and task 4.5b.
+  #   PUBLISH_EVERY_N=2 EXPOSURE_US=$(...) docker compose run --rm modular
   capture:
     <<: *bev
-    command: ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us (j106-trigctl.py --port /dev/ttyACM0 status)}
+    command: ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p publish_every_n:=${PUBLISH_EVERY_N:-1} -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us (j106-trigctl.py --port /dev/ttyACM0 status)}
 
   # MPU-9250 IMU -> /imu0, stamped at the data-ready edge on CLOCK_MONOTONIC (README 4.7).
   # Needs root for /dev/spidev1.0 + /dev/gpiochip* and for SCHED_FIFO.
