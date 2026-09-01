@@ -2,9 +2,15 @@
 //
 // Runs the CUDA-10.2-ported libcuvslam in OdometryMode::Multicamera (visual only;
 // cuVSLAM v15 does NOT fuse an IMU in multicam mode — the IMU is fused externally
-// by an EKF). Loads per-camera KANNALA_BRANDT intrinsics (camN.yaml) + the rig
-// extrinsics (rig_extrinsics.yaml), builds the cuVSLAM rig, synchronizes 4 image
-// topics, calls Track(), and publishes nav_msgs/Odometry + a TF.
+// by an EKF). Loads per-camera MEI / omni-radtan intrinsics (camN.yaml, via LoadOmni)
+// + the ring-closed rig extrinsics (rig_extrinsics_imx296.yaml), builds the cuVSLAM
+// rig, synchronizes 4 image topics, calls Track(), and publishes nav_msgs/Odometry
+// + a TF.
+//
+// NOT Kannala-Brandt, which this comment claimed until 2026-09-01. These lenses are
+// ~192 deg and pinhole-equi diverged on every camera; the calibration is Mei. cuVSLAM
+// never sees either model - each fisheye is carved into two virtual PINHOLES with no
+// distortion, because the remap has already removed it (see the rig loop below).
 //
 // SYNC: the rig is hardware-triggered (4x IMX296 on one STM32 edge, measured skew 1 us),
 // so the cameras really do capture the same instant and each frame carries its own

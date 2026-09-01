@@ -1,4 +1,6 @@
-# IMX296 intrinsics, solved 2026-08-29 with tartancalib (omni-radtan / Mei).
+# IMX296 intrinsics, solved 2026-09-01 with tartancalib (omni-radtan / Mei).
+# ROUND 2 - after the cameras were reconnected, the lenses refocused, and the trigger
+# source changed to the F401. Supersedes the 2026-08-29 solve entirely.
 #
 # MODEL CHOICE IS NOT FREE HERE. These lenses are 1.78 mm, D190/H160 on 1/3" - a genuine
 # >180 deg fisheye, confirmed three ways: the vendor spec, our fits (~192 deg diagonal),
@@ -10,14 +12,29 @@
 # that same equidistant one. The virtual-stereo path (rectify to pinhole, feed cuVSLAM
 # plain Pinhole) is required, not preferred. See README 4.8.
 #
+# SOLVED ON RAW, INVERTED FRAMES - the capture node memcpys and does not rotate, and the
+# modules are mounted upside-down. Re-confirmed 2026-09-01 from stage1_cam1_sel.bag,
+# where printed text reads upside-down and the floor is at the top of the image. Do NOT
+# apply a 180 deg roll anywhere downstream: these are already in the frame the node
+# publishes. (rig_layout.yaml camera_roll_deg, and 3R.16's warning about
+# fold_roll_for_vo.py, which belongs to the panorama lineage and not to this one.)
+#
+# SUBSET STABILITY is reported per camera and is the number that matters, not the
+# reprojection error. It refits each camera on half its own recording: a solve sitting on
+# the xi/focal degeneracy ridge reprojects beautifully and still moves fx by tens of
+# pixels. All four reproject at 0.24-0.29 px; they are NOT equally trustworthy.
+#
 # intrinsics = [xi, fx, fy, cx, cy]; distortion = radtan [k1, k2, p1, p2]
 #
-# cam4: port f, back_right.  reprojection error 0.35/0.40 px
+# cam4: port f, back_right.  reprojection error 0.29/0.26 px
+# subset stability (fx refit on half the recording): 9.8 px
+# source: solve_cam4/log1-camchain.yaml (datasets/calib_20260901)
 camera_model: omni
 distortion_model: radtan
-intrinsics: [1.9082433634132505, 1546.8452362420294, 1546.0747587131987, 738.4267451446939, 527.993051303161]
-distortion_coeffs: [-0.1930815169452093, 0.2111502545522933, -0.00038403125320781123, 0.0032939148878958087]
+intrinsics: [2.0011202590657065, 1592.6210804959428, 1595.7633129225258, 728.5911637116079, 550.5175196345572]
+distortion_coeffs: [-0.15169906485582202, 0.3142080532091601, 0.0008291399355917325, -0.003434871539729656]
 resolution: [1456, 1088]
 sensor: imx296
 port: f
 position: back_right
+calib_session: 20260901

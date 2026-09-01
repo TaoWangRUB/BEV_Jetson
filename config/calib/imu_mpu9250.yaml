@@ -37,6 +37,7 @@ update_rate: 200.0                       # matches imu_node's default rate param
 # ---------------------------------------------------------------------------------------
 # Kalibr's convention, as written in its own result file:  t_imu = t_cam + shift
 timeshift_cam_imu: 0.003731525498702239        # +3.7315 ms
+calib_session: 20260901
 delta_source: "kalibr_calibrate_imu_camera, cam1 at 4986 us exposure, 1101 images and
   14693 IMU samples at 200.11 Hz, reprojection residual 0.45 px"
 

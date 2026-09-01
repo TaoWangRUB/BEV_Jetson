@@ -1,4 +1,4 @@
-# Virtual pinhole stereo pairs for the 4x IMX296 rig, generated 2026-08-29.
+# Virtual pinhole stereo pairs for the 4x IMX296 rig, generated 2026-09-01 (ROUND 2).
 #
 # WHY THIS EXISTS. The lenses are ~192 deg diagonal. cuVSLAM's only fisheye model is the
 # equidistant one, which cannot represent rays past 90 deg incidence, so it cannot
@@ -30,6 +30,14 @@
 # (0.81 -> 0.45, 0.83 -> 0.66) while front and right got worse (1.42 -> 1.79, 0.62 -> 2.55).
 # The mean cost is ~4% in rms, paid to make the four pairs describe one rigid body.
 
+# REGENERATED 2026-09-01 from the round-2 ring-closed extrinsics (3R.15/3R.16). The
+# carve combination is CHOSEN here by minimising the angle between the two virtual
+# optical axes, and the pair is ordered so the LEFT camera is the one with the negative
+# baseline component - both were previously re-derived or assumed by the checker tools,
+# which is why round 2 first read as a total failure. See scripts/calib/vstereo_*.py.
+#
+# quality: is the round-2 measurement. p90 and signed-median are NOT carried over from
+# round 1 - they were not re-measured, and a stale number here would be worse than none.
 virtual_pinhole:
   width: 768
   height: 576
@@ -37,101 +45,72 @@ virtual_pinhole:
   focal_px: 548.409
   principal_point: [384.0, 288.0]
   distortion: [0.0, 0.0, 0.0, 0.0]     # zero by construction
+calib_session: 20260901
 
 left:
-  from: cam3
-  to: cam1
-  axes_apart_deg: 1.1
-  baseline_m: 0.1471
+  from: cam1
+  to: cam3
+  carve_yaw_deg: [-45, +45]
+  axes_apart_deg: 1.6
+  baseline_m: 0.1552
   R_virtual:
-    - [0.994249, -0.107687, -0.003052]
-    - [0.107629, 0.994195, -0.013870]
-    - [0.004471, 0.013480, 0.999806]
-  t_virtual: [-0.146632, -0.011322, -0.004823]
-  quality:                            # AprilTag IDENTITY, measured after ring closure
-    epipolar_dy_median_px: 0.45
-    epipolar_dy_p90_px: 4.91
-    epipolar_dy_rms_px: 3.15
-    epipolar_dy_signed_median_px: +0.16
-    disparity_sign_consistency: 1.0
+    - [0.991753, -0.127898, 0.008234]
+    - [0.128077, 0.991387, -0.027314]
+    - [-0.004670, 0.028144, 0.999593]
+  t_virtual: [-0.154746, -0.011946, -0.003604]
+  quality:                            # AprilTag IDENTITY, round 2, after ring closure
+    epipolar_dy_median_px: 2.06
+    epipolar_dy_rms_px: 3.11
     dense_valid_fraction: 0.14
+    dense_depth_median_m: 0.45
 
 front:
-  from: cam1
-  to: cam2
-  axes_apart_deg: 1.4
-  baseline_m: 0.1488
+  from: cam2
+  to: cam1
+  carve_yaw_deg: [-45, +45]
+  axes_apart_deg: 2.4
+  baseline_m: 0.1527
   R_virtual:
-    - [0.997297, -0.072746, 0.011824]
-    - [0.073002, 0.997097, -0.023394]
-    - [-0.010071, 0.024189, 0.999712]
-  t_virtual: [-0.148729, -0.003751, -0.003801]
-  quality:                            # AprilTag IDENTITY, measured after ring closure
-    epipolar_dy_median_px: 1.79
-    epipolar_dy_p90_px: 5.53
-    epipolar_dy_rms_px: 3.15
-    epipolar_dy_signed_median_px: +1.47
-    disparity_sign_consistency: 1.0
-    dense_valid_fraction: 0.19
+    - [0.993148, -0.115163, 0.019874]
+    - [0.115842, 0.992568, -0.037270]
+    - [-0.015434, 0.039316, 0.999108]
+  t_virtual: [-0.152545, -0.007617, 0.000575]
+  quality:                            # AprilTag IDENTITY, round 2, after ring closure
+    epipolar_dy_median_px: 1.32
+    epipolar_dy_rms_px: 2.86
+    dense_valid_fraction: 0.17
+    dense_depth_median_m: 0.35
 
 right:
-  from: cam2
-  to: cam4
-  axes_apart_deg: 1.1
-  baseline_m: 0.1498
+  from: cam4
+  to: cam2
+  carve_yaw_deg: [-45, +45]
+  axes_apart_deg: 1.2
+  baseline_m: 0.1533
   R_virtual:
-    - [0.994680, -0.103369, -0.013647]
-    - [0.103579, 0.994660, 0.012740]
-    - [0.012194, -0.014139, 0.999827]
-  t_virtual: [-0.149456, -0.007819, -0.006038]
-  quality:                            # AprilTag IDENTITY, measured after ring closure
-    epipolar_dy_median_px: 2.55
-    epipolar_dy_p90_px: 7.73
+    - [0.988764, -0.149284, -0.007762]
+    - [0.149414, 0.988566, 0.020352]
+    - [0.004636, -0.021283, 0.999763]
+  t_virtual: [-0.152335, -0.017191, 0.002614]
+  quality:                            # AprilTag IDENTITY, round 2, after ring closure
+    epipolar_dy_median_px: 2.86
     epipolar_dy_rms_px: 4.07
-    epipolar_dy_signed_median_px: -2.13
-    disparity_sign_consistency: 1.0
-    dense_valid_fraction: 0.14
+    dense_valid_fraction: 0.11
+    dense_depth_median_m: 0.55
 
 rear:
-  from: cam4
-  to: cam3
+  from: cam3
+  to: cam4
+  carve_yaw_deg: [-45, +45]
   axes_apart_deg: 1.0
-  baseline_m: 0.1490
+  baseline_m: 0.1612
   R_virtual:
-    - [0.994782, -0.099667, 0.015897]
-    - [0.100033, 0.995000, -0.018420]
-    - [-0.013882, 0.019942, 0.999848]
-  t_virtual: [-0.148647, -0.009589, -0.001399]
-  quality:                            # AprilTag IDENTITY, measured after ring closure
-    epipolar_dy_median_px: 0.66
-    epipolar_dy_p90_px: 3.29
-    epipolar_dy_rms_px: 1.88
-    epipolar_dy_signed_median_px: -0.44
-    disparity_sign_consistency: 1.0
-    dense_valid_fraction: 0.22
-
-quality_summary: >-
-  Median epipolar residual 0.45-2.55 px across the four pairs after ring closure (0.62-1.42
-  before), disparity sign consistent on 100% of correspondences, implied depths 0.32-0.44 m
-  matching how the board was held. Usable, not excellent: a well-calibrated physical stereo
-  rig reaches under 0.5 px, so disparity search needs a few pixels of vertical tolerance
-  rather than a strict row.
-
-  At focal 548 px one degree of rotation error is 9.6 px, so ~1 px is ~0.1 deg. The spread
-  across pairs is now dominated by how the closure redistributed each recording's
-  systematic bias, not by the rectification itself - right absorbed the largest correction
-  (1.31 deg) and carries the largest residual. Improving this needs a recording where three
-  or more cameras see the board at once, not a different rectification.
-
-  These numbers come from tag IDENTITY, not descriptor matching. ORB on this repetitive
-  indoor scene reported 4.15 px median with a 74 px p90, describing the matcher rather
-  than the rig.
-
-depth_note: >-
-  Dense disparity was computed on these recordings and is NOT evidence either way. They
-  are calibration sweeps: a repetitive tag grid filling the frame at 0.3-0.6 m against
-  blank white wall and floor - close to the worst case for block matching. SGBM returned
-  14-22% valid pixels with heavy speckle, and widening the search range made it worse, so
-  the limit is texture rather than geometry. Where it did match, the ordering was correct
-  (board near, doorway far) and depths agreed with how the board was held. Judging dense
-  depth needs a textured scene at 1-3 m, which has not been recorded.
+    - [0.997648, -0.068400, -0.004409]
+    - [0.068313, 0.997509, -0.017609]
+    - [0.005603, 0.017267, 0.999835]
+  t_virtual: [-0.161116, -0.003742, 0.001783]
+  quality:                            # AprilTag IDENTITY, round 2, after ring closure
+    epipolar_dy_median_px: 3.67
+    epipolar_dy_rms_px: 4.52
+    dense_valid_fraction: 0.10
+    dense_depth_median_m: 0.82

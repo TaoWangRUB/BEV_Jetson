@@ -494,7 +494,33 @@ than assumes, because a trigger swap is precisely the event that can degrade ske
 
 ### E. Publish, and re-verify what can be verified offline
 
-- [ ] 3R.16 **Write the results into the files the consumers actually read.** This is §3.8 against
+- [x] 3R.16 **PROMOTED 2026-09-01.** All four consumer files now carry the round-2 solve, tagged
+  `calib_session: 20260901`, and the promoted set passes both gates of 3R.17 (frustum
+  0.916-0.945; layout signs OK).
+
+  - `config/calib/imx296_1456x1088/camN.yaml` — round-2 Mei intrinsics, each traced to the exact
+    solve log that produced it (cam1←solve_cam1/log1, cam2←**solve_cam2b**/log1 i.e. the re-sweep,
+    cam3←solve_cam3/log1, cam4←solve_cam4/log1). Reprojection 0.24-0.29 px on all four; **subset
+    stability recorded alongside** (cam1 0.06, cam2 5.0, cam4 9.8, **cam3 34.4 px**) because that,
+    not reprojection, is the number that separates them.
+  - `config/rig/rig_extrinsics_imx296.yaml` — the ring-closed `rig_in_cam1`, with the frame
+    convention stated (+x physically LEFT) and a **NEVER-MERGE banner** naming the round-1 mirror.
+  - `config/rig/virtual_stereo_imx296.yaml` — regenerated from the promoted extrinsics. The carve
+    combination is now *chosen* and the pair *ordered* in the file itself (`carve_yaw_deg`, and
+    from/to swapped where the baseline sign required), rather than re-derived by each consumer —
+    which is what made round 2 first read as a failure. Round-2 quality carried; round-1 p90 and
+    signed-median deliberately **not** carried, since they were not re-measured.
+  - Δ — already stated in `config/calib/imu_mpu9250.yaml` (3R.14), now also session-tagged.
+
+  Conventions honoured: `fold_roll_for_vo.py` NOT run, and the raw-inverted assumption re-confirmed
+  from `stage1_cam1_sel.bag` (printed text upside-down, floor at the top).
+
+  **cam3 promoted as-is, deliberately.** Its re-sweep is outstanding and it is the weakest camera by
+  every measure available. Promoting it unblocks the VO build, which is the cheapest test of whether
+  its weakness actually matters; if tracking is poor, cam3 is the first thing to re-sweep. Recorded
+  in cam3.yaml itself so the caveat travels with the file.
+
+  Original text: write the results into the files the consumers actually read. This is §3.8 against
   the new session. Corrected 2026-08-31 after checking the launch file and the VO node:
 
   - `config/calib/imx296_1456x1088/camN.yaml` — tartancalib camchain converted to our
