@@ -54,7 +54,7 @@ EXPOSURE_US=$(( (PULSE_NS + 500) / 1000 ))
 #    start dies with "Argus setup failed"
 grep -q 2035200 /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null \
   || { echo "note: jetson_clocks not applied, re-applying"; sudo jetson_clocks; }
-sudo systemctl restart nvargus-daemon; sleep 4
+sudo systemctl restart nvargus-daemon; sleep 8   # 4 s was not enough: "no session for 0"
 
 OUT=/media/nvidia/workspace/motion_${LABEL}_$(date +%Y%m%d_%H%M%S)
 mkdir -p "$OUT"; echo "$TAPE" > "$OUT/tape_metres.txt"

@@ -99,9 +99,15 @@ services:
         set -e
         ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p publish_every_n:=${PUBLISH_EVERY_N:-1} -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us (j106-trigctl.py --port /dev/ttyACM0 status)} &
         CAP=$$!
+        trap "kill $$CAP $$VO 2>/dev/null" EXIT
+        # Let Argus actually come up before anything else starts. Opening four sessions too
+        # soon after an nvargus-daemon restart fails with "no session for 0", the capture
+        # node dies, and the VO then sits there logging nothing while the bag fills with
+        # nothing - which is exactly what happened on the first verification run.
+        sleep 12
+        kill -0 $$CAP 2>/dev/null || { echo "CAPTURE NODE DIED - see above; not recording"; exit 1; }
         ros2 launch bev_cuvslam bev_cuvslam.launch.py &
         VO=$$!
-        trap "kill $$CAP $$VO 2>/dev/null" EXIT
         sleep 10                      # cuVSLAM warms the GPU and builds 8 remap tables first
         TOPICS="/cuvslam/odometry /tf /cam1/frame_meta"
         if [ "${RECORD_IMAGES:-0}" = 1 ]; then
@@ -111,7 +117,10 @@ services:
         mkdir -p bags
         echo "recording $$TOPICS -> $$OUT"
         echo "MOVE THE RIG NOW. Ctrl-C when the move is complete."
-        ros2 bag record -o "$$OUT" $$TOPICS
+        # --qos-profile-overrides-path is NOT optional: the image topics are best_effort and
+        # the recorder defaults to reliable, so without it the bag records 0 messages while
+        # still printing "Subscribed to topic ...". See config/record_qos.yaml.
+        ros2 bag record --qos-profile-overrides-path ros2/bev_cuvslam/config/record_qos.yaml -o "$$OUT" $$TOPICS
 
   # Ports (not sensor-ids) are resolved at runtime; exposure_us is the trigger generator's
   # MEASURED pulse width, which in Fast Trigger mode IS the exposure. Read it back with
