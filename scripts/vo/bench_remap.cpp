@@ -57,6 +57,48 @@ int main(int argc, char** argv) {
     std::printf("%4dx%-7d %10.1f %8.2f %10.2f %12.1f\n",
                 W, H, vp[0].focal, mpix, ms, ms * 1e6 / (mpix * 1e6));
   }
+  // SECOND AXIS: the SOURCE resolution, at a fixed 768x576 virtual output. The sweep above
+  // shows ns/pixel RISING as the output shrinks, which means a large part of the cost does
+  // not scale with the output at all - it is the gather walking the source image. If that
+  // reading is right, shrinking the source should pay better than shrinking the virtual
+  // view, and it costs no virtual focal length.
+  //
+  // Scaling a Mei model is exact: fx, fy, cx, cy and the image size scale with s, while xi
+  // and the distortion coefficients act on normalised coordinates and do not move.
+  std::printf("\n%-12s %-10s %10s %12s\n", "source", "virtual", "ms/set", "vs full-res");
+  double base_ms = 0.0;
+  for (double sc : {1.0, 0.75, 0.5}) {
+    const int SW = int(1456 * sc), SH = int(1088 * sc);
+    std::vector<cv::Mat> ssrc(4);
+    for (int i = 0; i < 4; ++i) {
+      ssrc[i] = cv::Mat(SH, SW, CV_8UC1);
+      rng.fill(ssrc[i], cv::RNG::UNIFORM, 0, 256);
+    }
+    std::vector<bev_cuvslam::VirtualPinhole> vp;
+    std::vector<int> vsrc;
+    for (int i = 0; i < 4; ++i) {
+      auto omni = bev_cuvslam::LoadOmni(dir + "/" + cams[i] + ".yaml");
+      omni.fx *= sc; omni.fy *= sc; omni.cx *= sc; omni.cy *= sc;
+      omni.width = SW; omni.height = SH;
+      for (int k = 0; k < 2; ++k) {
+        vp.push_back(bev_cuvslam::BuildVirtualPinhole(omni, (k ? +1 : -1) * CV_PI / 4.0, 768, 576, 70.0));
+        vsrc.push_back(i);
+      }
+    }
+    std::vector<cv::Mat> dst(vp.size());
+    for (auto& d : dst) d.create(576, 768, CV_8UC1);
+    for (size_t k = 0; k < vp.size(); ++k)
+      cv::remap(ssrc[vsrc[k]], dst[k], vp[k].map1, vp[k].map2, cv::INTER_LINEAR);
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int n = 0; n < iters; ++n)
+      for (size_t k = 0; k < vp.size(); ++k)
+        cv::remap(ssrc[vsrc[k]], dst[k], vp[k].map1, vp[k].map2, cv::INTER_LINEAR);
+    const double ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count() / iters;
+    if (sc == 1.0) base_ms = ms;
+    std::printf("%4dx%-7d %-10s %10.2f %11.0f%%\n", SW, SH, "768x576", ms, 100.0 * ms / base_ms);
+  }
+
   std::printf("\nthreads %d of %d cpus\n", cv::getNumThreads(), cv::getNumberOfCPUs());
   return 0;
 }
