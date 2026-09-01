@@ -73,16 +73,25 @@ if [[ "${USE_CUNLS}" == "ON" ]]; then
         fi || { echo "ERROR: cuNLS download failed; re-run with USE_CUNLS=OFF." >&2; exit 1; }
         mv "${CUNLS_TAR}.part" "${CUNLS_TAR}"   # only name it once it is complete
     fi
+    # Stamp the extracted tree with the patch it was built from. If the patch has
+    # changed since (a re-generated port), the old tree is half-patched and neither
+    # applies nor reverses cleanly -- so re-extract instead of failing confusingly.
+    CUNLS_STAMP="${CUNLS_SRC}/.tx2-port-stamp"
+    CUNLS_SUM="$(sha256sum "${CUNLS_PATCH}" | cut -d' ' -f1)"
+    if [[ -d "${CUNLS_SRC}" && "$(cat "${CUNLS_STAMP}" 2>/dev/null)" != "${CUNLS_SUM}" ]]; then
+        echo "cuNLS port patch changed since this tree was extracted; re-extracting."
+        rm -rf "${CUNLS_SRC}"
+    fi
     if [[ ! -d "${CUNLS_SRC}" ]]; then
         tar xzf "${CUNLS_TAR}" -C "${REPO_ROOT}/build"
     fi
-    if patch -p1 -d "${CUNLS_SRC}" --dry-run --reverse --force <"${CUNLS_PATCH}" >/dev/null 2>&1; then
+    if [[ -f "${CUNLS_STAMP}" ]]; then
         echo "cuNLS CUDA-10.2 port patch already applied."
-    elif patch -p1 -d "${CUNLS_SRC}" --dry-run --force <"${CUNLS_PATCH}" >/dev/null 2>&1; then
-        patch -p1 -d "${CUNLS_SRC}" --force <"${CUNLS_PATCH}"
+    elif patch -p1 -d "${CUNLS_SRC}" --force <"${CUNLS_PATCH}"; then
+        echo "${CUNLS_SUM}" > "${CUNLS_STAMP}"
         echo "Applied cuNLS CUDA-10.2 port patch."
     else
-        echo "ERROR: cuNLS port patch neither applies cleanly nor is already applied" >&2
+        echo "ERROR: cuNLS port patch failed to apply" >&2
         echo "       — regenerate with scripts/port/regen_cunls_patch.sh" >&2
         exit 1
     fi

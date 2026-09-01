@@ -149,6 +149,118 @@ for f in ["cunls/common/log.h", "cunls/common/log.cpp"]:
     edit(f, lambda s: s
          .replace("#include <string_view>\n", "")
          .replace("std::string_view", "const std::string &"))
+#  ---- cuSPARSE: CUDA 10.2 ships cuSPARSE 10.3, which predates part of the
+#  generic API cuNLS uses. Three separate gaps, handled three ways.
+
+#  (a) cusparseSpMV_preprocess is a CUDA-12 optimisation hint. cusparseSpMV is
+#      correct without it (the PCG solver's own comment notes the preprocess is
+#      per-structure, not per-solve), so compile it out on older toolkits.
+_PRE_PCG = """  THROW_ON_CUSPARSE_ERROR(cusparseSpMV_preprocess(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha,
+                                                  matA, vecX, &beta, vecY, CUDA_R_32F,
+                                                  CUSPARSE_SPMV_ALG_DEFAULT, spmv_buffer_.data()));"""
+edit("cunls/linear_solver/block_sparse_pcg_solver.cu", lambda s: s.replace(
+    _PRE_PCG,
+    "#if defined(CUSPARSE_VERSION) && CUSPARSE_VERSION >= 12000\n"
+    "  // Optimisation hint only; absent before CUDA 12 and not required for correctness.\n"
+    + _PRE_PCG + "\n#endif"))
+_PRE_SM = """  THROW_ON_CUSPARSE_ERROR(cusparseSpMV_preprocess(
+      cusparse_handle, operation, &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
+      CUSPARSE_SPMV_ALG_DEFAULT, buffer_ptr));"""
+edit("cunls/minimizer/sparse_matrix.cu", lambda s: s.replace(
+    _PRE_SM,
+    "#if defined(CUSPARSE_VERSION) && CUSPARSE_VERSION >= 12000\n"
+    "  // Optimisation hint only; absent before CUDA 12 and not required for correctness.\n"
+    + _PRE_SM + "\n#endif"))
+
+#  (b) cusparseCsrSetPointers (CUDA 11+) has no 10.2 equivalent, so rebuild the
+#      descriptor instead -- a CSR descriptor is just dims plus the three device
+#      pointers. Both callers re-fetch it via GetDescription() afterwards, and the
+#      SpMV buffer size depends only on dims/nnz, which UpdatePointers never changes.
+#      The dimensions are not queryable on 10.2 (no cusparseSpMatGetSize), so they
+#      are cached at construction -- and must therefore survive the move-assignment,
+#      which is how block_sparse_pcg_solver installs the descriptor.
+edit("cunls/common/cusparse_helper.h", lambda s: s.replace(
+    "  void *description_ = nullptr; ///< The cuSPARSE matrix descriptor",
+    "  void *description_ = nullptr; ///< The cuSPARSE matrix descriptor\n"
+    "  int rows_ = 0;                ///< Cached row count (CUDA 10.2 cannot query it back)\n"
+    "  int cols_ = 0;                ///< Cached column count"))
+edit("cunls/common/cusparse_helper.cpp", lambda s: s
+     .replace("""    int num_rows, int num_cols, int num_nonzeros,
+    const CSRSparseMatrix &matrix) {
+  auto rows_ptr""",
+              """    int num_rows, int num_cols, int num_nonzeros,
+    const CSRSparseMatrix &matrix)
+    : rows_(num_rows), cols_(num_cols) {
+  auto rows_ptr""")
+     .replace("""cuSPARSEMatrixDescription::cuSPARSEMatrixDescription(int num_rows,
+                                                     int num_cols) {""",
+              """cuSPARSEMatrixDescription::cuSPARSEMatrixDescription(int num_rows,
+                                                     int num_cols)
+    : rows_(num_rows), cols_(num_cols) {""")
+     .replace("""  description_ = std::exchange(other.description_, nullptr);
+  return *this;""",
+              """  description_ = std::exchange(other.description_, nullptr);
+  rows_ = std::exchange(other.rows_, 0);
+  cols_ = std::exchange(other.cols_, 0);
+  return *this;""")
+     .replace("""  THROW_ON_CUSPARSE_ERROR(
+      cusparseCsrSetPointers(static_cast<cusparseSpMatDescr_t>(description_),
+                             rows_ptr, cols_ptr, values_ptr));""",
+              """  // CUDA 10.2's cuSPARSE has no cusparseCsrSetPointers; rebuild the descriptor.
+  if (description_) {
+    WARN_ON_CUSPARSE_ERROR(
+        cusparseDestroySpMat(static_cast<cusparseSpMatDescr_t>(description_)));
+    description_ = nullptr;
+  }
+  cusparseSpMatDescr_t descr = nullptr;
+  THROW_ON_CUSPARSE_ERROR(cusparseCreateCsr(
+      &descr, rows_, cols_, static_cast<int>(matrix.NumNonZeros()), rows_ptr,
+      cols_ptr, values_ptr, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+      CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F));
+  description_ = static_cast<void *>(descr);"""))
+
+#  (c) the cuSPARSE A^T*A multiplier needs the SpGEMM-reuse family (CUDA 11.3+)
+#      and cusparseSpMatGetSize. Like cuDSS it is an unselected backend -- the
+#      default is SparseMatrixMultiplierType::Fast, a custom kernel -- so drop it.
+edit("cunls/minimizer/CMakeLists.txt",
+     lambda s: s.replace("  cusparse_matrix_multiplier.cpp\n", ""))
+edit("cunls/minimizer/sparse_matrix_multiplier.cpp", lambda s: s
+     .replace('#include "cunls/minimizer/cusparse_matrix_multiplier.h"\n', "")
+     .replace("""  case SparseMatrixMultiplierType::cuSPARSE:
+    return std::make_unique<cuSPARSESparseMatrixMultiplier>();""",
+              """  case SparseMatrixMultiplierType::cuSPARSE:
+    // Removed in the CUDA-10.2 / TX2 port: needs the cuSPARSE SpGEMM-reuse API
+    // (CUDA 11.3+). Use SparseMatrixMultiplierType::Fast, which is the default.
+    throw std::invalid_argument(
+        "cuSPARSE square multiplier unavailable in this build "
+        "(CUDA-10.2 TX2 port); use Fast");"""))
+
+#  cublasSgemvStridedBatched does not exist in CUDA 10.2's cuBLAS (only the gemm
+#  StridedBatched family does). A batched gemv is exactly a batched gemm with n=1:
+#  y(m x 1) = alpha * A(m x k) * x(k x 1) + beta * y. incx/incy are 1 here and the
+#  vectors are contiguous, so x and y map to column matrices with ld = residual_size,
+#  which satisfies ldb >= k and ldc >= m. Strides carry over unchanged.
+edit("cunls/factor/information_factor_batch.cpp", lambda s: s
+     .replace("""  const size_t stride = residual_size * residual_size;
+  constexpr size_t inc = 1;
+
+  THROW_ON_CUBLAS_ERROR(cublasSgemvStridedBatched(
+      static_cast<cublasHandle_t>(cublas_handle), CUBLAS_OP_N, residual_size,
+      residual_size, &alpha, sqrt_information, residual_size, stride, residuals,
+      inc, residual_size, &beta, residuals, inc, residual_size, num_factors));""",
+              """  const size_t stride = residual_size * residual_size;
+
+  // CUDA 10.2 has no cublasSgemvStridedBatched; expressed as a batched gemm with
+  // n = 1, which is the same operation (see patch/cunls/README.md).
+  const int n = static_cast<int>(residual_size);
+  THROW_ON_CUBLAS_ERROR(cublasSgemmStridedBatched(
+      static_cast<cublasHandle_t>(cublas_handle), CUBLAS_OP_N, CUBLAS_OP_N, n,
+      /*n=*/1, n, &alpha, sqrt_information, n,
+      static_cast<long long>(stride), residuals, n,
+      static_cast<long long>(residual_size), &beta, residuals, n,
+      static_cast<long long>(residual_size),
+      static_cast<int>(num_factors)));"""))
+
 #  C++17 variable template -> the C++14 trait spelling
 edit("cunls/robustifier/scaled_loss_function_batch.h", lambda s: s
      .replace("std::is_base_of_v<LossFunctionBatch, T>",
