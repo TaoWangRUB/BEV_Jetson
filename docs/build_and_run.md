@@ -72,7 +72,8 @@ docker compose run --rm build-cuvslam
 ```
 
 The script (`scripts/build_cuvslam_tx2gpu.sh`) applies the CUDA-10.2 fixes
-(C++17→14, `sm_62`, cuSOLVER-11 guards, `cudaMallocAsync`→`cudaMalloc`, …) — see
+(C++17→14, `sm_62`, cuSOLVER-11 guards, `cudaMallocAsync`→`cudaMalloc`, …), and
+ports cuNLS alongside it for `USE_CUNLS` — see
 [docs/cuvslam_tx2.md](cuvslam_tx2.md) for the rationale. It is idempotent; re-run
 after a submodule update. (`./scripts/port/build_and_validate.sh` does the image
 build + this + a WarmUpGPU smoke test in one shot.)

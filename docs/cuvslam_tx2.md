@@ -38,8 +38,38 @@ Driver: `scripts/build_cuvslam_tx2gpu.sh` + `scripts/port/downgrade_cuvslam_cpp1
 6. `cudaMallocAsync(...)` → `cudaMalloc(...)` (1 call; also removes the r470 need).
 7. Guard the fetched `dense_hash_map` `std::pmr` alias (gcc-8 libstdc++ has no pmr).
 8. Link `-lstdc++fs` (gcc-8 keeps `std::filesystem` in a separate library).
+9. Floating-point `std::from_chars` → `strtod` (new in v17: `libs/common/parse_utils.cpp`
+   instantiates `Parse<float>`, and libstdc++ covers integral types only before gcc-11).
 - Runtime: add `/etc/ld.so.conf.d/nvidia-tegra.conf` + `ldconfig` so `libcuda.so.1`
   (under `tegra/`) resolves in-container (baked into `Dockerfile.cuvslam-foxy`).
+
+## cuNLS (v17, `USE_CUNLS`)
+
+v17 flipped `USE_CUNLS` ON by default. cuNLS is the CUDA nonlinear least-squares
+backend behind `OdometryMode::Multisensor`, and it targets CUDA 12 / sm_75+. It is
+ported separately — see [patch/cunls/README.md](../patch/cunls/README.md) — and the
+build script fetches, patches and injects it via `FETCHCONTENT_SOURCE_DIR_CUNLS`.
+`USE_CUNLS=OFF ./scripts/build_cuvslam_tx2gpu.sh` drops back to a cuNLS-free build.
+
+**cuDSS is the one piece that cannot be ported.** It ships as a prebuilt binary only,
+published for CUDA 12/13 exclusively — no CUDA 10.2 build, no Tegra build, no source.
+cuVSLAM never selects it (`multisensor_pose_estimator` asks for `DenseQR`; cuNLS's own
+default is `BlockSparsePCG`), so the backend is removed outright. The cuSPARSE
+`A^T*A` multiplier goes the same way: it needs the SpGEMM-reuse API (CUDA 11.3+) and
+is likewise unselected, the default being the custom `Fast` kernel.
+
+The rest is the same shape as the cuVSLAM port — C++14 device syntax, missing CUDA
+10.2 APIs (`cublasSgemvStridedBatched`, `cusparseCsrSetPointers`,
+`cusparseSpMV_preprocess`, `thrust::cuda::par_nosync`), and a second copy of the same
+cuSOLVER IRS enum table guarded in fix 5 above.
+
+**Finding these:** grepping for constructs proved unreliable — it missed a structured
+binding spelled `const auto &[a, b]`, uppercase enum constants (the sweep matched only
+lowercase `cusolver*`), and Thrust entirely. What works is enumerating every
+`cuda|cublas|cusolver|cusparse|thrust` identifier *and* every uppercase
+`CUDA_|CUBLAS_|CUSOLVER_|CUSPARSE_` constant, then testing each against the board's own
+headers, plus compiling with the host nvcc at `-std=c++14 -arch=sm_62` **treating
+warning #3356 as an error** (nvcc 12 only warns on C++17 where nvcc 10.2 rejects).
 
 ## Reproduce
 ```bash
