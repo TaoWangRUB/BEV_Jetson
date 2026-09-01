@@ -288,12 +288,21 @@ class FusedNode : public rclcpp::Node {
       const auto t_loop = std::chrono::steady_clock::now();
       int64_t ts0 = 0; bool ok = true;
       std::array<int64_t, 4> ts{};
-      for (size_t i = 0; i < 4 && ok; ++i) {
-        UniqueObj<EGLStream::Frame> frame(ifc[i]->acquireFrame(1000000000));
+      // Acquiring one frame per camera in a loop does NOT give you a set. Each consumer
+      // has its own queue, and the four frames that come back can sit on different trigger
+      // edges - which is exactly what happened: 2673 of 2673 sets rejected at 33.3 ms, one
+      // frame period at 30 Hz, on a rig whose measured hardware skew is 8 us. The modular
+      // node hit the same wall for a different reason (DDS delivery order) and the answer
+      // is the same: ALIGN, then gate. Gating alone just rejects everything.
+      auto acquire_one = [&](size_t i) -> bool {
+        // Short timeout so shutdown is prompt: this loop blocks, and launch escalates
+        // SIGINT -> SIGTERM -> SIGKILL after 5 s. A SIGKILLed run leaks an Argus session
+        // and the next start fails with "Argus setup failed", which has cost time already.
+        UniqueObj<EGLStream::Frame> frame(ifc[i]->acquireFrame(200000000));
         auto* iframe = interface_cast<EGLStream::IFrame>(frame.get());
-        if (!iframe) { ok = false; break; }
+        if (!iframe) return false;
         auto* inb = interface_cast<EGLStream::NV::IImageNativeBuffer>(iframe->getImage());
-        if (!inb || !ensure_gpu_buffer(i, inb)) { ok = false; break; }
+        if (!inb || !ensure_gpu_buffer(i, inb)) return false;
         // The SENSOR timestamp, not IFrame::getTime(). getTime() is consumer-side and
         // measured the capture loop's own phase - it put the four cameras ~7 ms apart in
         // visit order (README 4.7, and 4.2 flagged this node as carrying the same bug).
@@ -311,10 +320,25 @@ class FusedNode : public rclcpp::Node {
           }
           sof = (uint64_t)iframe->getTime();
         }
-        ts[i] = (int64_t)sof - (int64_t)expo / 2;   // exposure midpoint: what the image represents
-        if (i == 0) ts0 = ts[i];
+        ts[i] = (int64_t)sof - (int64_t)expo / 2;  // exposure midpoint: what the image represents
         if (first[i]) { RCLCPP_INFO(get_logger(), "%s first GPU frame", cams_[i].c_str()); first[i] = false; }
+        return true;
+      };
+
+      for (size_t i = 0; i < 4 && ok; ++i) ok = running_ && acquire_one(i);
+      if (!ok) continue;
+
+      // Advance whichever camera is behind until the four sit on one edge. Bounded, so a
+      // genuinely broken camera cannot spin here - it falls through to the gate below and
+      // is reported as a wide set, which is the honest outcome.
+      for (int guard = 0; guard < 8 && ok && running_; ++guard) {
+        const int64_t a = *std::min_element(ts.begin(), ts.end());
+        const int64_t b = *std::max_element(ts.begin(), ts.end());
+        if (b - a <= max_skew_ns_) break;
+        for (size_t i = 0; i < 4 && ok; ++i)
+          if (b - ts[i] > max_skew_ns_) ok = acquire_one(i);
       }
+      ts0 = ts[0];
       if (!ok) continue;
 
       // Gate the set on REAL per-frame stamps, exactly as the modular node does. A set that
