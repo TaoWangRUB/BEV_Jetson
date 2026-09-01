@@ -712,6 +712,37 @@ a drift number would be attributed to the VO rather than to the optics. Tooling 
 `trigger_mode` is 1) and `scripts/vo/analyze_motion.py` (host). Needs the rig powered and
 physically moved - the remaining items are not doable from here.
 
+- [~] 4.5b **MEASURED 2026-09-01: lowering the resolution is a bad trade on both axes.**
+  `scripts/vo/bench_remap.cpp`, standalone on the board (no cameras, no ROS, same maps the node
+  builds, synthetic textured source), 30 iterations.
+
+  | virtual | focal px | Mpix | ms/set |   | source | virtual | ms/set |
+  |---|---|---|---|---|---|---|---|
+  | 768×576 | 548.4 | 3.54 | 17.18 |   | 1456×1088 | 768×576 | 17.05 (100%) |
+  | 640×480 | 457.0 | 2.46 | 16.53 |   | 1092×816  | 768×576 | 16.43 (96%) |
+  | 512×384 | 365.6 | 1.57 | 10.46 |   | 728×544   | 768×576 | 15.92 (93%) |
+  | 384×288 | 274.2 | 0.88 |  9.33 |   | | | |
+
+  **Virtual**: 2.25× fewer output pixels buys 39%, and costs 33% of the virtual focal length —
+  which §3.7 already warned about (at 480×360 tag detection collapsed from ~10/frame to 0.1).
+  **Source**: 4× fewer source pixels buys **7%**. The maps are already fixed-point `CV_16SC2`
+  (`convertMaps`), so the obvious lossless win was taken long ago.
+
+  What the two sweeps locate together: ns/pixel *rises* as the output shrinks (4.9 → 10.5), and
+  extrapolating the virtual sweep to zero output leaves **~8.5 ms/set of cost independent of both
+  resolutions** — across 8 separate `cv::remap` calls, ~1 ms each. That is parallel-dispatch
+  overhead, six threads spun up eight times per set, and it is recoverable at **zero quality cost**
+  by batching the eight gathers into one parallel region. Worth one experiment before anything is
+  traded away.
+
+  Also: the benchmark measures 17 ms where the node reports **31 ms in situ**, so about half the
+  node's remap time is contention with capture, cv_bridge, DDS and cuVSLAM over the same six cores —
+  which no resolution change addresses either.
+
+  Order of attack, revised on this evidence: (1) decimate to 15 Hz — doubles the budget 33→66 ms,
+  costs nothing in quality, and 31 ms fits; (2) batch the remaps; (3) the fused node (4.2), which
+  removes the CPU round-trip entirely and is the designed answer. Resolution reduction is last.
+
 - [ ] 4.6 **Preflight the VO path the way the calibration path is preflighted.** `trigger_mode` silently
   resets to 0 on every reboot and the VO then produces nothing but drops, while asking "is the trigger
   running?". `record_calib_session.sh` already checks and sets it; add the same to the VO run path,
