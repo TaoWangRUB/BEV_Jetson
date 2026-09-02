@@ -873,6 +873,41 @@ physically moved - the remaining items are not doable from here.
   free-running, from June. And 5.1/5.2 need ground truth captured at record time, which no bag
   supplies retroactively.
 
+- [~] 5.0b **Short test log on BATTERY over WiFi, 2026-09-02 — the pipeline works end to end.**
+  `tx2-wlan` (192.168.0.168). Clean bag with `metadata.yaml`, 202 odometry + 202 tf,
+  `analyze_motion.py` read it and produced a verdict. Nothing about running on battery or over
+  WiFi breaks the chain — the whole run is local to the board, so only ssh control traffic
+  crosses the network.
+
+  The preflight earned its keep again: the power-on had reset **`trigger_mode` to 0** and the
+  F401 back to **`active_high`**, both of which it gates on. The F401 also answered on
+  **`/dev/ttyTHS1` while `/dev/ttyACM0` was still enumerating** (ACM0's device node was
+  timestamped a few seconds earlier) — exactly the case the operator flagged when correcting
+  the "dead H7 port" claim, and a good reason `TRIG_PORT` is overridable.
+
+  **Performance is roughly half the wall-power v17 run, and the cause is NOT the obvious ones.**
+
+  | | wall power (09:02) | battery (11:42) |
+  |---|---|---|
+  | rate | 13.8 Hz | 8.4 Hz |
+  | `Track()` first sample | 48.8 ms | 70.9 ms |
+  | `Track()` last sample | 73.7 ms | 93.2 ms |
+
+  Ruled out on the board: thermal (40-41 °C, every cooling-device state 0), clocks (GPU pinned
+  1300.5 MHz, EMC 1866 MHz, `FreqOverride=1`, `jetson_clocks` applied), CPU availability (all
+  six cores online at 2035200), and library version (both runs report `cuVSLAM 17.0.0`). The
+  remaining candidate is the **scene** — cuVSLAM's cost scales with features, matches and map
+  size, and the rig is somewhere different now — but that is a hypothesis, not a measurement.
+
+  **`Track()` also rises within a run, and an earlier reading of that was wrong.** 4.8 recorded
+  the morning run's tail rise as "the shutdown tail, not progressive degradation"; the battery
+  run rises monotonically from the FIRST sample (70.9 -> 93.2 ms over ~24 s), so that reading
+  was a guess and not a safe one. What is honestly established: the trend is real in this run,
+  and it is not known whether it plateaus. It matters for §5 — a long run may start near 13 Hz
+  and end considerably slower. **Cheap way to settle it:** one longer stationary run with every
+  2 s sample captured, and see whether the curve flattens. Worth doing before a long motion run
+  is planned around a rate.
+
 - [ ] 5.1 Move the rig a measured straight-line distance; record `/cuvslam/odometry` + `/tf` and compare reported translation against the tape measure (spec: *Translation is recovered at true scale*, 5 %).
 - [ ] 5.2 Return the rig to its starting pose and check the trajectory returns near the origin; record the drift.
 - [~] 5.3 **Answered offline, pending live confirmation.** cuVSLAM does not take declared stereo pairs: it samples a grid per camera, back-projects to 2 m and 4 m, and connects pairs exceeding 0.5 (`frustum_intersection_graph.cpp:33`). Re-running that on our ring-closed rig gives **0.939 / 0.951 / 0.926 / 0.949** against a 0.961 ceiling, all 8 virtual cameras paired, no spurious edges. The links form with room to spare and the `CUVSLAM_FRUSTUM_THRESHOLD` patch is not needed for the pinholes. Still to confirm on the live pipeline.
