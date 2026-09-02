@@ -31,6 +31,7 @@
 #include <fstream>
 #include <memory>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -176,6 +177,14 @@ class ArgusCaptureNode : public rclcpp::Node {
     //
     // When image_log_dir is set the node appends raw mono8 frames to one file per camera and
     // an index CSV beside it, and does NOT publish. Sequential writes, no serialisation.
+    //
+    // COMMA-SEPARATED = ONE TARGET PER CAMERA, and that is what makes a full-rate minute
+    // possible. 4 cameras at 30 fps is ~190 MB/s and NO single target here takes it: measured
+    // sustained write is 136 MB/s on eMMC, 62.6 on the SD, and RAM holds only ~21 s. Split
+    // them and each target stays inside its own limit - 2 cameras to eMMC (95 MB/s), 1 to the
+    // SD (48), 1 to RAM (48) - which fits 60 s with room on all three.
+    //   image_log_dir:="/logs,/logs,/media/...,/ramlog"   (per camera, in `cameras` order)
+    //   image_log_dir:="/logs"                            (one path, all cameras)
     image_log_dir_ = declare_parameter<std::string>("image_log_dir", "");
     // Optional: refuse to publish under a calibration measured on another rig.
     calib_dir_ = declare_parameter<std::string>("calib_dir", "");
@@ -401,8 +410,20 @@ class ArgusCaptureNode : public rclcpp::Node {
   // offline reader needs nothing from this repo:  numpy.memmap(path, uint8).reshape(-1, h, w)
   void open_image_logs() {
     image_logs_.resize(n_); image_index_.resize(n_); image_frames_.assign(n_, 0);
+    image_dirs_.clear();
+    for (size_t start = 0; start <= image_log_dir_.size();) {
+      const size_t comma = image_log_dir_.find(',', start);
+      const size_t end = (comma == std::string::npos) ? image_log_dir_.size() : comma;
+      image_dirs_.push_back(image_log_dir_.substr(start, end - start));
+      if (comma == std::string::npos) break;
+      start = comma + 1;
+    }
+    if (image_dirs_.size() == 1) image_dirs_.assign(n_, image_dirs_[0]);
+    if (image_dirs_.size() != n_)
+      throw std::runtime_error("image_log_dir: give one path, or exactly one per camera (" +
+                               std::to_string(n_) + "); got " + std::to_string(image_dirs_.size()));
     for (size_t i = 0; i < n_; ++i) {
-      const std::string base = image_log_dir_ + "/" + frame_ids_[i];
+      const std::string base = image_dirs_[i] + "/" + frame_ids_[i];
       image_logs_[i] = std::make_unique<std::ofstream>(base + ".raw", std::ios::binary);
       image_index_[i] = std::make_unique<std::ofstream>(base + "_index.csv");
       if (!image_logs_[i]->good() || !image_index_[i]->good())
@@ -411,12 +432,18 @@ class ArgusCaptureNode : public rclcpp::Node {
                        << "# this frame in " << frame_ids_[i] << ".raw\n"
                        << "stamp_ns,offset\n";
     }
-    std::ofstream meta(image_log_dir_ + "/geometry.txt");
-    meta << "width " << width_ << "\nheight " << height_ << "\nencoding mono8\n"
-         << "bytes_per_frame " << static_cast<size_t>(width_) * height_ << "\n"
-         << "cameras " << n_ << "\n";
-    RCLCPP_INFO(get_logger(), "writing RAW frames to %s (no ROS publish: DDS is not in the path)",
-                image_log_dir_.c_str());
+    // geometry.txt into EVERY directory used, so each one is self-describing. The parts get
+    // gathered from three different mounts before conversion, and a directory that cannot say
+    // its own frame size is useless on its own.
+    for (const auto& dir : std::set<std::string>(image_dirs_.begin(), image_dirs_.end())) {
+      std::ofstream meta(dir + "/geometry.txt");
+      meta << "width " << width_ << "\nheight " << height_ << "\nencoding mono8\n"
+           << "bytes_per_frame " << static_cast<size_t>(width_) * height_ << "\n"
+           << "cameras " << n_ << "\n";
+    }
+    for (size_t i = 0; i < n_; ++i)
+      RCLCPP_INFO(get_logger(), "  %s -> %s (raw, no ROS publish)",
+                  frame_ids_[i].c_str(), image_dirs_[i].c_str());
   }
 
   void open_frame_logs() {
@@ -774,6 +801,7 @@ class ArgusCaptureNode : public rclcpp::Node {
   std::vector<std::unique_ptr<std::ofstream>> frame_logs_;
   std::vector<std::unique_ptr<std::ofstream>> image_logs_, image_index_;
   std::vector<uint64_t> image_frames_;
+  std::vector<std::string> image_dirs_;
   bool image_log_failed_ = false;
   UniqueObj<CameraProvider> provider_;
   std::vector<UniqueObj<CaptureSession>> sessions_;

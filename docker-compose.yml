@@ -144,48 +144,7 @@ services:
   #   LOG_DIR=/logs LOG_LABEL=run1 EXPOSURE_US=$(...) docker compose run --rm logonly
   logonly:
     <<: *bev
-    command:
-      - bash
-      - -lc
-      - |
-        set -e
-        OUT=${LOG_DIR:-/logs}/imglog_${LOG_LABEL:-run}_$(date +%Y%m%d_%H%M%S)
-        mkdir -p "$$OUT"
-        # Refuse to start without room. 4 x 1.584 MB at the achievable ~21 fps is ~133 MB/s,
-        # so a minute costs ~8 GB and a careless run fills the rootfs - the first test took
-        # eMMC from 48% to 88% before it was stopped.
-        FREE_MB=$$(df -Pm "$$OUT" | awk "NR==2{print \$$4}")
-        # Size the estimate from the DATA, not from one disk's speed: 4 cameras x 1.584 MB
-        # per frame x the effective rate. On eMMC the disk caps this at ~21 fps so the guess
-        # is generous; on /ramlog it writes at the full 30 fps and a fixed 133 MB/s figure
-        # would have under-estimated by 40% and overrun the tmpfs mid-run.
-        EFF_FPS=$$(( 30 / ${PUBLISH_EVERY_N:-1} ))
-        # +40%: startup and shutdown latency make the run longer than MOTION_SECONDS.
-        # Asking for 15 s produced a 21.5 s run, which is what overran the tmpfs.
-        NEED_MB=$$(( ${MOTION_SECONDS:-60} * EFF_FPS * 4 * 1584128 * 14 / 10 / 1048576 ))
-        if [ "$$FREE_MB" -lt "$$NEED_MB" ]; then
-          echo "REFUSING: $$OUT has $${FREE_MB} MB free, this run needs about $${NEED_MB} MB."
-          echo "  shorten MOTION_SECONDS, or use LOG_DIR=/dev/shm (RAM) and copy off after."
-          exit 1
-        fi
-        echo "writing raw frames to $$OUT ($${FREE_MB} MB free)"
-        ros2 run bev_camera argus_capture_node --ros-args \
-          -p width:=1456 -p height:=1088 -p fps:=30 \
-          -p publish_every_n:=${PUBLISH_EVERY_N:-1} \
-          -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us} \
-          -p image_log_dir:="$$OUT" -p frame_log_dir:="$$OUT" &
-        CAP=$$!
-        # Bounded: the capture node has Argus sessions and file handles to close, but it must
-        # not be able to outlast the requested run length. The first test asked for 20 s and
-        # was still writing at 79 s.
-        stop() {
-          kill -INT $$CAP 2>/dev/null
-          for i in 1 2 3 4 5 6 7 8; do kill -0 $$CAP 2>/dev/null || break; sleep 1; done
-          kill -KILL $$CAP 2>/dev/null
-          exit 0
-        }
-        trap stop INT TERM
-        if [ -n "${MOTION_SECONDS:-}" ]; then sleep "${MOTION_SECONDS}"; echo "elapsed - stopping"; stop; else wait $$CAP; fi
+    command: bash -lc "scripts/log_raw.sh"
 
   # Section 5 motion test: capture + VO + recorder in ONE container, on purpose.
   #
