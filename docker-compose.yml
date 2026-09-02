@@ -35,6 +35,9 @@ x-bev: &bev
     - /dev:/dev
     - ./:/workspace
     - /home/nvidia/logs:/logs      # eMMC (rootfs): 136 MB/s measured, vs 62.6 MB/s on the SD
+    # The HOST's /dev/shm. A container gets its own 64 MB tmpfs at /dev/shm by default,
+    # which is nowhere near enough to stage 190 MB/s; bind the host's 3.9 GB instead.
+    - /dev/shm:/ramlog
 
 services:
   shell:
@@ -133,7 +136,7 @@ services:
   # eMMC 136 MB/s, SD 62.6 MB/s. So 30 fps to eMMC WILL drop frames; it is a ~21 fps pipe.
   # Options, in the order they cost you something:
   #   LOG_DIR=/logs        eMMC, ~21 fps sustainable, unlimited length (14 GB free)
-  #   LOG_DIR=/dev/shm     RAM, full 30 fps, but ~20 s before it fills - then copy to eMMC
+  #   LOG_DIR=/ramlog      the HOST's /dev/shm (3.9 GB): full 30 fps, ~20 s, then copy to eMMC
   #   PUBLISH_EVERY_N=2    15 fps, fits eMMC with headroom, runs indefinitely
   # The recorder reports what it actually wrote; compare it against the trigger rate rather
   # than assuming.
@@ -152,7 +155,12 @@ services:
         # so a minute costs ~8 GB and a careless run fills the rootfs - the first test took
         # eMMC from 48% to 88% before it was stopped.
         FREE_MB=$$(df -Pm "$$OUT" | awk "NR==2{print \$$4}")
-        NEED_MB=$$(( ${MOTION_SECONDS:-60} * 133 ))
+        # Size the estimate from the DATA, not from one disk's speed: 4 cameras x 1.584 MB
+        # per frame x the effective rate. On eMMC the disk caps this at ~21 fps so the guess
+        # is generous; on /ramlog it writes at the full 30 fps and a fixed 133 MB/s figure
+        # would have under-estimated by 40% and overrun the tmpfs mid-run.
+        EFF_FPS=$$(( 30 / ${PUBLISH_EVERY_N:-1} ))
+        NEED_MB=$$(( ${MOTION_SECONDS:-60} * EFF_FPS * 4 * 1584128 / 1048576 ))
         if [ "$$FREE_MB" -lt "$$NEED_MB" ]; then
           echo "REFUSING: $$OUT has $${FREE_MB} MB free, this run needs about $${NEED_MB} MB."
           echo "  shorten MOTION_SECONDS, or use LOG_DIR=/dev/shm (RAM) and copy off after."
