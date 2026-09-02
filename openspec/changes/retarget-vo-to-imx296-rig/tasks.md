@@ -796,6 +796,34 @@ physically moved - the remaining items are not doable from here.
   costs nothing in quality, and 31 ms fits; (2) batch the remaps; (3) the fused node (4.2), which
   removes the CPU round-trip entirely and is the designed answer. Resolution reduction is last.
 
+- [x] 4.8 **cuVSLAM v15 -> v17: whole pipeline re-verified 2026-09-02, and it is markedly faster.**
+
+  | | v15.0.0 | v17.0.0 |
+  |---|---|---|
+  | odometry rate | 8.8 Hz | **~13.8 Hz** |
+  | `Track()` | 87.6 ms | **~49 ms** |
+  | acquire + gpucopy | 26.3 ms | 21-24 ms |
+  | stationary drift (path length, ~37 s) | 2.50 m | **1.42 m** |
+
+  `Track()` nearly halved, which was the bottleneck 4.2 identified. Total is now ~70 ms, so
+  the node sits just under the 15 Hz decimated capture rate rather than half of it.
+
+  Checked, in order: the offline gate compiles against the v17 headers and passes with
+  **identical** frustum ratios (0.936/0.934/0.916/0.945) and layout signs, so the API surface
+  we use and the rig geometry are unchanged; a forced clean rebuild of all three packages
+  produced **zero errors**; the runtime reports `cuVSLAM 17.0.0` and tracks; the bag came back
+  clean (metadata.yaml, 480 odometry + 480 tf) and `analyze_motion.py` read it and produced a
+  verdict. The section 5 pipeline is unaffected.
+
+  **One thing lost: v17 no longer prints the `FRUSTUM pair X-Y ratio ... thr 0.500` lines.**
+  That was how 4.5 cross-checked `verify_rig_build.sh` against cuVSLAM's own computation, and
+  it can no longer be repeated at runtime. The gate is still valid — v17's
+  `libs/camera/frustum_intersection_graph.cpp:56` still has
+  `intersected_num_points_ratio_threshold = 0.5`, the same constant our reimplementation
+  assumes — but that is now verified by reading the source rather than by observing the
+  library agree, and a future bump could change it silently. Worth re-checking that constant on
+  every cuVSLAM upgrade.
+
 - [ ] 4.7 **Make the fused node resolve ports at runtime, as the capture node already does.**
   It takes raw 0-based Argus indices from `sensor_ids`, so it assumes bind order equals port
   order c,d,e,f. Task 1.1 established that this must not be assumed — a different boot shifted
