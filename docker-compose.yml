@@ -34,6 +34,7 @@ x-bev: &bev
     - /tmp/argus_socket:/tmp/argus_socket
     - /dev:/dev
     - ./:/workspace
+    - /home/nvidia/logs:/logs      # eMMC (rootfs): 136 MB/s measured, vs 62.6 MB/s on the SD
 
 services:
   shell:
@@ -110,6 +111,45 @@ services:
         trap "kill %1 2>/dev/null" EXIT
         sleep 8
         exec ros2 launch bev_cuvslam bev_cuvslam.launch.py
+
+  # PURE IMAGE LOG: capture + recorder, NO VO. For offline debugging, where the point is to
+  # have every frame the rig produced, not an odometry track.
+  #
+  # THE BANDWIDTH DOES NOT FIT, and it is worth stating plainly. Four 1456x1088 mono8 frames
+  # at 30 fps is 1.585 MB x 4 x 30 = ~190 MB/s. Measured sustained write on this board:
+  # eMMC 136 MB/s, SD 62.6 MB/s. So 30 fps to eMMC WILL drop frames; it is a ~21 fps pipe.
+  # Options, in the order they cost you something:
+  #   LOG_DIR=/logs        eMMC, ~21 fps sustainable, unlimited length (14 GB free)
+  #   LOG_DIR=/dev/shm     RAM, full 30 fps, but ~20 s before it fills - then copy to eMMC
+  #   PUBLISH_EVERY_N=2    15 fps, fits eMMC with headroom, runs indefinitely
+  # The recorder reports what it actually wrote; compare it against the trigger rate rather
+  # than assuming.
+  #
+  #   LOG_DIR=/logs LOG_LABEL=run1 EXPOSURE_US=$(...) docker compose run --rm logonly
+  logonly:
+    <<: *bev
+    command:
+      - bash
+      - -lc
+      - |
+        set -e
+        ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p publish_every_n:=${PUBLISH_EVERY_N:-1} -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us} &
+        CAP=$$!
+        trap "kill $$CAP 2>/dev/null" EXIT
+        sleep 12
+        kill -0 $$CAP 2>/dev/null || { echo "CAPTURE NODE DIED - see above; not recording"; exit 1; }
+        OUT=${LOG_DIR:-/logs}/imglog_${LOG_LABEL:-run}_$(date +%Y%m%d_%H%M%S)
+        mkdir -p "$$(dirname $$OUT)"
+        echo "recording 4 cameras -> $$OUT"
+        # --qos-profile-overrides-path is NOT optional: the image topics are best_effort and
+        # the recorder defaults to reliable, so without it the bag records 0 messages while
+        # still printing "Subscribed to topic ...".
+        ros2 bag record --qos-profile-overrides-path ros2/bev_cuvslam/config/record_qos.yaml \
+          -o "$$OUT" /cam1/image_raw /cam2/image_raw /cam3/image_raw /cam4/image_raw /cam1/frame_meta &
+        REC=$$!
+        stop() { kill -INT $$REC 2>/dev/null; wait $$REC 2>/dev/null; kill -INT $$CAP 2>/dev/null; exit 0; }
+        trap stop INT TERM
+        if [ -n "${MOTION_SECONDS:-}" ]; then sleep "${MOTION_SECONDS}"; echo "elapsed - stopping cleanly"; stop; else wait $$REC; fi
 
   # Section 5 motion test: capture + VO + recorder in ONE container, on purpose.
   #
