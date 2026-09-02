@@ -65,13 +65,20 @@ CAP=$!
 # then something is genuinely stuck and a kill is the right answer.
 DRAIN_MAX="${DRAIN_MAX:-120}"
 stop() {
+  # Signal the NODE, not the `ros2 run` wrapper. SIGINT to the wrapper does not reach the
+  # node: with the old 8 s kill that went unnoticed, but once the drain window was widened
+  # to 120 s the node simply kept capturing for two minutes, overflowed every queue and
+  # dropped 2805 frames. -x matches the process NAME exactly, so it cannot match this
+  # script's own command line the way `pkill -f` would.
+  pkill -INT -x argus_capture_node 2>/dev/null || true
   kill -INT "$CAP" 2>/dev/null || true
   for i in $(seq 1 "$DRAIN_MAX"); do
-    kill -0 "$CAP" 2>/dev/null || { echo "writers drained and exited cleanly after ${i}s"; exit 0; }
+    pgrep -x argus_capture_node >/dev/null 2>&1 || { echo "writers drained, node exited cleanly after ${i}s"; exit 0; }
     [ "$i" = 5 ] && echo "draining write queues..."
     sleep 1
   done
   echo "WARNING: still running after ${DRAIN_MAX}s - killing. The log may be truncated." >&2
+  pkill -KILL -x argus_capture_node 2>/dev/null || true
   kill -KILL "$CAP" 2>/dev/null || true
   exit 0
 }
