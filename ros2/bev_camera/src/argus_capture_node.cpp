@@ -694,10 +694,26 @@ class ArgusCaptureNode : public rclcpp::Node {
       std::string offs;
       for (size_t i = 1; i < n_; ++i)
         offs += " " + frame_ids_[i] + "=" + std::to_string(off_us_[i]) + "us";
+      // Writer-queue state goes in the SAME line as the capture stats, because the two
+      // losses look identical from outside and are not: frames the writer dropped never
+      // reached disk, frames Argus never delivered never existed. Reporting only at
+      // shutdown was useless - the run timer SIGKILLs before the destructor - so this was
+      // being inferred from frame counts, which cannot tell the two apart.
+      std::string wq;
+      if (!wq_.empty()) {
+        uint64_t dropped = 0; size_t deepest = 0;
+        for (size_t i = 0; i < n_; ++i) {
+          std::lock_guard<std::mutex> lk(wq_mtx_[i]);
+          dropped += wq_dropped_[i];
+          deepest = std::max(deepest, wq_[i].size());
+        }
+        wq = "; writer q max " + std::to_string(deepest) + "/" +
+             std::to_string(queue_depth_) + ", dropped " + std::to_string(dropped);
+      }
       RCLCPP_INFO(get_logger(), "sets %ld, worst skew %ld us in the last window "
-                  "(limit %d us), over-limit sets %ld total; offsets vs %s:%s",
+                  "(limit %d us), over-limit sets %ld total; offsets vs %s:%s%s",
                   sets_, worst_skew_us_, max_skew_us_, bad_sets_,
-                  frame_ids_[0].c_str(), offs.c_str());
+                  frame_ids_[0].c_str(), offs.c_str(), wq.c_str());
       worst_skew_us_ = 0;  // worst per window, not since boot
       last_report_ = now;
     }
