@@ -49,14 +49,29 @@ echo "recording ${SECS}s at ${EFF_FPS} fps -> $DIRS"
 ros2 run bev_camera argus_capture_node --ros-args \
   -p width:=1456 -p height:=1088 -p fps:=30 \
   -p publish_every_n:="$EVERY_N" -p exposure_us:="$EXPOSURE_US" \
+  -p write_queue_depth:="${WRITE_QUEUE_DEPTH:-64}" \
   -p image_log_dir:="$DIRS" -p frame_log_dir:="${BASES[0]}/imglog_${LABEL}_${STAMP}" &
 CAP=$!
 
-# Bounded stop: the node has Argus sessions and file handles to close, but it must not be
-# able to outlast the requested run length.
+# LET THE WRITE QUEUES DRAIN BEFORE KILLING ANYTHING.
+#
+# The node's destructor joins the writer threads, so a clean SIGINT flushes whatever is
+# still queued. Killing on a fixed short timer instead would discard up to
+# write_queue_depth frames per camera AND leave the index disagreeing with the .raw - the
+# same class of silent truncation this logger already had once.
+#
+# The wait is generous but still bounded: the worst case is a full queue draining at the
+# slowest device's rate, which for depth 400 on eMMC is under 20 s. If it has not exited by
+# then something is genuinely stuck and a kill is the right answer.
+DRAIN_MAX="${DRAIN_MAX:-120}"
 stop() {
   kill -INT "$CAP" 2>/dev/null || true
-  for _ in 1 2 3 4 5 6 7 8; do kill -0 "$CAP" 2>/dev/null || break; sleep 1; done
+  for i in $(seq 1 "$DRAIN_MAX"); do
+    kill -0 "$CAP" 2>/dev/null || { echo "writers drained and exited cleanly after ${i}s"; exit 0; }
+    [ "$i" = 5 ] && echo "draining write queues..."
+    sleep 1
+  done
+  echo "WARNING: still running after ${DRAIN_MAX}s - killing. The log may be truncated." >&2
   kill -KILL "$CAP" 2>/dev/null || true
   exit 0
 }
