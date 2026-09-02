@@ -199,7 +199,14 @@ class ArgusCaptureNode : public rclcpp::Node {
     // to the device's logical block (512 here); a 1456x1088 frame is 1584128 bytes, which is
     // 512-aligned, and every offset is a multiple of it. tmpfs does NOT support O_DIRECT, so
     // a target that refuses it falls back to buffered and says so.
-    image_log_direct_ = declare_parameter<bool>("image_log_direct", false);
+    // Per camera, same comma form as image_log_dir - because it is a property of the TARGET,
+    // not of the run. Measured 2026-09-02 over 60 s with direct I/O everywhere: capture-side
+    // skew fell from 33330 us to 17 us and over-limit sets from 45 to 2, with cam2 losing
+    // ZERO edges and cam4 one - but the camera on the SD card lost 146 (8.3%), because the SD
+    // cannot sustain 47.5 MB/s without the page cache smoothing it and its queue climbed to
+    // 139. So: direct where a fast device is behind it, buffered where there is not.
+    //   image_log_direct:="true,true,false,false"   (eMMC, eMMC, SD, RAM)
+    image_log_direct_ = declare_parameter<std::string>("image_log_direct", "false");
     // Optional: refuse to publish under a calibration measured on another rig.
     calib_dir_ = declare_parameter<std::string>("calib_dir", "");
 
@@ -512,6 +519,18 @@ class ArgusCaptureNode : public rclcpp::Node {
       start = comma + 1;
     }
     if (image_dirs_.size() == 1) image_dirs_.assign(n_, image_dirs_[0]);
+    direct_flags_.clear();
+    for (size_t start = 0; start <= image_log_direct_.size();) {
+      const size_t c = image_log_direct_.find(',', start);
+      const size_t e = (c == std::string::npos) ? image_log_direct_.size() : c;
+      const std::string v = image_log_direct_.substr(start, e - start);
+      direct_flags_.push_back(v == "true" || v == "1");
+      if (c == std::string::npos) break;
+      start = c + 1;
+    }
+    if (direct_flags_.size() == 1) direct_flags_.assign(n_, direct_flags_[0]);
+    if (direct_flags_.size() != n_)
+      throw std::runtime_error("image_log_direct: give one value, or one per camera");
     if (image_dirs_.size() != n_)
       throw std::runtime_error("image_log_dir: give one path, or exactly one per camera (" +
                                std::to_string(n_) + "); got " + std::to_string(image_dirs_.size()));
@@ -519,9 +538,10 @@ class ArgusCaptureNode : public rclcpp::Node {
       const std::string base = image_dirs_[i] + "/" + frame_ids_[i];
       const std::string rawpath = base + ".raw";
       int flags = O_WRONLY | O_CREAT | O_TRUNC;
-      if (image_log_direct_) flags |= O_DIRECT;
+      const bool want_direct = direct_flags_[i];
+      if (want_direct) flags |= O_DIRECT;
       image_fds_[i] = ::open(rawpath.c_str(), flags, 0644);
-      if (image_fds_[i] < 0 && image_log_direct_) {
+      if (image_fds_[i] < 0 && want_direct) {
         // tmpfs and some filesystems reject O_DIRECT outright. Fall back rather than fail:
         // a split log deliberately puts one camera on RAM, where direct I/O is meaningless
         // anyway because there is no device behind it.
@@ -530,7 +550,7 @@ class ArgusCaptureNode : public rclcpp::Node {
         image_fds_[i] = ::open(rawpath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         direct_ok_[i] = false;
       } else {
-        direct_ok_[i] = image_log_direct_;
+        direct_ok_[i] = want_direct;
       }
       if (image_fds_[i] < 0)
         throw std::runtime_error("cannot open " + rawpath + ": " + strerror(errno));
@@ -558,8 +578,8 @@ class ArgusCaptureNode : public rclcpp::Node {
            << "cameras " << n_ << "\n";
     }
     for (size_t i = 0; i < n_; ++i)
-      RCLCPP_INFO(get_logger(), "  %s -> %s (raw, no ROS publish)",
-                  frame_ids_[i].c_str(), image_dirs_[i].c_str());
+      RCLCPP_INFO(get_logger(), "  %s -> %s (raw, %s)", frame_ids_[i].c_str(),
+                  image_dirs_[i].c_str(), direct_ok_[i] ? "O_DIRECT" : "buffered");
     wq_ = std::vector<std::deque<WriteJob>>(n_);
     wq_mtx_ = std::vector<std::mutex>(n_);
     wq_cv_ = std::vector<std::condition_variable>(n_);
@@ -918,7 +938,8 @@ class ArgusCaptureNode : public rclcpp::Node {
   std::vector<uint64_t> image_off_;
   std::vector<uint8_t*> align_buf_;
   std::vector<bool> direct_ok_;
-  bool image_log_direct_ = false;
+  std::string image_log_direct_ = "false";
+  std::vector<bool> direct_flags_;
   std::vector<uint64_t> image_frames_;
   std::vector<std::string> image_dirs_;
   size_t queue_depth_ = 64;
