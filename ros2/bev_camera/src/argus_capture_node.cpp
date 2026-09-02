@@ -718,7 +718,14 @@ class ArgusCaptureNode : public rclcpp::Node {
       auto& idx = *image_index_[i];
       const long long off = static_cast<long long>(f.tellp());
       f.write(reinterpret_cast<const char*>(msg->data.data()), static_cast<std::streamsize>(n));
-      idx << t_ns << "," << off << "\n";
+      // FLUSH EVERY LINE. The index entries are ~24 bytes and sit in the stream buffer
+      // indefinitely; the .raw never has this problem because a 1.58 MB frame blows past any
+      // buffer on every write. Two runs ended with exactly 341 index entries against 496 and
+      // 645 raw frames - not because the target filled, but because the node was SIGKILLed by
+      // the run timer and the buffered tail died with it. 120 flushes/s of 24 bytes is
+      // nothing next to 190 MB/s of image data, and it means the index is always truthful
+      // about the frames on disk, however the run ends.
+      idx << t_ns << "," << off << "\n" << std::flush;
       // CHECK BOTH STREAMS, AND STOP THE WHOLE LOG IF EITHER FAILS.
       //
       // Checking only the .raw write is not enough, and the failure is silent and nasty: when
