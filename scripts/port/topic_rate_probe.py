@@ -12,6 +12,23 @@ This subscribes with the same SensorDataQoS the publisher uses and only counts. 
 loss is in the transport and a faster writer will not help.
 
   topic_rate_probe.py --seconds 20 /cam1/image_raw /cam2/image_raw ...
+
+MEASURED 2026-09-02, four 1456x1088 mono8 cameras on the TX2, all in one container:
+
+  capture publishes      30 Hz     190 MB/s   (the node's own set counter)
+  this probe receives    20-25 Hz  141.8 MB/s
+  ros2 bag record wrote  6.1 Hz     38.5 MB/s
+
+So the TRANSPORT IS NOT THE BOTTLENECK - it carries 141.8 MB/s, 3.7x what rosbag2 managed.
+The sqlite writer is. An earlier note in this project blamed "the DDS round-trip" for the
+6 Hz; that was an inference from the bag rate alone and it was wrong.
+
+Caveat on the number: this probe is Python, so part of the 30 -> 22 Hz gap is rclpy
+deserialisation rather than DDS. 141.8 MB/s is therefore a LOWER bound on what the
+transport can carry, which only strengthens the conclusion.
+
+For reference, bypassing both (argus_capture_node -p image_log_dir:=) reaches 29.4-29.7 fps
+to tmpfs and 20.95 fps to eMMC - there the limit is the storage, which is where it belongs.
 """
 import argparse, time
 import rclpy
