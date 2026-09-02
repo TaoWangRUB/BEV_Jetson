@@ -715,16 +715,31 @@ class ArgusCaptureNode : public rclcpp::Node {
       // loop above de-pitched it, so this is one sequential write of width*height bytes.
       const size_t n = static_cast<size_t>(width_) * height_;
       auto& f = *image_logs_[i];
+      auto& idx = *image_index_[i];
       const long long off = static_cast<long long>(f.tellp());
       f.write(reinterpret_cast<const char*>(msg->data.data()), static_cast<std::streamsize>(n));
-      if (!f) {
-        RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
-                              "image log write failed for %s - disk full or too slow?",
-                              frame_ids_[i].c_str());
-      } else {
-        *image_index_[i] << t_ns << "," << off << "\n";
-        ++image_frames_[i];
+      idx << t_ns << "," << off << "\n";
+      // CHECK BOTH STREAMS, AND STOP THE WHOLE LOG IF EITHER FAILS.
+      //
+      // Checking only the .raw write is not enough, and the failure is silent and nasty: when
+      // the target filled mid-run the index stopped at 341 entries while the raw files grew to
+      // 645 frames each, leaving 300 frames with no timestamp. For offline debugging that is
+      // worse than not capturing them - the file looks complete and the timestamps do not
+      // line up with it. A truncated log that KNOWS it is truncated is far more useful.
+      if (!f || !idx) {
+        if (!image_log_failed_) {
+          image_log_failed_ = true;
+          RCLCPP_ERROR(get_logger(),
+                       "image log write failed for %s after %lu frames - target full or too "
+                       "slow. STOPPING the log; frames already written are intact and indexed.",
+                       frame_ids_[i].c_str(), static_cast<unsigned long>(image_frames_[i]));
+        }
+        // flush what is valid so far, then stop touching the files
+        for (size_t k = 0; k < n_; ++k) { image_logs_[k]->flush(); image_index_[k]->flush(); }
+        image_log_dir_.clear();          // subsequent frames are simply not logged
+        return true;
       }
+      ++image_frames_[i];
       return true;                 // deliberately NOT published: see image_log_dir_
     }
     pubs_[i]->publish(std::move(msg));
@@ -752,6 +767,7 @@ class ArgusCaptureNode : public rclcpp::Node {
   std::vector<std::unique_ptr<std::ofstream>> frame_logs_;
   std::vector<std::unique_ptr<std::ofstream>> image_logs_, image_index_;
   std::vector<uint64_t> image_frames_;
+  bool image_log_failed_ = false;
   UniqueObj<CameraProvider> provider_;
   std::vector<UniqueObj<CaptureSession>> sessions_;
   std::vector<UniqueObj<OutputStream>> streams_;

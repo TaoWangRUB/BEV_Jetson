@@ -160,7 +160,9 @@ services:
         # is generous; on /ramlog it writes at the full 30 fps and a fixed 133 MB/s figure
         # would have under-estimated by 40% and overrun the tmpfs mid-run.
         EFF_FPS=$$(( 30 / ${PUBLISH_EVERY_N:-1} ))
-        NEED_MB=$$(( ${MOTION_SECONDS:-60} * EFF_FPS * 4 * 1584128 / 1048576 ))
+        # +40%: startup and shutdown latency make the run longer than MOTION_SECONDS.
+        # Asking for 15 s produced a 21.5 s run, which is what overran the tmpfs.
+        NEED_MB=$$(( ${MOTION_SECONDS:-60} * EFF_FPS * 4 * 1584128 * 14 / 10 / 1048576 ))
         if [ "$$FREE_MB" -lt "$$NEED_MB" ]; then
           echo "REFUSING: $$OUT has $${FREE_MB} MB free, this run needs about $${NEED_MB} MB."
           echo "  shorten MOTION_SECONDS, or use LOG_DIR=/dev/shm (RAM) and copy off after."
