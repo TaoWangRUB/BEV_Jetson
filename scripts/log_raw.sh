@@ -45,6 +45,16 @@ for base in "${!SEEN[@]}"; do
   [ "$free" -ge "$need" ] || { echo "REFUSING: $base has $free MB free, needs ~$need MB." >&2; exit 1; }
 done
 
+# Writeback settings matter for runs over ~30 s and are NOT the container's to set - they
+# live on the host, in /etc/sysctl.d/60-bev-writeback.conf. Measured over 60 s: 97.4%
+# complete 4-camera sets with continuous writeback against 95.8% on the kernel defaults,
+# because the default 785 MB dirty threshold lets ~4 s of log accumulate and then flushes it
+# in a burst that stalls the capture thread. Warn rather than fail: a short run is unaffected.
+if [ "$SECS" -gt 30 ] && [ "$(cat /proc/sys/vm/dirty_bytes 2>/dev/null || echo 0)" = "0" ]; then
+  echo "NOTE: host writeback is at kernel defaults; runs over ~30 s lose noticeably more"
+  echo "      complete sets. See /etc/sysctl.d/60-bev-writeback.conf on the board."
+fi
+
 echo "recording ${SECS}s at ${EFF_FPS} fps -> $DIRS"
 ros2 run bev_camera argus_capture_node --ros-args \
   -p width:=1456 -p height:=1088 -p fps:=30 \
