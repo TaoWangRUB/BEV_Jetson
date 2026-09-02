@@ -187,6 +187,7 @@ class ArgusCaptureNode : public rclcpp::Node {
     //   image_log_dir:="/logs,/logs,/media/...,/ramlog"   (per camera, in `cameras` order)
     //   image_log_dir:="/logs"                            (one path, all cameras)
     image_log_dir_ = declare_parameter<std::string>("image_log_dir", "");
+    queue_depth_ = static_cast<size_t>(declare_parameter<int>("write_queue_depth", 64));
     // Optional: refuse to publish under a calibration measured on another rig.
     calib_dir_ = declare_parameter<std::string>("calib_dir", "");
 
@@ -810,11 +811,15 @@ class ArgusCaptureNode : public rclcpp::Node {
     NvBufferMemUnMap(dmabufs_[i], 0, &mapped);
     if (!image_log_dir_.empty()) {
       // Hand the buffer to this camera's writer and return: a move, not a disk wait.
-      // Depth 8 is ~12.7 MB per camera at this frame size - enough to ride out a flush
-      // stall, small enough that a genuinely too-slow target is noticed rather than hidden.
+      //
+      // DEPTH IS ABOUT SETS, NOT THROUGHPUT. Depth 8 (12.7 MB) gave 93.1% complete 4-camera
+      // sets: the cameras drop INDEPENDENTLY, so a 1.5-4.5% per-camera loss compounded into
+      // 7% of trigger edges missing somebody, and a set that is not a set is worth very little
+      // from a synchronised rig. 64 frames is ~101 MB per camera - the board has ~6 GB spare -
+      // and buys enough slack to ride out an eMMC or SD flush stall instead of dropping.
       {
         std::lock_guard<std::mutex> lk(wq_mtx_[i]);
-        if (wq_[i].size() >= 8) { wq_[i].pop_front(); ++wq_dropped_[i]; }
+        if (wq_[i].size() >= queue_depth_) { wq_[i].pop_front(); ++wq_dropped_[i]; }
         wq_[i].push_back(WriteJob{std::move(msg->data), t_ns});
       }
       wq_cv_[i].notify_one();
@@ -846,6 +851,7 @@ class ArgusCaptureNode : public rclcpp::Node {
   std::vector<std::unique_ptr<std::ofstream>> image_logs_, image_index_;
   std::vector<uint64_t> image_frames_;
   std::vector<std::string> image_dirs_;
+  size_t queue_depth_ = 64;
   std::vector<std::deque<WriteJob>> wq_;
   std::vector<std::mutex> wq_mtx_;
   std::vector<std::condition_variable> wq_cv_;
