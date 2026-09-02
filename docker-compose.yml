@@ -147,6 +147,18 @@ services:
   #   LOG_DIR=/logs LOG_LABEL=run1 EXPOSURE_US=$(...) docker compose run --rm logonly
   logonly:
     <<: *bev
+    # A service-level `environment` REPLACES the anchor's rather than merging, so the NVIDIA
+    # vars are repeated here. Without this the script sees none of these and dies on the
+    # EXPOSURE_US guard - the old inline command interpolated them at compose level instead.
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      EXPOSURE_US: ${EXPOSURE_US:?set EXPOSURE_US to the measured trigger pulse width in us}
+      LOG_DIR: ${LOG_DIR:-}
+      LOG_DIRS: ${LOG_DIRS:-}
+      LOG_LABEL: ${LOG_LABEL:-run}
+      MOTION_SECONDS: ${MOTION_SECONDS:-}
+      PUBLISH_EVERY_N: ${PUBLISH_EVERY_N:-1}
     command: bash -lc "scripts/log_raw.sh"
 
   # Section 5 motion test: capture + VO + recorder in ONE container, on purpose.
