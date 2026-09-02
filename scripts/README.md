@@ -80,6 +80,7 @@ See [docs/extrinsic_calibration.md](../docs/extrinsic_calibration.md) for the fu
 
 | script | runs on | purpose |
 |---|---|---|
+| `docker compose run --rm logonly` | TX2 | **raw 4-camera image log, no ROS/DDS in the path.** `argus_capture_node -p image_log_dir:=` writes `camN.raw` (concatenated mono8), `camN_index.csv` (exposure-midpoint stamp, byte offset) and `geometry.txt`. Read it with `numpy.memmap('cam1.raw','u1').reshape(-1,1088,1456)`. **Measured**: `LOG_DIR=/ramlog` (host `/dev/shm`) gives the full **29.4-29.7 fps** on all four for ~20 s; `LOG_DIR=/logs` (eMMC) gives **20.95 fps** indefinitely, disk-bound. Going through ROS topics to a recorder on the same board gave 6.1 fps |
 | [vo/bench_remap.cpp](vo/bench_remap.cpp) | TX2 | measure the virtual-pinhole remap against virtual and source resolution, standalone (no cameras, no ROS). Answers "should we lower the resolution" with a number: both axes are bad trades (task 4.5b) |
 | [vo/verify_rig_build.sh](vo/verify_rig_build.sh) | dev | re-run cuVSLAM's frustum test on the poses the C++ actually emits — run it **before** a board session, or a bad rig file reads as a wiring bug |
 | [vo/check_rig_poses.py](vo/check_rig_poses.py) | dev | sanity-check the rig poses fed to cuVSLAM |
