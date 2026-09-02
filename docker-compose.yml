@@ -112,8 +112,21 @@ services:
         sleep 8
         exec ros2 launch bev_cuvslam bev_cuvslam.launch.py
 
-  # PURE IMAGE LOG: capture + recorder, NO VO. For offline debugging, where the point is to
-  # have every frame the rig produced, not an odometry track.
+  # PURE IMAGE LOG: the capture node writing RAW FRAMES STRAIGHT TO DISK. No VO, no rosbag2,
+  # NO DDS - the frames never enter a network stack, because they never leave this board.
+  #
+  # Measured 2026-09-02, going through ROS topics to a recorder on the SAME machine: capture
+  # held a clean 30 Hz (150 sets per 5 s window, 66 us skew) and rosbag2 wrote 6.1 Hz per
+  # camera. Four fifths of the frames were lost to serialisation and loopback UDP while the
+  # disk sat a quarter busy. Tuning DDS buffers treats the symptom.
+  #
+  # Output per camera: camN.raw (concatenated mono8, no header), camN_index.csv (stamp_ns,
+  # byte offset), plus geometry.txt. An offline reader needs nothing from this repo:
+  #   numpy.memmap('cam1.raw', dtype='u1').reshape(-1, 1088, 1456)
+  #
+  # STILL BOUNDED BY THE DISK: 4 x 1456x1088 at 30 fps is ~190 MB/s, and measured sustained
+  # write is 136 MB/s on eMMC (/logs) and 62.6 MB/s on the SD. So expect ~21 fps to eMMC.
+  # LOG_DIR=/dev/shm gives the full 30 fps for ~20 s of RAM, then copy off.
   #
   # THE BANDWIDTH DOES NOT FIT, and it is worth stating plainly. Four 1456x1088 mono8 frames
   # at 30 fps is 1.585 MB x 4 x 30 = ~190 MB/s. Measured sustained write on this board:
@@ -128,43 +141,23 @@ services:
   #   LOG_DIR=/logs LOG_LABEL=run1 EXPOSURE_US=$(...) docker compose run --rm logonly
   logonly:
     <<: *bev
-    environment:
-      # Inherit the base env, then override the transport. Measured 2026-09-02: with Foxy's
-      # DEFAULT rmw (fastrtps, default buffers) the capture node published a clean 30 Hz -
-      # 150 sets per 5 s window, 66 us skew - and rosbag2 recorded 6.1 Hz. Four fifths of the
-      # frames were lost in the topic path, not at the camera and not at the disk (38.5 MB/s
-      # written against 136 MB/s that the eMMC can take).
-      #
-      # 1.585 MB per message needs receive buffers far larger than the defaults, which is
-      # exactly what scripts/stream/cyclonedds_lowlat.xml sets (16 MB, 64 KB fragments).
-      # Needs net.core.rmem_max raised on the host too, or Cyclone silently gets less.
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: all
-      RECORD: ${RECORD:-0}
-      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
-      CYCLONEDDS_URI: file:///workspace/scripts/stream/cyclonedds_lowlat.xml
     command:
       - bash
       - -lc
       - |
         set -e
-        ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p publish_every_n:=${PUBLISH_EVERY_N:-1} -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us} &
-        CAP=$$!
-        trap "kill $$CAP 2>/dev/null" EXIT
-        sleep 12
-        kill -0 $$CAP 2>/dev/null || { echo "CAPTURE NODE DIED - see above; not recording"; exit 1; }
         OUT=${LOG_DIR:-/logs}/imglog_${LOG_LABEL:-run}_$(date +%Y%m%d_%H%M%S)
-        mkdir -p "$$(dirname $$OUT)"
-        echo "recording 4 cameras -> $$OUT"
-        # --qos-profile-overrides-path is NOT optional: the image topics are best_effort and
-        # the recorder defaults to reliable, so without it the bag records 0 messages while
-        # still printing "Subscribed to topic ...".
-        ros2 bag record --qos-profile-overrides-path ros2/bev_cuvslam/config/record_qos.yaml \
-          -o "$$OUT" /cam1/image_raw /cam2/image_raw /cam3/image_raw /cam4/image_raw /cam1/frame_meta &
-        REC=$$!
-        stop() { kill -INT $$REC 2>/dev/null; wait $$REC 2>/dev/null; kill -INT $$CAP 2>/dev/null; exit 0; }
+        mkdir -p "$$OUT"
+        echo "writing raw frames to $$OUT"
+        ros2 run bev_camera argus_capture_node --ros-args \
+          -p width:=1456 -p height:=1088 -p fps:=30 \
+          -p publish_every_n:=${PUBLISH_EVERY_N:-1} \
+          -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us} \
+          -p image_log_dir:="$$OUT" -p frame_log_dir:="$$OUT" &
+        CAP=$$!
+        stop() { kill -INT $$CAP 2>/dev/null; wait $$CAP 2>/dev/null; exit 0; }
         trap stop INT TERM
-        if [ -n "${MOTION_SECONDS:-}" ]; then sleep "${MOTION_SECONDS}"; echo "elapsed - stopping cleanly"; stop; else wait $$REC; fi
+        if [ -n "${MOTION_SECONDS:-}" ]; then sleep "${MOTION_SECONDS}"; echo "elapsed - stopping"; stop; else wait $$CAP; fi
 
   # Section 5 motion test: capture + VO + recorder in ONE container, on purpose.
   #

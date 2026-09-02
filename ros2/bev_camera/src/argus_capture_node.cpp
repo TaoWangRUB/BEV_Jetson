@@ -165,6 +165,18 @@ class ArgusCaptureNode : public rclcpp::Node {
     exposure_us_ = declare_parameter<int>("exposure_us", 0);
     // Directory for the per-camera frame-time CSVs. Empty = do not write them.
     frame_log_dir_ = declare_parameter<std::string>("frame_log_dir", "");
+    // WRITE FRAMES STRAIGHT TO DISK, BYPASSING ROS ENTIRELY.
+    //
+    // For offline debugging the frames never need to leave this machine, and sending them
+    // through DDS to reach a recorder on the SAME board costs most of them: measured
+    // 2026-09-02, the capture side held a clean 30 Hz (150 sets per 5 s window, 66 us skew)
+    // while rosbag2 wrote 6.1 Hz per camera - four fifths lost in serialisation and loopback
+    // UDP, with the disk only a quarter busy. Tuning DDS buffers is treating the symptom;
+    // the frames should not be going through a network stack at all.
+    //
+    // When image_log_dir is set the node appends raw mono8 frames to one file per camera and
+    // an index CSV beside it, and does NOT publish. Sequential writes, no serialisation.
+    image_log_dir_ = declare_parameter<std::string>("image_log_dir", "");
     // Optional: refuse to publish under a calibration measured on another rig.
     calib_dir_ = declare_parameter<std::string>("calib_dir", "");
 
@@ -188,6 +200,7 @@ class ArgusCaptureNode : public rclcpp::Node {
 
     if (!calib_dir_.empty()) check_calibration();
     if (!frame_log_dir_.empty()) open_frame_logs();
+    if (!image_log_dir_.empty()) open_image_logs();
 
     // Best-effort sensor-data QoS: high-rate camera streams must never let a slow
     // reliable subscriber back-pressure (and block) the Argus capture thread.
@@ -383,6 +396,29 @@ class ArgusCaptureNode : public rclcpp::Node {
   // j106-frametime.py fits): one row per frame, plus a header block stating what the
   // numbers mean. A recording without that provenance cannot be re-interpreted later —
   // which clock, which trigger rate, which exposure, and whether Delta was ever measured.
+  // One .raw per camera (concatenated mono8 frames, no header) plus an index CSV giving the
+  // exposure-midpoint stamp and byte offset of each. A sidecar records the geometry so an
+  // offline reader needs nothing from this repo:  numpy.memmap(path, uint8).reshape(-1, h, w)
+  void open_image_logs() {
+    image_logs_.resize(n_); image_index_.resize(n_); image_frames_.assign(n_, 0);
+    for (size_t i = 0; i < n_; ++i) {
+      const std::string base = image_log_dir_ + "/" + frame_ids_[i];
+      image_logs_[i] = std::make_unique<std::ofstream>(base + ".raw", std::ios::binary);
+      image_index_[i] = std::make_unique<std::ofstream>(base + "_index.csv");
+      if (!image_logs_[i]->good() || !image_index_[i]->good())
+        throw std::runtime_error("cannot open image log for " + frame_ids_[i] + " in " + image_log_dir_);
+      *image_index_[i] << "# stamp_ns is the exposure midpoint; offset is the byte offset of\n"
+                       << "# this frame in " << frame_ids_[i] << ".raw\n"
+                       << "stamp_ns,offset\n";
+    }
+    std::ofstream meta(image_log_dir_ + "/geometry.txt");
+    meta << "width " << width_ << "\nheight " << height_ << "\nencoding mono8\n"
+         << "bytes_per_frame " << static_cast<size_t>(width_) * height_ << "\n"
+         << "cameras " << n_ << "\n";
+    RCLCPP_INFO(get_logger(), "writing RAW frames to %s (no ROS publish: DDS is not in the path)",
+                image_log_dir_.c_str());
+  }
+
   void open_frame_logs() {
     frame_logs_.resize(n_);
     for (size_t i = 0; i < n_; ++i) {
@@ -674,6 +710,23 @@ class ArgusCaptureNode : public rclcpp::Node {
       memcpy(msg->data.data() + r * width_, src + r * pitch, width_);
 
     NvBufferMemUnMap(dmabufs_[i], 0, &mapped);
+    if (!image_log_dir_.empty()) {
+      // Straight to disk. The frame is already contiguous mono8 in msg->data because the
+      // loop above de-pitched it, so this is one sequential write of width*height bytes.
+      const size_t n = static_cast<size_t>(width_) * height_;
+      auto& f = *image_logs_[i];
+      const long long off = static_cast<long long>(f.tellp());
+      f.write(reinterpret_cast<const char*>(msg->data.data()), static_cast<std::streamsize>(n));
+      if (!f) {
+        RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
+                              "image log write failed for %s - disk full or too slow?",
+                              frame_ids_[i].c_str());
+      } else {
+        *image_index_[i] << t_ns << "," << off << "\n";
+        ++image_frames_[i];
+      }
+      return true;                 // deliberately NOT published: see image_log_dir_
+    }
     pubs_[i]->publish(std::move(msg));
     return true;
   }
@@ -695,8 +748,10 @@ class ArgusCaptureNode : public rclcpp::Node {
   size_t n_;
   std::vector<rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr> pubs_;
   std::vector<rclcpp::Publisher<bev_camera::msg::FrameMeta>::SharedPtr> meta_pubs_;
-  std::string frame_log_dir_;
+  std::string frame_log_dir_, image_log_dir_;
   std::vector<std::unique_ptr<std::ofstream>> frame_logs_;
+  std::vector<std::unique_ptr<std::ofstream>> image_logs_, image_index_;
+  std::vector<uint64_t> image_frames_;
   UniqueObj<CameraProvider> provider_;
   std::vector<UniqueObj<CaptureSession>> sessions_;
   std::vector<UniqueObj<OutputStream>> streams_;
