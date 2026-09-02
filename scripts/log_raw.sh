@@ -8,7 +8,7 @@
 # minute the cameras are SPLIT - 2 to eMMC, 1 to the SD, 1 to RAM - and each target stays
 # inside its own measured limit.
 #
-#   LOG_DIRS="/logs,/logs,/workspace/sdlog,/ramlog" MOTION_SECONDS=60 log_raw.sh
+#   LOG_DIRS="/logs,/logs,/sdlog,/ramlog" MOTION_SECONDS=60 log_raw.sh
 #   LOG_DIR=/ramlog MOTION_SECONDS=10 log_raw.sh          # single target, all four
 set -euo pipefail
 

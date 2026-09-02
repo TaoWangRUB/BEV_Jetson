@@ -38,6 +38,9 @@ x-bev: &bev
     # The HOST's /dev/shm. A container gets its own 64 MB tmpfs at /dev/shm by default,
     # which is nowhere near enough to stage 190 MB/s; bind the host's 3.9 GB instead.
     - /dev/shm:/ramlog
+    # SD card, outside the repo on purpose - a log directory inside it would end up in
+    # git and in the build context. 62.6 MB/s measured, so ~1 camera at 30 fps.
+    - /media/nvidia/workspace/logs:/sdlog
 
 services:
   shell:
