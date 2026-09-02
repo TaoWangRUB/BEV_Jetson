@@ -128,6 +128,21 @@ services:
   #   LOG_DIR=/logs LOG_LABEL=run1 EXPOSURE_US=$(...) docker compose run --rm logonly
   logonly:
     <<: *bev
+    environment:
+      # Inherit the base env, then override the transport. Measured 2026-09-02: with Foxy's
+      # DEFAULT rmw (fastrtps, default buffers) the capture node published a clean 30 Hz -
+      # 150 sets per 5 s window, 66 us skew - and rosbag2 recorded 6.1 Hz. Four fifths of the
+      # frames were lost in the topic path, not at the camera and not at the disk (38.5 MB/s
+      # written against 136 MB/s that the eMMC can take).
+      #
+      # 1.585 MB per message needs receive buffers far larger than the defaults, which is
+      # exactly what scripts/stream/cyclonedds_lowlat.xml sets (16 MB, 64 KB fragments).
+      # Needs net.core.rmem_max raised on the host too, or Cyclone silently gets less.
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      RECORD: ${RECORD:-0}
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: file:///workspace/scripts/stream/cyclonedds_lowlat.xml
     command:
       - bash
       - -lc
