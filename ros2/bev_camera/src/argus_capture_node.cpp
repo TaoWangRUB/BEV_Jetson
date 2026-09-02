@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <condition_variable>
 #include <fstream>
 #include <memory>
 #include <map>
@@ -240,6 +241,27 @@ class ArgusCaptureNode : public rclcpp::Node {
   ~ArgusCaptureNode() override {
     running_ = false;
     if (worker_.joinable()) worker_.join();
+    // Drain the writers AFTER the capture loop has stopped, so whatever is queued reaches
+    // disk. Dropping it here would silently shorten the log by up to 8 frames per camera and
+    // leave the index disagreeing with the .raw - the exact failure this logger already had
+    // once, from an unflushed index.
+    if (!writers_.empty()) {
+      { for (size_t i = 0; i < n_; ++i) { std::lock_guard<std::mutex> lk(wq_mtx_[i]); }
+        wq_stop_ = true; }
+      for (auto& cv : wq_cv_) cv.notify_all();
+      for (auto& t : writers_) if (t.joinable()) t.join();
+      uint64_t dropped = 0;
+      for (auto d : wq_dropped_) dropped += d;
+      if (dropped)
+        RCLCPP_WARN(get_logger(), "%lu frames dropped at the writer queue - the target could "
+                    "not keep up. The index records only what was written.",
+                    static_cast<unsigned long>(dropped));
+      for (size_t i = 0; i < n_; ++i)
+        RCLCPP_INFO(get_logger(), "  %s: %lu frames written", frame_ids_[i].c_str(),
+                    static_cast<unsigned long>(image_frames_[i]));
+      for (auto& f : image_logs_) if (f) f->close();
+      for (auto& f : image_index_) if (f) f->close();
+    }
     for (auto& f : frame_logs_) if (f) f->close();
     for (auto fd : dmabufs_) if (fd != -1) NvBufferDestroy(fd);
     if (egl_display_ != EGL_NO_DISPLAY) eglTerminate(egl_display_);
@@ -408,6 +430,50 @@ class ArgusCaptureNode : public rclcpp::Node {
   // One .raw per camera (concatenated mono8 frames, no header) plus an index CSV giving the
   // exposure-midpoint stamp and byte offset of each. A sidecar records the geometry so an
   // offline reader needs nothing from this repo:  numpy.memmap(path, uint8).reshape(-1, h, w)
+  // ONE WRITER THREAD PER CAMERA.
+  //
+  // The writes used to happen inline in the capture loop, which serialised them: an iteration
+  // paid the SUM of all four write latencies, so every camera ran at the pace of the slowest
+  // device. Measured 2026-09-02: 29.7 fps with all four on tmpfs, 20.95 fps on eMMC, and only
+  // 22.2 fps when SPLIT across eMMC/SD/RAM - the split fixed the bandwidth problem and not the
+  // latency one, because the loop still waited on each write in turn.
+  //
+  // Both are needed for 30 fps: the split because 190 MB/s only fits across eMMC+SD+RAM
+  // combined, and these threads because otherwise the loop blocks.
+  //
+  // The queue is BOUNDED and drops the OLDEST when full rather than blocking. Back-pressure
+  // into the Argus loop is what desynchronises the cameras - a stalled consumer previously
+  // showed up as one camera a whole trigger period behind - and for a debug log a counted
+  // drop is far better than a set that is silently no longer a set.
+  struct WriteJob { std::vector<uint8_t> data; uint64_t stamp; };
+
+  void writer_thread(size_t i) {
+    for (;;) {
+      WriteJob job;
+      {
+        std::unique_lock<std::mutex> lk(wq_mtx_[i]);
+        wq_cv_[i].wait(lk, [&] { return !wq_[i].empty() || wq_stop_; });
+        if (wq_[i].empty()) return;                 // stopping and drained
+        job = std::move(wq_[i].front());
+        wq_[i].pop_front();
+      }
+      auto& f = *image_logs_[i];
+      auto& idx = *image_index_[i];
+      const long long off = static_cast<long long>(f.tellp());
+      f.write(reinterpret_cast<const char*>(job.data.data()),
+              static_cast<std::streamsize>(job.data.size()));
+      idx << job.stamp << "," << off << "\n" << std::flush;
+      if (!f || !idx) {
+        if (!image_log_failed_.exchange(true))
+          RCLCPP_ERROR(get_logger(), "image log write failed for %s after %lu frames - target "
+                       "full or too slow. What is already written is intact and indexed.",
+                       frame_ids_[i].c_str(), static_cast<unsigned long>(image_frames_[i]));
+        return;
+      }
+      ++image_frames_[i];
+    }
+  }
+
   void open_image_logs() {
     image_logs_.resize(n_); image_index_.resize(n_); image_frames_.assign(n_, 0);
     image_dirs_.clear();
@@ -444,6 +510,11 @@ class ArgusCaptureNode : public rclcpp::Node {
     for (size_t i = 0; i < n_; ++i)
       RCLCPP_INFO(get_logger(), "  %s -> %s (raw, no ROS publish)",
                   frame_ids_[i].c_str(), image_dirs_[i].c_str());
+    wq_ = std::vector<std::deque<WriteJob>>(n_);
+    wq_mtx_ = std::vector<std::mutex>(n_);
+    wq_cv_ = std::vector<std::condition_variable>(n_);
+    wq_dropped_.assign(n_, 0);
+    for (size_t i = 0; i < n_; ++i) writers_.emplace_back([this, i] { writer_thread(i); });
   }
 
   void open_frame_logs() {
@@ -738,42 +809,15 @@ class ArgusCaptureNode : public rclcpp::Node {
 
     NvBufferMemUnMap(dmabufs_[i], 0, &mapped);
     if (!image_log_dir_.empty()) {
-      // Straight to disk. The frame is already contiguous mono8 in msg->data because the
-      // loop above de-pitched it, so this is one sequential write of width*height bytes.
-      const size_t n = static_cast<size_t>(width_) * height_;
-      auto& f = *image_logs_[i];
-      auto& idx = *image_index_[i];
-      const long long off = static_cast<long long>(f.tellp());
-      f.write(reinterpret_cast<const char*>(msg->data.data()), static_cast<std::streamsize>(n));
-      // FLUSH EVERY LINE. The index entries are ~24 bytes and sit in the stream buffer
-      // indefinitely; the .raw never has this problem because a 1.58 MB frame blows past any
-      // buffer on every write. Two runs ended with exactly 341 index entries against 496 and
-      // 645 raw frames - not because the target filled, but because the node was SIGKILLed by
-      // the run timer and the buffered tail died with it. 120 flushes/s of 24 bytes is
-      // nothing next to 190 MB/s of image data, and it means the index is always truthful
-      // about the frames on disk, however the run ends.
-      idx << t_ns << "," << off << "\n" << std::flush;
-      // CHECK BOTH STREAMS, AND STOP THE WHOLE LOG IF EITHER FAILS.
-      //
-      // Checking only the .raw write is not enough, and the failure is silent and nasty: when
-      // the target filled mid-run the index stopped at 341 entries while the raw files grew to
-      // 645 frames each, leaving 300 frames with no timestamp. For offline debugging that is
-      // worse than not capturing them - the file looks complete and the timestamps do not
-      // line up with it. A truncated log that KNOWS it is truncated is far more useful.
-      if (!f || !idx) {
-        if (!image_log_failed_) {
-          image_log_failed_ = true;
-          RCLCPP_ERROR(get_logger(),
-                       "image log write failed for %s after %lu frames - target full or too "
-                       "slow. STOPPING the log; frames already written are intact and indexed.",
-                       frame_ids_[i].c_str(), static_cast<unsigned long>(image_frames_[i]));
-        }
-        // flush what is valid so far, then stop touching the files
-        for (size_t k = 0; k < n_; ++k) { image_logs_[k]->flush(); image_index_[k]->flush(); }
-        image_log_dir_.clear();          // subsequent frames are simply not logged
-        return true;
+      // Hand the buffer to this camera's writer and return: a move, not a disk wait.
+      // Depth 8 is ~12.7 MB per camera at this frame size - enough to ride out a flush
+      // stall, small enough that a genuinely too-slow target is noticed rather than hidden.
+      {
+        std::lock_guard<std::mutex> lk(wq_mtx_[i]);
+        if (wq_[i].size() >= 8) { wq_[i].pop_front(); ++wq_dropped_[i]; }
+        wq_[i].push_back(WriteJob{std::move(msg->data), t_ns});
       }
-      ++image_frames_[i];
+      wq_cv_[i].notify_one();
       return true;                 // deliberately NOT published: see image_log_dir_
     }
     pubs_[i]->publish(std::move(msg));
@@ -802,7 +846,13 @@ class ArgusCaptureNode : public rclcpp::Node {
   std::vector<std::unique_ptr<std::ofstream>> image_logs_, image_index_;
   std::vector<uint64_t> image_frames_;
   std::vector<std::string> image_dirs_;
-  bool image_log_failed_ = false;
+  std::vector<std::deque<WriteJob>> wq_;
+  std::vector<std::mutex> wq_mtx_;
+  std::vector<std::condition_variable> wq_cv_;
+  std::vector<uint64_t> wq_dropped_;
+  std::vector<std::thread> writers_;
+  bool wq_stop_ = false;
+  std::atomic<bool> image_log_failed_{false};
   UniqueObj<CameraProvider> provider_;
   std::vector<UniqueObj<CaptureSession>> sessions_;
   std::vector<UniqueObj<OutputStream>> streams_;
