@@ -60,7 +60,10 @@ ros2 run bev_camera argus_capture_node --ros-args \
   -p width:=1456 -p height:=1088 -p fps:=30 \
   -p publish_every_n:="$EVERY_N" -p exposure_us:="$EXPOSURE_US" \
   -p write_queue_depth:="${WRITE_QUEUE_DEPTH:-64}" \
-  -p image_log_direct:="${IMAGE_LOG_DIRECT:-false}" \
+  # The inner quotes force a STRING: ros2 parses a bare true/false as a bool, and this
+  # parameter takes a per-camera list ("true,true,false,false"), so a bool kills startup
+  # with InvalidParameterTypeException.
+  -p image_log_direct:="\"${IMAGE_LOG_DIRECT:-false}\"" \
   -p image_log_dir:="$DIRS" -p frame_log_dir:="${BASES[0]}/imglog_${LABEL}_${STAMP}" &
 CAP=$!
 
