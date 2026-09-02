@@ -55,6 +55,26 @@ if [ "$SECS" -gt 30 ] && [ "$(cat /proc/sys/vm/dirty_bytes 2>/dev/null || echo 0
   echo "      complete sets. See /etc/sysctl.d/60-bev-writeback.conf on the board."
 fi
 
+# CAP THE QUEUE BY MEMORY, NOT BY FRAME COUNT.
+#
+# The depth is per camera, so the real cost is depth x 4 x 1.584 MB. WRITE_QUEUE_DEPTH=600
+# asked for 3.8 GB of buffers on a 7.7 GB board and took it down hard - unreachable on both
+# interfaces, needing a power cycle. Under O_DIRECT the queues actually fill (there is no
+# page cache absorbing the writes), so the worst case is not hypothetical.
+#
+# Leave RESERVE_MB for the kernel, Argus NVMM buffers and the container, and clamp.
+RESERVE_MB="${RESERVE_MB:-2560}"
+AVAIL_MB=$(free -m | awk '/^Mem:/{print $7}')
+FRAME_MB=$(( BYTES_PER_FRAME / 1048576 + 1 ))
+MAX_DEPTH=$(( (AVAIL_MB - RESERVE_MB) / (4 * FRAME_MB) ))
+[ "$MAX_DEPTH" -lt 8 ] && MAX_DEPTH=8
+if [ "${WRITE_QUEUE_DEPTH:-64}" -gt "$MAX_DEPTH" ]; then
+  echo "queue depth ${WRITE_QUEUE_DEPTH} would need ~$(( WRITE_QUEUE_DEPTH * 4 * FRAME_MB )) MB;"
+  echo "  only ${AVAIL_MB} MB available and ${RESERVE_MB} MB reserved - clamping to ${MAX_DEPTH}"
+  WRITE_QUEUE_DEPTH="$MAX_DEPTH"
+fi
+echo "queue depth ${WRITE_QUEUE_DEPTH:-64} (~$(( ${WRITE_QUEUE_DEPTH:-64} * 4 * FRAME_MB )) MB of buffers)"
+
 echo "recording ${SECS}s at ${EFF_FPS} fps -> $DIRS"
 ros2 run bev_camera argus_capture_node --ros-args \
   -p width:=1456 -p height:=1088 -p fps:=30 \
