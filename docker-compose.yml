@@ -142,7 +142,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: all
       RECORD: ${RECORD:-0}
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
-      CYCLONEDDS_URI: file:///workspace/scripts/stream/cyclonedds_lowlat.xml
+      CYCLONEDDS_URI: file:///workspace/scripts/stream/cyclonedds_local_bulk.xml
     command:
       - bash
       - -lc
