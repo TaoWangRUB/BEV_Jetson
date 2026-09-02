@@ -161,6 +161,7 @@ services:
       PUBLISH_EVERY_N: ${PUBLISH_EVERY_N:-1}
       WRITE_QUEUE_DEPTH: ${WRITE_QUEUE_DEPTH:-64}
       DRAIN_MAX: ${DRAIN_MAX:-120}
+      IMAGE_LOG_DIRECT: ${IMAGE_LOG_DIRECT:-false}
     command: bash -lc "scripts/log_raw.sh"
 
   # Section 5 motion test: capture + VO + recorder in ONE container, on purpose.

@@ -23,6 +23,10 @@
 // jetson_multimedia_api headers bind-mounted for the include path.
 
 #include <algorithm>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cstring>
+#include <cerrno>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -188,6 +192,14 @@ class ArgusCaptureNode : public rclcpp::Node {
     //   image_log_dir:="/logs"                            (one path, all cameras)
     image_log_dir_ = declare_parameter<std::string>("image_log_dir", "");
     queue_depth_ = static_cast<size_t>(declare_parameter<int>("write_queue_depth", 64));
+    // UNBUFFERED DIRECT I/O. Bypasses the page cache entirely: no dirty pages, so no
+    // writeback burst to stall the capture thread. The cost is that every write goes at
+    // device speed with no cache to absorb a spike - which is exactly what the writer queue
+    // is for. O_DIRECT needs the buffer address, the file offset and the length all aligned
+    // to the device's logical block (512 here); a 1456x1088 frame is 1584128 bytes, which is
+    // 512-aligned, and every offset is a multiple of it. tmpfs does NOT support O_DIRECT, so
+    // a target that refuses it falls back to buffered and says so.
+    image_log_direct_ = declare_parameter<bool>("image_log_direct", false);
     // Optional: refuse to publish under a calibration measured on another rig.
     calib_dir_ = declare_parameter<std::string>("calib_dir", "");
 
@@ -260,7 +272,9 @@ class ArgusCaptureNode : public rclcpp::Node {
       for (size_t i = 0; i < n_; ++i)
         RCLCPP_INFO(get_logger(), "  %s: %lu frames written", frame_ids_[i].c_str(),
                     static_cast<unsigned long>(image_frames_[i]));
-      for (auto& f : image_logs_) if (f) f->close();
+      for (size_t i = 0; i < image_fds_.size(); ++i)
+        if (image_fds_[i] >= 0) { fsync(image_fds_[i]); ::close(image_fds_[i]); }
+      for (auto* b : align_buf_) free(b);
       for (auto& f : image_index_) if (f) f->close();
     }
     for (auto& f : frame_logs_) if (f) f->close();
@@ -458,13 +472,23 @@ class ArgusCaptureNode : public rclcpp::Node {
         job = std::move(wq_[i].front());
         wq_[i].pop_front();
       }
-      auto& f = *image_logs_[i];
       auto& idx = *image_index_[i];
-      const long long off = static_cast<long long>(f.tellp());
-      f.write(reinterpret_cast<const char*>(job.data.data()),
-              static_cast<std::streamsize>(job.data.size()));
+      const uint64_t off = image_off_[i];
+      const uint8_t* src = job.data.data();
+      if (direct_ok_[i]) {                       // O_DIRECT needs an aligned source buffer
+        memcpy(align_buf_[i], job.data.data(), job.data.size());
+        src = align_buf_[i];
+      }
+      ssize_t wrote = 0;
+      while (wrote < static_cast<ssize_t>(job.data.size())) {
+        const ssize_t r = ::write(image_fds_[i], src + wrote, job.data.size() - wrote);
+        if (r <= 0) break;
+        wrote += r;
+      }
+      const bool ok = (wrote == static_cast<ssize_t>(job.data.size()));
+      if (ok) image_off_[i] += job.data.size();
       idx << job.stamp << "," << off << "\n" << std::flush;
-      if (!f || !idx) {
+      if (!ok || !idx) {
         if (!image_log_failed_.exchange(true))
           RCLCPP_ERROR(get_logger(), "image log write failed for %s after %lu frames - target "
                        "full or too slow. What is already written is intact and indexed.",
@@ -476,7 +500,9 @@ class ArgusCaptureNode : public rclcpp::Node {
   }
 
   void open_image_logs() {
-    image_logs_.resize(n_); image_index_.resize(n_); image_frames_.assign(n_, 0);
+    image_fds_.assign(n_, -1); image_off_.assign(n_, 0); align_buf_.assign(n_, nullptr);
+    direct_ok_.assign(n_, false);
+    image_index_.resize(n_); image_frames_.assign(n_, 0);
     image_dirs_.clear();
     for (size_t start = 0; start <= image_log_dir_.size();) {
       const size_t comma = image_log_dir_.find(',', start);
@@ -491,10 +517,33 @@ class ArgusCaptureNode : public rclcpp::Node {
                                std::to_string(n_) + "); got " + std::to_string(image_dirs_.size()));
     for (size_t i = 0; i < n_; ++i) {
       const std::string base = image_dirs_[i] + "/" + frame_ids_[i];
-      image_logs_[i] = std::make_unique<std::ofstream>(base + ".raw", std::ios::binary);
+      const std::string rawpath = base + ".raw";
+      int flags = O_WRONLY | O_CREAT | O_TRUNC;
+      if (image_log_direct_) flags |= O_DIRECT;
+      image_fds_[i] = ::open(rawpath.c_str(), flags, 0644);
+      if (image_fds_[i] < 0 && image_log_direct_) {
+        // tmpfs and some filesystems reject O_DIRECT outright. Fall back rather than fail:
+        // a split log deliberately puts one camera on RAM, where direct I/O is meaningless
+        // anyway because there is no device behind it.
+        RCLCPP_WARN(get_logger(), "%s: O_DIRECT rejected on %s (%s) - using buffered I/O",
+                    frame_ids_[i].c_str(), image_dirs_[i].c_str(), strerror(errno));
+        image_fds_[i] = ::open(rawpath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        direct_ok_[i] = false;
+      } else {
+        direct_ok_[i] = image_log_direct_;
+      }
+      if (image_fds_[i] < 0)
+        throw std::runtime_error("cannot open " + rawpath + ": " + strerror(errno));
+      if (direct_ok_[i]) {
+        void* ab = nullptr;
+        const size_t nb = static_cast<size_t>(width_) * height_;
+        if (posix_memalign(&ab, 512, nb) != 0)
+          throw std::runtime_error("posix_memalign failed for " + frame_ids_[i]);
+        align_buf_[i] = static_cast<uint8_t*>(ab);
+      }
       image_index_[i] = std::make_unique<std::ofstream>(base + "_index.csv");
-      if (!image_logs_[i]->good() || !image_index_[i]->good())
-        throw std::runtime_error("cannot open image log for " + frame_ids_[i] + " in " + image_log_dir_);
+      if (!image_index_[i]->good())
+        throw std::runtime_error("cannot open index for " + frame_ids_[i] + " in " + image_dirs_[i]);
       *image_index_[i] << "# stamp_ns is the exposure midpoint; offset is the byte offset of\n"
                        << "# this frame in " << frame_ids_[i] << ".raw\n"
                        << "stamp_ns,offset\n";
@@ -864,7 +913,12 @@ class ArgusCaptureNode : public rclcpp::Node {
   std::vector<rclcpp::Publisher<bev_camera::msg::FrameMeta>::SharedPtr> meta_pubs_;
   std::string frame_log_dir_, image_log_dir_;
   std::vector<std::unique_ptr<std::ofstream>> frame_logs_;
-  std::vector<std::unique_ptr<std::ofstream>> image_logs_, image_index_;
+  std::vector<std::unique_ptr<std::ofstream>> image_index_;
+  std::vector<int> image_fds_;
+  std::vector<uint64_t> image_off_;
+  std::vector<uint8_t*> align_buf_;
+  std::vector<bool> direct_ok_;
+  bool image_log_direct_ = false;
   std::vector<uint64_t> image_frames_;
   std::vector<std::string> image_dirs_;
   size_t queue_depth_ = 64;
