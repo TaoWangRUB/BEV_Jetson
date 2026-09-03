@@ -37,6 +37,8 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <cv_bridge/cv_bridge.h>
@@ -103,6 +105,11 @@ class CuvslamMulticamNode : public rclcpp::Node {
     // How far back to look for a matching frame from the other cameras. A few frame
     // periods is plenty when they share a trigger edge; more just delays noticing a fault.
     history_ = static_cast<size_t>(declare_parameter<int>("match_history", 8));
+    // Off by default: the landmark export slows an already Track()-bound node, so only
+    // enable it for visualisation/debug runs, not the §5 rate measurement.
+    publish_landmarks_ = declare_parameter<bool>("publish_landmarks", false);
+    landmark_stride_ = declare_parameter<int>("landmark_stride", 3);
+    publish_observations_ = declare_parameter<bool>("publish_observations", false);
 
     if (cams_.size() != 4 || topics_.size() != 4)
       throw std::runtime_error("this node is wired for exactly 4 cameras");
@@ -115,6 +122,10 @@ class CuvslamMulticamNode : public rclcpp::Node {
           [this, i](const Img::ConstSharedPtr msg) { on_frame(i, msg); });
 
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("cuvslam/odometry", 10);
+    if (publish_landmarks_)
+      cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("cuvslam/landmarks", 10);
+    if (publish_observations_)
+      obs_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("cuvslam/observations", 10);
     tf_bc_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
     RCLCPP_INFO(get_logger(), "cuVSLAM multicam VO up: 4 fisheyes -> %zu virtual pinholes, "
                 "mode=Multicamera (visual only), sets gated at %.1f ms skew on real per-frame "
@@ -169,6 +180,12 @@ class CuvslamMulticamNode : public rclcpp::Node {
     // identical rotation matrices to 1e-6 - our facing pinholes sit 1.0-1.4 deg apart.
     // The default 2D LK tracker absorbs that residual instead.
     cfg.rectified_stereo_camera = false;
+    // Export the accumulated 3D landmark map so the node can publish it as a point cloud
+    // (GetFinalLandmarks, odometry start frame). The header warns export costs time and
+    // memory, so it is off by the default config and only worth it for visualisation runs.
+    cfg.enable_final_landmarks_export = publish_landmarks_;
+    // Per the API header, the final-landmarks flag already implies observations export.
+    cfg.enable_observations_export = publish_observations_;
     tracker_ = std::make_unique<cuvslam::Odometry>(rig, cfg);
   }
 
@@ -291,6 +308,60 @@ class CuvslamMulticamNode : public rclcpp::Node {
       return;
     }
     publish(*est.world_from_rig, msgs[0]->header.stamp);
+    if (publish_landmarks_ && landmark_stride_ > 0 && (sets_ % landmark_stride_) == 0)
+      publish_landmarks(msgs[0]->header.stamp);
+    if (publish_observations_)
+      publish_observations(msgs[0]->header.stamp);
+  }
+
+  void publish_observations(const builtin_interfaces::msg::Time& stamp) {
+    // The 2D features cuVSLAM actually tracked this frame, per virtual camera. Packed as
+    // one cloud: x=u, y=v, z=virtual camera index, plus the landmark id for colouring.
+    sensor_msgs::msg::PointCloud2 pc;
+    pc.header.stamp = stamp;
+    pc.header.frame_id = odom_frame_;
+    pc.height = 1;
+    pc.is_dense = true;
+    sensor_msgs::PointCloud2Modifier mod(pc);
+    mod.setPointCloud2Fields(4,
+                             "x", 1, sensor_msgs::msg::PointField::FLOAT32,
+                             "y", 1, sensor_msgs::msg::PointField::FLOAT32,
+                             "z", 1, sensor_msgs::msg::PointField::FLOAT32,
+                             "id", 1, sensor_msgs::msg::PointField::FLOAT32);
+    std::vector<cuvslam::Observation> all;
+    for (uint32_t ci = 0; ci < vpin_.size(); ++ci) {
+      const auto obs = tracker_->GetLastObservations(ci);
+      all.insert(all.end(), obs.begin(), obs.end());
+    }
+    mod.resize(all.size());
+    sensor_msgs::PointCloud2Iterator<float> ix(pc, "x"), iy(pc, "y"), iz(pc, "z"),
+        iid(pc, "id");
+    for (const auto& o : all) {
+      ix[0] = o.u; iy[0] = o.v; iz[0] = static_cast<float>(o.camera_index);
+      iid[0] = static_cast<float>(o.id & 0xFFFFFFu);   // low bits are enough to colour by
+      ++ix; ++iy; ++iz; ++iid;
+    }
+    obs_pub_->publish(pc);
+  }
+
+  void publish_landmarks(const builtin_interfaces::msg::Time& stamp) {
+    // GetFinalLandmarks: the whole map, id -> xyz, already in the odometry start frame,
+    // so it drops straight into a cloud on odom_frame_ with no extra transform.
+    const auto lms = tracker_->GetFinalLandmarks();
+    sensor_msgs::msg::PointCloud2 pc;
+    pc.header.stamp = stamp;
+    pc.header.frame_id = odom_frame_;
+    pc.height = 1;
+    pc.is_dense = true;
+    sensor_msgs::PointCloud2Modifier mod(pc);
+    mod.setPointCloud2FieldsByString(1, "xyz");
+    mod.resize(lms.size());
+    sensor_msgs::PointCloud2Iterator<float> ix(pc, "x"), iy(pc, "y"), iz(pc, "z");
+    for (const auto& kv : lms) {
+      ix[0] = kv.second[0]; iy[0] = kv.second[1]; iz[0] = kv.second[2];
+      ++ix; ++iy; ++iz;
+    }
+    cloud_pub_->publish(pc);
   }
 
   void publish(const cuvslam::PoseWithCovariance& pwc, const builtin_interfaces::msg::Time& stamp) {
@@ -338,6 +409,11 @@ class CuvslamMulticamNode : public rclcpp::Node {
   std::chrono::steady_clock::time_point last_report_ = std::chrono::steady_clock::now();
   std::mutex mtx_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obs_pub_;
+  bool publish_landmarks_ = false;
+  int landmark_stride_ = 3;
+  bool publish_observations_ = false;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_bc_;
 };
 

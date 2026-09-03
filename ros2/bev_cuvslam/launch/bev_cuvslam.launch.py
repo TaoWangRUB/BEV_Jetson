@@ -4,11 +4,17 @@
 # before cuVSLAM sees anything - the raw cameras are ~192 deg and cuVSLAM's equidistant
 # model is capped below 180, so this is required rather than preferred. See README 4.8.
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     return LaunchDescription([
+        # Off by default: the landmark export slows an already Track()-bound node, so keep
+        # it for visualisation runs and leave the §5 rate measurement on the plain path.
+        DeclareLaunchArgument('publish_landmarks', default_value='false'),
+        DeclareLaunchArgument('publish_observations', default_value='false'),
         Node(
             package='bev_cuvslam',
             executable='cuvslam_multicam_node',
@@ -34,6 +40,8 @@ def generate_launch_description():
                 # sets appear. The bundler that used to do exactly that is gone.
                 'max_skew_us': 1000,
                 'match_history': 8,
+                'publish_landmarks': LaunchConfiguration('publish_landmarks'),
+                'publish_observations': LaunchConfiguration('publish_observations'),
             }],
         ),
     ])

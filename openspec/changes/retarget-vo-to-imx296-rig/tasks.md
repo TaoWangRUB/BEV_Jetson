@@ -908,10 +908,47 @@ physically moved - the remaining items are not doable from here.
   2 s sample captured, and see whether the curve flattens. Worth doing before a long motion run
   is planned around a rate.
 
+- [~] 5.0c **First replayable 4-camera IMX296 motion log, replayed through VO end to end, 2026-09-03.**
+  This closes the gap 5.0 flagged ("No existing bag can substitute" — every prior IMX296 recording
+  was 1–2 cameras). `imglog_vio1_20260903_103102` (from `225`) is a full 4-camera raw log:
+  1774 frames on cam1/2/3, 1773 on cam4, **88.9 s at 19.96 Hz** (~20 Hz, not the 30 Hz the header
+  advertises), **99.9 % complete 4-camera sets** (1773 of 1774), and well synchronised — median
+  inter-camera skew 0 µs, worst 146 µs cam1↔cam2. `check_log_sets.py` and a raw index-vs-`.raw`
+  frame-count check both pass.
+
+  Converted to a Foxy rosbag2 with `scripts/port/raw_log_to_bag.py` (topics `/cam{1..4}/image_raw`,
+  `sensor_msgs/msg/Image`, mono8 1456×1088), a 30 s / 600-frame subset pushed to the TX2, and
+  replayed through `bev_cuvslam.launch.py` (the modular `cuvslam_multicam_node`) inside
+  `cuvslam-foxy:tx2` at **rate 1.0**. The VO node gates sets on `header.stamp`, so a plain
+  `ros2 bag play` (no sim time) reproduces the deployed pipeline faithfully.
+
+  **Result — the pipeline works on real 4-camera data:** cuVSLAM 17.0.0 came up (4 fisheyes → 8
+  virtual pinholes, sets gated at 1.0 ms), tracked continuously, and produced **328 odometry poses
+  over 29.3 s = 11.18 Hz**, path length 13.94 m, straight-line displacement 4.424 m (wander 3.15).
+
+  **Two honest caveats.** (1) ~**17 % of sets were dropped** at exactly 50/100/150 ms skew — i.e.
+  the matcher pairing across frame boundaries because it fell behind. Source sync is 146 µs, so
+  this is throughput, not the log: `Track()` at ~50–90 ms/set cannot keep up with a 50 ms period,
+  so the input queue backs up and only ~55 % of the 20 Hz sets survive to produce odometry. (2) This
+  is a **pre-recorded** motion with **no tape measure and no return-to-origin captured at record
+  time**, so it validates 5.0/5.0b (replay end to end) and feeds 5.4 (rate), but it **cannot close
+  5.1 or 5.2**, which need ground truth the log does not carry.
+
+  Artefacts on the host: `datasets/imglog_vio1_20260903_103102_bag` (full, 7095 msgs) and
+  `datasets/replay_out/odom_20260903_113841` (the recorded odometry). Compose note: the `shell`
+  service run needs `EXPOSURE_US` and `MOTION_SECONDS` set to any value (the `motion`/`modular`
+  services interpolate them at parse time even when they are not the target).
+
 - [ ] 5.1 Move the rig a measured straight-line distance; record `/cuvslam/odometry` + `/tf` and compare reported translation against the tape measure (spec: *Translation is recovered at true scale*, 5 %).
 - [ ] 5.2 Return the rig to its starting pose and check the trajectory returns near the origin; record the drift.
 - [~] 5.3 **Answered offline, pending live confirmation.** cuVSLAM does not take declared stereo pairs: it samples a grid per camera, back-projects to 2 m and 4 m, and connects pairs exceeding 0.5 (`frustum_intersection_graph.cpp:33`). Re-running that on our ring-closed rig gives **0.939 / 0.951 / 0.926 / 0.949** against a 0.961 ceiling, all 8 virtual cameras paired, no spurious edges. The links form with room to spare and the `CUVSLAM_FRUSTUM_THRESHOLD` patch is not needed for the pinholes. Still to confirm on the live pipeline.
-- [ ] 5.4 Compare against the old rig's ~8.5 Hz bundled odometry: rate, drift, and whether tracking survives motion that previously broke it.
+- [~] 5.4 **Rate confirmed on the 4-camera replay, tracking/drift pending live ground truth.** The
+  2026-09-03 replay (5.0c) produced **11.18 Hz** odometry from a 20 Hz input — above the old bundled
+  rig's ~8.5 Hz — with cuVSLAM tracking held for the whole 29 s run. It stays compute-limited on the
+  TX2: `Track()` at ~50–90 ms/set means ~45 % of the 20 Hz sets never reach the tracker, and the
+  survivors occasionally straddle a trigger boundary (the 17 % skew drops). Rate beats the old rig;
+  **drift and "does tracking survive motion that broke the old rig" still need a run with ground
+  truth**, since this pre-recorded log carries none.
 
 ## 6. Wrap-up
 
