@@ -36,10 +36,12 @@
 #include <fstream>
 #include <memory>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <dirent.h>
@@ -261,6 +263,14 @@ class ArgusCaptureNode : public rclcpp::Node {
   ~ArgusCaptureNode() override {
     running_ = false;
     if (worker_.joinable()) worker_.join();
+    // Drain the frame-time CSVs first: the capture loop has stopped, so the queue is
+    // finite, and the rows still in it describe frames that ARE in the image log. Closing
+    // the files with rows outstanding would make the CSV shorter than the .raw it indexes.
+    if (csv_writer_.joinable()) {
+      { std::lock_guard<std::mutex> lk(csvq_mtx_); csv_stop_ = true; }
+      csvq_cv_.notify_all();
+      csv_writer_.join();
+    }
     // Drain the writers AFTER the capture loop has stopped, so whatever is queued reaches
     // disk. Dropping it here would silently shorten the log by up to 8 frames per camera and
     // leave the index disagreeing with the .raw - the exact failure this logger already had
@@ -506,6 +516,33 @@ class ArgusCaptureNode : public rclcpp::Node {
     }
   }
 
+  // The frame-time CSVs, written OFF the capture thread. One thread for all four cameras:
+  // the whole rig produces ~120 rows/s of ~60 bytes, so ~7 KB/s, and a second thread per
+  // camera would cost more in context switches than it could ever save.
+  //
+  // The queue is deliberately UNBOUNDED, unlike the image queue. There the bound exists
+  // because a frame is 1.58 MB and a stalled target would eat the board's memory; here a
+  // row is 60 bytes, so even an hour in which this thread never ran once is ~25 MB. Bounding
+  // it would mean discarding timing rows - the record used to reconstruct what the rig did -
+  // to save memory that is not at risk.
+  void csv_thread() {
+    for (;;) {
+      std::pair<size_t, std::string> row;
+      {
+        std::unique_lock<std::mutex> lk(csvq_mtx_);
+        csvq_cv_.wait(lk, [&] { return !csvq_.empty() || csv_stop_; });
+        if (csvq_.empty()) return;                  // stopping and drained
+        row = std::move(csvq_.front());
+        csvq_.pop_front();
+      }
+      auto& f = frame_logs_[row.first];
+      // Still flushed per row, but now on a thread where blocking costs nothing: the node
+      // is normally stopped by a signal, and an unflushed tail is a truncated last line that
+      // a parser reports as corruption rather than as the missing frame it looks like.
+      if (f) *f << row.second << std::endl;
+    }
+  }
+
   void open_image_logs() {
     image_fds_.assign(n_, -1); image_off_.assign(n_, 0); align_buf_.assign(n_, nullptr);
     direct_ok_.assign(n_, false);
@@ -612,6 +649,7 @@ class ArgusCaptureNode : public rclcpp::Node {
           << "#timestamp [ns],seq,capture_id,t_sof [ns],exposure [ns],image\n";
     }
     RCLCPP_INFO(get_logger(), "writing frame-time CSVs to %s", frame_log_dir_.c_str());
+    csv_writer_ = std::thread([this] { csv_thread(); });
   }
 
   // The instant this frame corresponds to, on CLOCK_MONOTONIC.
@@ -712,13 +750,42 @@ class ArgusCaptureNode : public rclcpp::Node {
     m.image_published = image_published;
     meta_pubs_[i]->publish(m);
 
-    // Flush per row: the node is normally stopped with a signal, and an unflushed tail
-    // means a truncated last line — which a parser reports as corruption rather than as
-    // the missing frames it looks like. 120 small writes/s costs nothing.
-    if (i < frame_logs_.size() && frame_logs_[i])
-      *frame_logs_[i] << ft.stamp_ns << ',' << ft.number << ',' << ft.capture_id << ','
-                      << ft.sof_ns << ',' << ft.exposure_ns << ',' << (image_published ? 1 : 0)
-                      << std::endl;
+    // FORMAT HERE, WRITE ON ANOTHER THREAD. "120 small writes/s costs nothing" was wrong,
+    // and it cost trigger edges for a month.
+    //
+    // This runs on the CAPTURE thread, between acquireFrame() calls. The flush is a write()
+    // to ext4, which is mounted data=ordered with the default 5 s commit — so roughly every
+    // 5 s one of these lands inside a jbd2 journal commit and blocks. The capture thread is
+    // then late for the next trigger edge, and because ONE thread serves all four cameras
+    // the whole set is lost.
+    //
+    // Measured 2026-09-03 over 60 s at 20 fps, four cameras, images on eMMC either way -
+    // the ONLY change was moving this CSV off the ext4 root onto tmpfs:
+    //   frame CSV on ext4    11-27 missing trigger edges, 99.5% complete sets, 19.6 Hz
+    //   frame CSV on tmpfs    0 missing trigger edges,    99.9% complete sets, 19.95 Hz
+    // Every loss was "never produced" (capture_id gapped with seq), on a 5 s grid aligned to
+    // run start, in a phase window under 150 ms wide. scripts/port/locate_frame_loss.py is
+    // the tool that separates that from a frame the writer dropped.
+    //
+    // So: build the row here (pure CPU) and hand it to csv_thread(). Dropping the per-row
+    // flush alone would NOT fix it - the ofstream would still write() from this thread when
+    // its buffer filled, just 8x less often.
+    if (i < frame_logs_.size() && frame_logs_[i]) {
+      char row[160];
+      const int len = snprintf(row, sizeof(row), "%lu,%lu,%u,%lu,%lu,%d",
+                               static_cast<unsigned long>(ft.stamp_ns),
+                               static_cast<unsigned long>(ft.number), ft.capture_id,
+                               static_cast<unsigned long>(ft.sof_ns),
+                               static_cast<unsigned long>(ft.exposure_ns),
+                               image_published ? 1 : 0);
+      if (len > 0) {
+        {
+          std::lock_guard<std::mutex> lk(csvq_mtx_);
+          csvq_.emplace_back(i, std::string(row, static_cast<size_t>(len)));
+        }
+        csvq_cv_.notify_one();
+      }
+    }
   }
 
   // Inter-camera skew, measured the only way that means anything: by matching frames
@@ -949,6 +1016,12 @@ class ArgusCaptureNode : public rclcpp::Node {
   std::vector<uint64_t> wq_dropped_;
   std::vector<std::thread> writers_;
   bool wq_stop_ = false;
+  // Frame-time CSV rows, queued off the capture thread (see publish_meta).
+  std::deque<std::pair<size_t, std::string>> csvq_;
+  std::mutex csvq_mtx_;
+  std::condition_variable csvq_cv_;
+  std::thread csv_writer_;
+  bool csv_stop_ = false;
   std::atomic<bool> image_log_failed_{false};
   UniqueObj<CameraProvider> provider_;
   std::vector<UniqueObj<CaptureSession>> sessions_;
