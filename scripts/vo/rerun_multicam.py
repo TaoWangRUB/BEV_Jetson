@@ -158,6 +158,9 @@ def main():
         return rrb.Spatial2DView(origin=f"rig/cam{idx}", name=name)
     labels = [f"{c} {'+' if s > 0 else '-'}45" for c, s in VCAMS]
     hide3d = [f"- /rig/cam{i}/**" for i in (1, 3, 5, 7)]   # show only the -45 frusta in 3D
+    # rig/camN is the virtual pinholes' namespace (N = 0..7); the raw cameras must not
+    # share it or cam1..cam4 collide with vpin 1..4.
+    hideall = [f"- /rig/cam{i}/**" for i in range(8)]
     if a.fisheye:
         # Raw fisheyes on top, the 8 carves cuVSLAM actually consumes below, same features
         # drawn on both - so the pair can be compared frame by frame.
@@ -166,9 +169,9 @@ def main():
                 row_shares=[0.30, 0.45, 0.25],
                 contents=[
                     rrb.Horizontal(contents=[
-                        rrb.Spatial2DView(origin=f"rig/{c}", name=f"{c} raw fisheye")
+                        rrb.Spatial2DView(origin=f"rig/raw_{c}", name=f"{c} raw fisheye")
                         for c in CAMS]),
-                    rrb.Spatial3DView(name="3D", origin="/", contents=["+ /**"] + hide3d),
+                    rrb.Spatial3DView(name="3D", origin="/", contents=["+ /**"] + hideall),
                     rrb.Horizontal(contents=[v2d(i, labels[i]) for i in range(8)]),
                 ]),
             rrb.TimePanel(state="collapsed"))
@@ -213,7 +216,7 @@ def main():
         for c in CAMS:
             # No extra roll here: rotating a pane 180 and rolling its camera 180 cancel in
             # 3D, so the physically-correct pose is the raw one with the raw texture.
-            rr.log(f"rig/{c}", rr.Transform3D(translation=np.array(rig[c])[:3, 3],
+            rr.log(f"rig/raw_{c}", rr.Transform3D(translation=np.array(rig[c])[:3, 3],
                                               quaternion=R_to_quat(np.array(rig[c])[:3, :3]),
                                               relation=rr.TransformRelation.ParentFromChild),
                    static=True)
@@ -255,12 +258,12 @@ def main():
                                  interpolation=cv2.INTER_AREA)
                 vp, tri, uv = dome[c]
                 if n % a.dome_stride == 0:
-                    rr.log(f"rig/{c}/dome",
+                    rr.log(f"rig/raw_{c}/dome",
                            rr.Mesh3D(vertex_positions=vp, triangle_indices=tri,
                                      vertex_texcoords=uv,
                                      albedo_texture=cv2.cvtColor(tex, cv2.COLOR_GRAY2RGB)))
                 pane = cv2.rotate(fish, cv2.ROTATE_180) if a.upright else fish
-                rr.log(f"rig/{c}/image", rr.Image(pane).compress(jpeg_quality=70))
+                rr.log(f"rig/raw_{c}/image", rr.Image(pane).compress(jpeg_quality=70))
                 if ob is None:
                     continue
                 # Same observations as the carves below, mapped back through the Mei model
@@ -282,7 +285,7 @@ def main():
                     pts.append(np.stack([fu, fv], -1))
                     cols.append(np.array([color_from_id(int(q)) for q in p[good, 3]], np.uint8))
                 if pts:
-                    rr.log(f"rig/{c}/features",
+                    rr.log(f"rig/raw_{c}/features",
                            rr.Points2D(np.vstack(pts), colors=np.vstack(cols), radii=3.0))
 
         for idx, (c, s) in enumerate(VCAMS):
