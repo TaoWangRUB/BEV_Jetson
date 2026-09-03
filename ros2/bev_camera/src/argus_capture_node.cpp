@@ -479,6 +479,49 @@ class ArgusCaptureNode : public rclcpp::Node {
   // drop is far better than a set that is silently no longer a set.
   struct WriteJob { std::vector<uint8_t> data; uint64_t stamp; };
 
+  // A frame buffer for camera i, WITHOUT calling the allocator on the capture thread.
+  //
+  // The log path used to build a whole sensor_msgs::Image and resize its data vector -
+  // 1.58 MB from the heap per frame per camera, 80/s across the rig, freed again when the
+  // WriteJob died - and then throw the message away unsent. malloc/free are only cheap
+  // while memory is calm, and this logger fills the page cache by design.
+  //
+  // HONESTY ABOUT WHAT THIS BOUGHT: nothing measurable. Three 180 s runs at 20 fps put set
+  // completeness at 99.9% with and without it, and the residual stalls did not move. It is
+  // kept because a 1.58 MB allocation between two acquireFrame() calls is the wrong shape
+  // for a capture path, not because a number improved.
+  std::vector<uint8_t> acquire_buffer(size_t i, size_t nbytes) {
+    {
+      std::lock_guard<std::mutex> lk(wq_mtx_[i]);
+      if (!bufpool_[i].empty()) {
+        std::vector<uint8_t> b = std::move(bufpool_[i].back());
+        bufpool_[i].pop_back();
+        if (b.size() == nbytes) return b;   // the common case: no allocation at all
+        b.resize(nbytes);
+        return b;
+      }
+    }
+    return std::vector<uint8_t>(nbytes);    // only until the pool has filled
+  }
+
+  // Cap the free list at the queue depth plus the two that can be in flight (one being
+  // filled, one being written). Anything beyond that is memory the run cannot use.
+  void release_buffer(size_t i, std::vector<uint8_t>&& b) {
+    std::lock_guard<std::mutex> lk(wq_mtx_[i]);
+    if (bufpool_[i].size() < queue_depth_ + 2) bufpool_[i].push_back(std::move(b));
+  }
+
+  // WHY THERE IS NO fallocate() HERE, so nobody re-treads it.
+  //
+  // Preallocating the .raw in chunks is the textbook fix for extent allocation and metadata
+  // journalling on every append, and it was tried on 2026-09-03. On ext4 / 4.9.337-tegra the
+  // space cannot be given back: with FALLOC_FL_KEEP_SIZE, ftruncate to the written length is
+  // a no-op (i_size already equals it) and fallocate(FALLOC_FL_PUNCH_HOLE) returns SUCCESS
+  // while freeing nothing - measured directly, 256 MB reserved and 256 MB still charged
+  // afterwards. Every run therefore leaked up to one chunk per camera until the files were
+  // deleted, and one 180 s run took the eMMC to 100% with 0 bytes free.
+  //
+  // It also bought nothing measurable, so it is not worth a workaround.
   void writer_thread(size_t i) {
     for (;;) {
       WriteJob job;
@@ -513,6 +556,7 @@ class ArgusCaptureNode : public rclcpp::Node {
         return;
       }
       ++image_frames_[i];
+      release_buffer(i, std::move(job.data));
     }
   }
 
@@ -621,6 +665,14 @@ class ArgusCaptureNode : public rclcpp::Node {
     wq_mtx_ = std::vector<std::mutex>(n_);
     wq_cv_ = std::vector<std::condition_variable>(n_);
     wq_dropped_.assign(n_, 0);
+    // Must exist BEFORE the writer threads start: writer_thread() calls release_buffer() on
+    // its very first job. Seed two per camera so even the opening frames skip the allocator -
+    // steady state needs one in flight plus whatever sits in the queue, and the measured
+    // queue depth is 1 of 64.
+    bufpool_ = std::vector<std::deque<std::vector<uint8_t>>>(n_);
+    for (size_t i = 0; i < n_; ++i)
+      for (int k = 0; k < 2; ++k)
+        bufpool_[i].emplace_back(static_cast<size_t>(width_) * height_);
     for (size_t i = 0; i < n_; ++i) writers_.emplace_back([this, i] { writer_thread(i); });
   }
 
@@ -946,6 +998,39 @@ class ArgusCaptureNode : public rclcpp::Node {
     }
     NvBufferMemSyncForCpu(dmabufs_[i], 0, &mapped);
 
+    const size_t nbytes = static_cast<size_t>(width_) * height_;
+    const uint32_t pitch = params.pitch[0];
+    const uint8_t* src = static_cast<const uint8_t*>(mapped);
+
+    // LOG PATH: no Image message, no allocation - see acquire_buffer().
+    //
+    // DEPTH IS ABOUT SETS, NOT THROUGHPUT. Depth 8 (12.7 MB) gave 93.1% complete 4-camera
+    // sets: the cameras drop INDEPENDENTLY, so a 1.5-4.5% per-camera loss compounded into
+    // 7% of trigger edges missing somebody, and a set that is not a set is worth very little
+    // from a synchronised rig. 64 frames is ~101 MB per camera - the board has ~6 GB spare -
+    // and buys enough slack to ride out an eMMC or SD flush stall instead of dropping.
+    if (!image_log_dir_.empty()) {
+      std::vector<uint8_t> buf = acquire_buffer(i, nbytes);
+      for (int r = 0; r < height_; ++r)
+        memcpy(buf.data() + r * width_, src + r * pitch, width_);
+      NvBufferMemUnMap(dmabufs_[i], 0, &mapped);
+      {
+        std::lock_guard<std::mutex> lk(wq_mtx_[i]);
+        if (wq_[i].size() >= queue_depth_) {
+          // Recycle the dropped frame's buffer rather than freeing it: a drop already means
+          // the target is struggling, which is the worst moment to call the allocator.
+          if (bufpool_[i].size() < queue_depth_ + 2)
+            bufpool_[i].push_back(std::move(wq_[i].front().data));
+          wq_[i].pop_front();
+          ++wq_dropped_[i];
+        }
+        wq_[i].push_back(WriteJob{std::move(buf), t_ns});
+      }
+      wq_cv_[i].notify_one();
+      return true;                 // deliberately NOT published: see image_log_dir_
+    }
+
+    // DDS path, unchanged: here the message IS the product, so it is built as before.
     auto msg = std::make_unique<sensor_msgs::msg::Image>();
     msg->header.stamp = rclcpp::Time(static_cast<int64_t>(t_ns));
     msg->header.frame_id = frame_ids_[i];
@@ -954,29 +1039,10 @@ class ArgusCaptureNode : public rclcpp::Node {
     msg->encoding = "mono8";
     msg->is_bigendian = 0;
     msg->step = width_;
-    msg->data.resize(static_cast<size_t>(width_) * height_);
-    const uint32_t pitch = params.pitch[0];
-    const uint8_t* src = static_cast<const uint8_t*>(mapped);
+    msg->data.resize(nbytes);
     for (int r = 0; r < height_; ++r)
       memcpy(msg->data.data() + r * width_, src + r * pitch, width_);
-
     NvBufferMemUnMap(dmabufs_[i], 0, &mapped);
-    if (!image_log_dir_.empty()) {
-      // Hand the buffer to this camera's writer and return: a move, not a disk wait.
-      //
-      // DEPTH IS ABOUT SETS, NOT THROUGHPUT. Depth 8 (12.7 MB) gave 93.1% complete 4-camera
-      // sets: the cameras drop INDEPENDENTLY, so a 1.5-4.5% per-camera loss compounded into
-      // 7% of trigger edges missing somebody, and a set that is not a set is worth very little
-      // from a synchronised rig. 64 frames is ~101 MB per camera - the board has ~6 GB spare -
-      // and buys enough slack to ride out an eMMC or SD flush stall instead of dropping.
-      {
-        std::lock_guard<std::mutex> lk(wq_mtx_[i]);
-        if (wq_[i].size() >= queue_depth_) { wq_[i].pop_front(); ++wq_dropped_[i]; }
-        wq_[i].push_back(WriteJob{std::move(msg->data), t_ns});
-      }
-      wq_cv_[i].notify_one();
-      return true;                 // deliberately NOT published: see image_log_dir_
-    }
     pubs_[i]->publish(std::move(msg));
     return true;
   }
@@ -1014,6 +1080,8 @@ class ArgusCaptureNode : public rclcpp::Node {
   std::vector<std::mutex> wq_mtx_;
   std::vector<std::condition_variable> wq_cv_;
   std::vector<uint64_t> wq_dropped_;
+  // Recycled frame buffers, one free list per camera, guarded by that camera's wq_mtx_.
+  std::vector<std::deque<std::vector<uint8_t>>> bufpool_;
   std::vector<std::thread> writers_;
   bool wq_stop_ = false;
   // Frame-time CSV rows, queued off the capture thread (see publish_meta).
