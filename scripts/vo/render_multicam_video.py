@@ -57,6 +57,10 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--frames", type=int, default=200, help="max composited frames")
     ap.add_argument("--fps", type=float, default=12.0)
+    ap.add_argument("--map-radius", type=float, default=20.0,
+                    help="display-only: drop landmarks further than this (m) from the "
+                         "trajectory. Low-parallax features triangulate to hundreds of "
+                         "metres. 0 = keep all")
     ap.add_argument("--gif", action="store_true", help="also write a .gif")
     ap.add_argument("--upright", action=argparse.BooleanOptionalAction, default=True,
                     help="display-only: undo the 180 mount roll (panes, features and 3D "
@@ -82,6 +86,8 @@ def main():
     if len(P) < 2:
         sys.exit("need at least 2 poses")
     lm = max((c[1] for c in clouds), key=len) if clouds else np.zeros((0, 3), np.float32)
+    if a.map_radius > 0 and len(lm):
+        lm = lm[np.linalg.norm(lm - np.asarray(P).mean(0), axis=1) < a.map_radius]
     # Thin the global map so reprojected dots read as sparse features, not confetti.
     lm_draw = lm[:: max(1, len(lm) // 4000)] if len(lm) else lm
     lm_col = np.array([color_from_id(i * 7) for i in range(len(lm_draw))], np.uint8)

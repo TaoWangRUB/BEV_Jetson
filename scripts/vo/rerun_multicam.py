@@ -67,6 +67,10 @@ def main():
     ap.add_argument("--vstereo", default="config/rig/virtual_stereo_imx296.yaml")
     ap.add_argument("--rig", default="config/rig/rig_extrinsics_imx296.yaml")
     ap.add_argument("--frames", type=int, default=180, help="max frames to log")
+    ap.add_argument("--map-radius", type=float, default=20.0,
+                    help="display-only: drop landmarks further than this (m) from the "
+                         "trajectory. Low-parallax features triangulate to hundreds of "
+                         "metres and otherwise dictate the 3D view's auto-framing. 0 = keep all")
     ap.add_argument("--upright", action=argparse.BooleanOptionalAction, default=True,
                     help="display-only: undo the 180 mount roll so the scene reads upright")
     ap.add_argument("--save", nargs="?", const="", default=None)
@@ -91,6 +95,12 @@ def main():
         sys.exit("need at least 2 poses")
     lm = max((c[1] for c in clouds), key=len) if clouds else np.zeros((0, 3), np.float32)
     lm_col = np.array([color_from_id(i) for i in range(len(lm))], np.uint8)
+    if a.map_radius > 0 and len(lm):
+        keep = np.linalg.norm(lm - np.asarray(P).mean(0), axis=1) < a.map_radius
+        print("landmarks: %d of %d within %.0f m (max %.0f m)"
+              % (keep.sum(), len(lm), a.map_radius,
+                 np.linalg.norm(lm - np.asarray(P).mean(0), axis=1).max()))
+        lm, lm_col = lm[keep], lm_col[keep]
     obs = read_observations(odom_bag)
     obs_ts = np.array(sorted(obs)) if obs else np.zeros(0)
     print("observations: %d frames, %.0f features/frame"
