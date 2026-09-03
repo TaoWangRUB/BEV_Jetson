@@ -17,7 +17,7 @@ import rerun.blueprint as rrb
 from rosbags.highlevel import AnyReader
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rerun_virtual_pinholes import load_omni, build_map, rot_y   # noqa: E402
+from rerun_virtual_pinholes import load_omni, build_map, rot_y, project_omni   # noqa: E402
 from rerun_odometry import read_bag, find_bag, read_images, TS    # noqa: E402
 from render_multicam_video import CAMS, VCAMS, quat_to_R, color_from_id  # noqa: E402
 
@@ -59,6 +59,27 @@ def R_to_quat(R):
     return np.array([x, y, z, w])
 
 
+def fisheye_dome(o, img_w, img_h, radius, n_th=48, n_ph=144, th_max=93.0):
+    """Spherical cap UV-mapped through the Mei model, so the raw 192 deg image can sit
+    on the rig in 3D. rr.Pinhole cannot express a fisheye - it diverges at 180 deg."""
+    th = np.radians(np.linspace(1e-3, th_max, n_th))
+    ph = np.radians(np.linspace(0.0, 360.0, n_ph, endpoint=False))
+    T, PH = np.meshgrid(th, ph, indexing="ij")
+    d = np.stack([np.sin(T) * np.cos(PH), np.sin(T) * np.sin(PH), np.cos(T)], -1)
+    d = d.reshape(-1, 3)
+    # Forward projection only: pick the directions, look up where they land. No inverse.
+    u, v = project_omni(o, d[:, 0], d[:, 1], d[:, 2])
+    ok = (u >= 0) & (u < img_w) & (v >= 0) & (v < img_h)
+    idx = np.arange(n_th * n_ph).reshape(n_th, n_ph)
+    nxt = np.roll(np.arange(n_ph), -1)
+    v00, v01, v10, v11 = idx[:-1], idx[:-1][:, nxt], idx[1:], idx[1:][:, nxt]
+    tris = np.concatenate([np.stack([v00, v10, v11], -1).reshape(-1, 3),
+                           np.stack([v00, v11, v01], -1).reshape(-1, 3)])
+    tris = tris[ok[tris].all(1)]
+    uv = np.stack([u / img_w, v / img_h], -1).astype(np.float32)
+    return (d * radius).astype(np.float32), tris.astype(np.uint32), uv
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("bag", help="bag with /cuvslam/odometry (+ /cuvslam/landmarks)")
@@ -71,6 +92,16 @@ def main():
                     help="display-only: drop landmarks further than this (m) from the "
                          "trajectory. Low-parallax features triangulate to hundreds of "
                          "metres and otherwise dictate the 3D view's auto-framing. 0 = keep all")
+    ap.add_argument("--fisheye", action="store_true",
+                    help="show the 4 raw fisheyes instead of the 8 virtual pinholes: flat "
+                         "panes in 2D, and UV-mapped spherical caps on the rig in 3D")
+    ap.add_argument("--dome-radius", type=float, default=1.5,
+                    help="radius (m) of the fisheye caps in the 3D view")
+    ap.add_argument("--tex-scale", type=float, default=0.25,
+                    help="downscale factor for the fisheye textures, to bound the .rrd")
+    ap.add_argument("--dome-stride", type=int, default=4,
+                    help="refresh the 3D dome textures every Nth frame; they are raw RGB "
+                         "(Rerun rejects grayscale) and dominate the file size")
     ap.add_argument("--upright", action=argparse.BooleanOptionalAction, default=True,
                     help="display-only: undo the 180 mount roll so the scene reads upright")
     ap.add_argument("--save", nargs="?", const="", default=None)
@@ -127,15 +158,30 @@ def main():
         return rrb.Spatial2DView(origin=f"rig/cam{idx}", name=name)
     labels = [f"{c} {'+' if s > 0 else '-'}45" for c, s in VCAMS]
     hide3d = [f"- /rig/cam{i}/**" for i in (1, 3, 5, 7)]   # show only the -45 frusta in 3D
-    blueprint = rrb.Blueprint(
-        rrb.Vertical(
-            row_shares=[0.25, 0.5, 0.25],
-            contents=[
-                rrb.Horizontal(contents=[v2d(i, labels[i]) for i in range(4)]),
-                rrb.Spatial3DView(name="3D", origin="/", contents=["+ /**"] + hide3d),
-                rrb.Horizontal(contents=[v2d(i, labels[i]) for i in range(4, 8)]),
-            ]),
-        rrb.TimePanel(state="collapsed"))
+    if a.fisheye:
+        # Raw fisheyes on top, the 8 carves cuVSLAM actually consumes below, same features
+        # drawn on both - so the pair can be compared frame by frame.
+        blueprint = rrb.Blueprint(
+            rrb.Vertical(
+                row_shares=[0.30, 0.45, 0.25],
+                contents=[
+                    rrb.Horizontal(contents=[
+                        rrb.Spatial2DView(origin=f"rig/{c}", name=f"{c} raw fisheye")
+                        for c in CAMS]),
+                    rrb.Spatial3DView(name="3D", origin="/", contents=["+ /**"] + hide3d),
+                    rrb.Horizontal(contents=[v2d(i, labels[i]) for i in range(8)]),
+                ]),
+            rrb.TimePanel(state="collapsed"))
+    else:
+        blueprint = rrb.Blueprint(
+            rrb.Vertical(
+                row_shares=[0.25, 0.5, 0.25],
+                contents=[
+                    rrb.Horizontal(contents=[v2d(i, labels[i]) for i in range(4)]),
+                    rrb.Spatial3DView(name="3D", origin="/", contents=["+ /**"] + hide3d),
+                    rrb.Horizontal(contents=[v2d(i, labels[i]) for i in range(4, 8)]),
+                ]),
+            rrb.TimePanel(state="collapsed"))
 
     rr.init("cuvslam_multicam", spawn=a.spawn)
     if a.spawn or a.serve:
@@ -161,6 +207,19 @@ def main():
                           image_from_camera=[[focal, 0, cx], [0, focal, cy], [0, 0, 1]],
                           width=W, height=H), static=True)
 
+    dome = {}
+    if a.fisheye:
+        ih, iw = 1088, 1456
+        for c in CAMS:
+            # No extra roll here: rotating a pane 180 and rolling its camera 180 cancel in
+            # 3D, so the physically-correct pose is the raw one with the raw texture.
+            rr.log(f"rig/{c}", rr.Transform3D(translation=np.array(rig[c])[:3, 3],
+                                              quaternion=R_to_quat(np.array(rig[c])[:3, :3]),
+                                              relation=rr.TransformRelation.ParentFromChild),
+                   static=True)
+            dome[c] = fisheye_dome(omni[c], iw, ih, a.dome_radius)
+        print("fisheye domes: %d triangles each" % len(dome[CAMS[0]][1]))
+
     step = max(1, len(P) // a.frames)
     idxs = list(range(0, len(P), step))
     print("logging %d frames from %d poses, %d landmarks" % (len(idxs), len(P), len(lm)))
@@ -170,7 +229,7 @@ def main():
                static=True)
 
     traj = []
-    for i in idxs:
+    for n, i in enumerate(idxs):
         rr.set_time("wall", timestamp=ts[i])
         R_wr, t_wr = quat_to_R(Q[i]), P[i]
         R_d, t_d = Rz180 @ R_wr, Rz180 @ t_wr
@@ -186,6 +245,46 @@ def main():
         if ob is None and len(obs_ts):
             near = obs_ts[int(np.abs(obs_ts - ts[i]).argmin())]
             ob = obs[near] if abs(near - ts[i]) < 1e-3 else None
+
+        if a.fisheye:
+            for c in CAMS:
+                fish = frame_at(c, key)
+                if fish is None:
+                    continue
+                tex = cv2.resize(fish, None, fx=a.tex_scale, fy=a.tex_scale,
+                                 interpolation=cv2.INTER_AREA)
+                vp, tri, uv = dome[c]
+                if n % a.dome_stride == 0:
+                    rr.log(f"rig/{c}/dome",
+                           rr.Mesh3D(vertex_positions=vp, triangle_indices=tri,
+                                     vertex_texcoords=uv,
+                                     albedo_texture=cv2.cvtColor(tex, cv2.COLOR_GRAY2RGB)))
+                pane = cv2.rotate(fish, cv2.ROTATE_180) if a.upright else fish
+                rr.log(f"rig/{c}/image", rr.Image(pane).compress(jpeg_quality=70))
+                if ob is None:
+                    continue
+                # Same observations as the carves below, mapped back through the Mei model
+                # so the two rows can be compared directly.
+                pts, cols = [], []
+                for idx, (cc, s) in enumerate(VCAMS):
+                    if cc != c:
+                        continue
+                    p = ob[ob[:, 2].astype(int) == idx]
+                    if not len(p):
+                        continue
+                    r = np.stack([p[:, 0] - cx, p[:, 1] - cy,
+                                  np.full(len(p), focal)], -1) @ rot_y(signs[s]).T
+                    fu, fv = project_omni(omni[c], r[:, 0], r[:, 1], r[:, 2])
+                    good = (fu >= 0) & (fu < 1456) & (fv >= 0) & (fv < 1088)
+                    fu, fv = fu[good], fv[good]
+                    if a.upright:
+                        fu, fv = 1455.0 - fu, 1087.0 - fv
+                    pts.append(np.stack([fu, fv], -1))
+                    cols.append(np.array([color_from_id(int(q)) for q in p[good, 3]], np.uint8))
+                if pts:
+                    rr.log(f"rig/{c}/features",
+                           rr.Points2D(np.vstack(pts), colors=np.vstack(cols), radii=3.0))
+
         for idx, (c, s) in enumerate(VCAMS):
             fish = frame_at(c, key)
             if fish is None:
