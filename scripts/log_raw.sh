@@ -50,7 +50,9 @@ set -euo pipefail
 SECS="${MOTION_SECONDS:-60}"
 LABEL="${LOG_LABEL:-run}"
 EVERY_N="${PUBLISH_EVERY_N:-1}"
-STAMP=$(date +%Y%m%d_%H%M%S)
+# LOG_STAMP lets a caller PIN the directory name. log_rig.sh needs it: the IMU runs in a
+# separate container and has to be told the same directory, which it cannot guess from here.
+STAMP="${LOG_STAMP:-$(date +%Y%m%d_%H%M%S)}"
 BYTES_PER_FRAME=$((1456 * 1088))
 # The frame rate is the TRIGGER's, and this script cannot see the generator - the serial
 # port is on the host, not in this container. So it has to be told. Getting it wrong only
@@ -58,6 +60,26 @@ BYTES_PER_FRAME=$((1456 * 1088))
 # at a 20 fps trigger the 30 fps default asked for 15228 MB of a 15809 MB disk to write 7.3 GB.
 TRIG_FPS="${TRIGGER_FPS:-30}"
 EFF_FPS=$((TRIG_FPS / EVERY_N))
+
+# REFUSE A FREE-RUNNING RIG. trigger_mode does not survive a reboot or a power cycle, and
+# losing it is SILENT: the generator keeps pulsing, the cameras ignore it and free-run, and
+# the log looks fine until you measure set skew and find milliseconds where there should be
+# microseconds. That cost a whole A/B run on 2026-09-03 - the board had been power-cycled
+# between setting the rig up and recording, and the "regression" being measured was just
+# four unsynchronised cameras.
+#
+# scripts/log_rig.sh gates on all of this properly (it can also reach the generator, which
+# this script cannot - trigctl lives on the host, not in the container). This is the
+# backstop for anyone invoking `docker compose run logonly` directly, which has no gate
+# of its own. /sys is visible in the container, so the one check that matters is free.
+TRIG_SYS=/sys/module/imx296/parameters/trigger_mode
+if [ -r "$TRIG_SYS" ] && [ "$(cat "$TRIG_SYS")" != "1" ]; then
+  echo "REFUSING: trigger_mode=$(cat "$TRIG_SYS"), expected 1 - the cameras are FREE-RUNNING" >&2
+  echo "  and nothing in the log would say so. On the host:" >&2
+  echo "    echo 1 | sudo tee $TRIG_SYS" >&2
+  echo "  Set TRIGGER_MODE_OK=1 to record unsynchronised frames anyway." >&2
+  [ "${TRIGGER_MODE_OK:-0}" = "1" ] || exit 1
+fi
 
 # One base path per camera; a single LOG_DIR fans out to all four.
 IFS=',' read -r -a BASES <<< "${LOG_DIRS:-${LOG_DIR:-/logs}}"

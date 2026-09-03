@@ -170,6 +170,12 @@ services:
       LOG_DIR: ${LOG_DIR:-}
       LOG_DIRS: ${LOG_DIRS:-}
       LOG_LABEL: ${LOG_LABEL:-run}
+      # log_rig.sh pins this so the images land in the SAME directory as the IMU CSV, which
+      # is written by a different container. Without it each side stamps its own name - and
+      # they do not even agree on the hour, because the container is UTC and the host is
+      # local time. Note this block REPLACES the anchor's environment rather than merging,
+      # so a variable missing from here simply never reaches the script.
+      LOG_STAMP: ${LOG_STAMP:-}
       MOTION_SECONDS: ${MOTION_SECONDS:-}
       PUBLISH_EVERY_N: ${PUBLISH_EVERY_N:-1}
       TRIGGER_FPS: ${TRIGGER_FPS:-30}
@@ -251,6 +257,38 @@ services:
   capture:
     <<: *bev
     command: ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p publish_every_n:=${PUBLISH_EVERY_N:-1} -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us (j106-trigctl.py --port /dev/ttyACM0 status)}
+
+  # IMU STRAIGHT TO CSV, no DDS - the same discipline as `logonly`, for the same reason.
+  #
+  # It runs in its OWN container because the IMU needs root and privileged for
+  # /dev/spidev1.0, /dev/gpiochip* and SCHED_FIFO, and the image logger has no business
+  # holding those. That would normally raise the cross-container DDS problem this file warns
+  # about elsewhere - except NOTHING passes between the two containers. Each writes its own
+  # file, and both stamp CLOCK_MONOTONIC, so they are joined offline on the timestamp.
+  #
+  # Driven by scripts/log_rig.sh, which puts the CSV in the same directory as the images.
+  # No `:?` guard on IMU_CSV: compose interpolates EVERY service on EVERY command, so a
+  # required variable here would break `docker compose run logonly` too.
+  imulog:
+    <<: *bev
+    user: root
+    privileged: true
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+    command:
+      - bash
+      - -lc
+      - |
+        # FORCE A DECIMAL POINT. imu_node declares `rate` as a double, and ros2 parses a
+        # bare 200 as an integer - which is an InvalidParameterTypeException at startup, not
+        # a coercion. Same trap as image_log_direct in log_raw.sh, so normalise here rather
+        # than rely on every caller remembering to write 200.0.
+        RATE="${IMU_RATE:-200}"
+        case "$$RATE" in *.*) ;; *) RATE="$$RATE.0" ;; esac
+        ros2 run bev_imu imu_node --ros-args \
+          -p csv:=${IMU_CSV:-/logs/imu0.csv} \
+          -p rate:="$$RATE"
 
   # MPU-9250 IMU -> /imu0, stamped at the data-ready edge on CLOCK_MONOTONIC (README 4.7).
   # Needs root for /dev/spidev1.0 + /dev/gpiochip* and for SCHED_FIFO.
