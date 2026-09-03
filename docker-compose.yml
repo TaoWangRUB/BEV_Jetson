@@ -138,11 +138,24 @@ services:
   # at 30 fps is 1.585 MB x 4 x 30 = ~190 MB/s. Measured sustained write on this board:
   # eMMC 136 MB/s, SD 62.6 MB/s. So 30 fps to eMMC WILL drop frames; it is a ~21 fps pipe.
   # Options, in the order they cost you something:
-  #   LOG_DIR=/logs        eMMC, ~21 fps sustainable, unlimited length (14 GB free)
-  #   LOG_DIR=/ramlog      the HOST's /dev/shm (3.9 GB): full 30 fps, ~20 s, then copy to eMMC
-  #   PUBLISH_EVERY_N=2    15 fps, fits eMMC with headroom, runs indefinitely
+  #   LOG_DIRS=/logs,/logs,/sdlog,/ramlog   30 fps for a full minute, split 2/1/1 by target
+  #   TRIGGER_FPS=20 + `trigctl fps 20`     20 fps, ALL FOUR on eMMC, unlimited length
+  #   LOG_DIR=/ramlog                       the HOST's /dev/shm (3.9 GB): 30 fps, ~20 s, then copy off
+  #   PUBLISH_EVERY_N=2                     15 fps, fits eMMC with headroom, runs indefinitely
   # The recorder reports what it actually wrote; compare it against the trigger rate rather
   # than assuming.
+  #
+  # MEASURED 2026-09-03, 60 s each, on set completeness (the metric that matters for a
+  # triggered rig - see scripts/port/check_log_sets.py):
+  #   30 fps split across 3 targets    1704/1753 sets  97.2%   28.74 Hz
+  #   20 fps all four to eMMC          1176/1177 sets  99.9%   19.93 Hz
+  # Neither drops a frame in the writer queues (max depth 1 of 64). At 20 fps what remains is
+  # one brief global stall per ~80 s plus a 250 ms startup transient; it scales with write
+  # bandwidth (decimating images 10x gave zero stalls in 118 s). O_DIRECT makes it WORSE at
+  # this rate - see the note in scripts/log_raw.sh before reaching for IMAGE_LOG_DIRECT.
+  # At 30 fps the losses start ~30 s in and continue to the end, spread uniformly rather than
+  # periodically: that is the split saturating over the length of the run, not a stall.
+  # PREFER THE 20 fps FORM unless 30 fps is itself the requirement.
   #
   #   LOG_DIR=/logs LOG_LABEL=run1 EXPOSURE_US=$(...) docker compose run --rm logonly
   logonly:
@@ -159,6 +172,7 @@ services:
       LOG_LABEL: ${LOG_LABEL:-run}
       MOTION_SECONDS: ${MOTION_SECONDS:-}
       PUBLISH_EVERY_N: ${PUBLISH_EVERY_N:-1}
+      TRIGGER_FPS: ${TRIGGER_FPS:-30}
       WRITE_QUEUE_DEPTH: ${WRITE_QUEUE_DEPTH:-64}
       DRAIN_MAX: ${DRAIN_MAX:-120}
       IMAGE_LOG_DIRECT: ${IMAGE_LOG_DIRECT:-false}
