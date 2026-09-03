@@ -80,6 +80,33 @@ def fisheye_dome(o, img_w, img_h, radius, n_th=48, n_ph=144, th_max=93.0):
     return (d * radius).astype(np.float32), tris.astype(np.uint32), uv
 
 
+def bev_maps(omni, rig, R_rig_cam1, height, extent, ppm, iw=1456, ih=1088):
+    """Ground-plane remap tables, one per camera, plus the per-pixel owner.
+
+    The plane is fixed in the rig frame, so this is computed once and reused every frame.
+    Ownership is the camera whose optical axis is closest to the pixel's ray, which puts
+    the seams on the bisectors between neighbouring cameras."""
+    n = int(2 * extent * ppm)
+    fwd = np.linspace(extent, -extent, n)          # image row 0 = forward
+    left = np.linspace(extent, -extent, n)         # image col 0 = left
+    X, Y = np.meshgrid(fwd, left, indexing="ij")
+    P = np.stack([X, Y, np.full_like(X, -height)], -1).reshape(-1, 3)
+    P_cam1 = P @ R_rig_cam1                        # v_cam1 = R_rig_cam1^T @ v_rig
+    mx, my, cosang = {}, {}, []
+    for c in CAMS:
+        R_c, t_c = np.array(rig[c])[:3, :3], np.array(rig[c])[:3, 3]
+        v = (P_cam1 - t_c) @ R_c
+        rng = np.linalg.norm(v, axis=1)
+        u, w = project_omni(omni[c], v[:, 0], v[:, 1], v[:, 2])
+        ok = (v[:, 2] > 0) & (u >= 0) & (u < iw) & (w >= 0) & (w < ih)
+        mx[c] = np.where(ok, u, -1).reshape(n, n).astype(np.float32)
+        my[c] = np.where(ok, w, -1).reshape(n, n).astype(np.float32)
+        cosang.append(np.where(ok, v[:, 2] / rng, -2.0).reshape(n, n))
+    stack = np.stack(cosang)
+    owner = np.where(stack.max(0) > -2.0, stack.argmax(0), -1)
+    return mx, my, owner
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("bag", help="bag with /cuvslam/odometry (+ /cuvslam/landmarks)")
@@ -102,6 +129,13 @@ def main():
     ap.add_argument("--dome-stride", type=int, default=4,
                     help="refresh the 3D dome textures every Nth frame; they are raw RGB "
                          "(Rerun rejects grayscale) and dominate the file size")
+    ap.add_argument("--bev-height", type=float, default=None,
+                    help="metres from cam1's OPTICAL CENTRE down to the ground, to enable "
+                         "the BEV row. config/rig/ground_plane.yaml has status: unmeasured "
+                         "and height_m: null, so there is no value to default to - anything "
+                         "passed here is PROVISIONAL and assumes the plane is level")
+    ap.add_argument("--bev-extent", type=float, default=4.0, help="BEV half-extent (m)")
+    ap.add_argument("--bev-ppm", type=float, default=70.0, help="BEV pixels per metre")
     ap.add_argument("--upright", action=argparse.BooleanOptionalAction, default=True,
                     help="display-only: undo the 180 mount roll so the scene reads upright")
     ap.add_argument("--save", nargs="?", const="", default=None)
@@ -157,34 +191,25 @@ def main():
     def v2d(idx, name):
         return rrb.Spatial2DView(origin=f"rig/cam{idx}", name=name)
     labels = [f"{c} {'+' if s > 0 else '-'}45" for c, s in VCAMS]
-    hide3d = [f"- /rig/cam{i}/**" for i in (1, 3, 5, 7)]   # show only the -45 frusta in 3D
+    # Panes are grouped by physical camera, +45 then -45. VCAMS order is cuVSLAM's and is
+    # what the observations' vcam index refers to, so only the display order changes here.
+    order = [VCAMS.index((c, s)) for c in CAMS for s in (+1, -1)]
     # rig/camN is the virtual pinholes' namespace (N = 0..7); the raw cameras must not
     # share it or cam1..cam4 collide with vpin 1..4.
-    hideall = [f"- /rig/cam{i}/**" for i in range(8)]
-    if a.fisheye:
-        # Raw fisheyes on top, the 8 carves cuVSLAM actually consumes below, same features
-        # drawn on both - so the pair can be compared frame by frame.
-        blueprint = rrb.Blueprint(
-            rrb.Vertical(
-                row_shares=[0.30, 0.45, 0.25],
-                contents=[
-                    rrb.Horizontal(contents=[
-                        rrb.Spatial2DView(origin=f"rig/raw_{c}", name=f"{c} raw fisheye")
-                        for c in CAMS]),
-                    rrb.Spatial3DView(name="3D", origin="/", contents=["+ /**"] + hideall),
-                    rrb.Horizontal(contents=[v2d(i, labels[i]) for i in range(8)]),
-                ]),
-            rrb.TimePanel(state="collapsed"))
-    else:
-        blueprint = rrb.Blueprint(
-            rrb.Vertical(
-                row_shares=[0.25, 0.5, 0.25],
-                contents=[
-                    rrb.Horizontal(contents=[v2d(i, labels[i]) for i in range(4)]),
-                    rrb.Spatial3DView(name="3D", origin="/", contents=["+ /**"] + hide3d),
-                    rrb.Horizontal(contents=[v2d(i, labels[i]) for i in range(4, 8)]),
-                ]),
-            rrb.TimePanel(state="collapsed"))
+    hide3d = [f"- /rig/cam{i}/**" for i in range(8)] if a.fisheye else \
+             [f"- /rig/cam{i}/**" for i in (1, 3, 5, 7)]
+    rows = [
+        rrb.Horizontal(contents=[v2d(i, labels[i]) for i in order[:4]]),
+        rrb.Spatial3DView(name="3D", origin="/", contents=["+ /**"] + hide3d),
+        rrb.Horizontal(contents=[v2d(i, labels[i]) for i in order[4:]]),
+    ]
+    shares = [0.25, 0.5, 0.25]
+    if a.bev_height is not None:
+        rows.append(rrb.Horizontal(contents=[rrb.Spatial2DView(
+            origin="bev", name="BEV ground plane (PROVISIONAL height)")]))
+        shares = [0.21, 0.37, 0.21, 0.21]
+    blueprint = rrb.Blueprint(rrb.Vertical(row_shares=shares, contents=rows),
+                              rrb.TimePanel(state="collapsed"))
 
     rr.init("cuvslam_multicam", spawn=a.spawn)
     if a.spawn or a.serve:
@@ -211,6 +236,19 @@ def main():
                           width=W, height=H), static=True)
 
     dome = {}
+    bev = None
+    if a.bev_height is not None:
+        gp = yaml.safe_load(open("config/rig/ground_plane.yaml"))
+        if gp["plane"]["status"] != "measured":
+            print("WARNING: ground_plane.yaml status is '%s' and height_m is %s. The BEV "
+                  "below uses --bev-height %.3f m and assumes the plane is LEVEL. It is "
+                  "PROVISIONAL - scale and flatness are not validated."
+                  % (gp["plane"]["status"], gp["plane"]["height_m"], a.bev_height))
+        R_rig_cam1 = np.array(gp["rig_frame"]["R_rig_cam1"], float)
+        bev = bev_maps(omni, rig, R_rig_cam1, a.bev_height, a.bev_extent, a.bev_ppm)
+        cov = 100.0 * (bev[2] >= 0).mean()
+        print("BEV %dx%d px at %.0f px/m, %.0f%% of the square is covered"
+              % (bev[2].shape[0], bev[2].shape[1], a.bev_ppm, cov))
     if a.fisheye:
         ih, iw = 1088, 1456
         for c in CAMS:
@@ -248,6 +286,18 @@ def main():
         if ob is None and len(obs_ts):
             near = obs_ts[int(np.abs(obs_ts - ts[i]).argmin())]
             ob = obs[near] if abs(near - ts[i]) < 1e-3 else None
+
+        if bev is not None:
+            mx, my, owner = bev
+            plan = np.zeros(owner.shape, np.uint8)
+            for ci, c in enumerate(CAMS):
+                fish = frame_at(c, key)
+                if fish is None:
+                    continue
+                m = owner == ci
+                if m.any():
+                    plan[m] = cv2.remap(fish, mx[c], my[c], cv2.INTER_LINEAR)[m]
+            rr.log("bev/image", rr.Image(plan).compress(jpeg_quality=80))
 
         if a.fisheye:
             for c in CAMS:
