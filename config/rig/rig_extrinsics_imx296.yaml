@@ -14,6 +14,34 @@
 # x < 0 and cam3 (back_left) at x > 0. Verified by scripts/vo/check_rig_poses.py, which
 # asserts exactly these signs against config/rig/rig_layout.yaml.
 #
+# ORIGIN OF EACH TRANSLATION: THE ENTRANCE PUPIL, NOT THE SENSOR. These are optical
+# centres, which for an outward-facing ring sit ~20 mm RADIALLY OUTSIDE the sensor dies.
+# Tape-measuring the rig will therefore under-read every distance in this file, and the
+# gap is large enough to read as a calibration failure. Recorded 2026-09-04 after exactly
+# that scare:
+#   cam1 -> cam4 diagonal, sensor die to sensor die, by tape:   180   mm
+#   cam1 -> cam4 diagonal as solved here (pupil to pupil):      219.0 mm
+#   => pupil 19.5 mm ahead of the die, ordinary for a 1.78 mm D190 M12 barrel.
+# Confirm on a module with calipers (PCB face to front vertex, expect >= 20 mm) rather
+# than by re-measuring across the rig.
+#
+# WHY THAT 22% WAS NOT A SCALE ERROR - and it is worth knowing how this was settled,
+# because a common scale factor is the ONE error class nothing else here catches. Ring
+# closure, the epipolar residuals below, and cuVSLAM's frustum overlap are ALL
+# scale-invariant and pass unchanged if every translation is multiplied by k. Metric
+# scale enters from exactly two places, and both were checked independently:
+#   1. Board size. config/calib/april_6x6.yaml assumes tagSize 0.055; the print measures
+#      55 mm black square / 16.5 mm gap. Confirmed 2026-09-04.
+#   2. Focal length. A monocular intrinsic solve fixes fx in PIXELS from the board's
+#      SHAPE, so fx does not move if the assumed tagSize is wrong - that makes it a check
+#      independent of (1). Mei paraxial scale fx/(1+xi) x 3.45 um pixel pitch gives
+#      1.842 / 1.838 / 1.817 / 1.831 mm for cam1..cam4 against a 1.78 mm vendor spec,
+#      i.e. +2.1 to +3.5%, agreed across four separately-solved cameras.
+# Baseline scale goes as f_px * S_phys, so both factors are pinned to a few percent and
+# a 21.7% inflation has nowhere to come from. Shape is sound too: the adjacent baselines
+# mean 155.6 mm, x sqrt(2) = 220.1 mm, against a measured diagonal mean of 220.0 mm -
+# agreement to 0.1 mm on a quantity four separate recordings never constrained to agree.
+#
 # Do NOT run fold_roll_for_vo.py on this file. That script serves the panorama lineage
 # (rig_extrinsics_calibrated.yaml, kept in the nominal image-up convention). These
 # extrinsics come straight from the frames the capture node publishes and already carry
