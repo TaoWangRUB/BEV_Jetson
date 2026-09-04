@@ -939,8 +939,48 @@ physically moved - the remaining items are not doable from here.
   service run needs `EXPOSURE_US` and `MOTION_SECONDS` set to any value (the `motion`/`modular`
   services interpolate them at parse time even when they are not the target).
 
+- [~] 5.0d **The 5.0c replay inspected visually, 2026-09-04 — see `add-replay-visual-diagnostics`.**
+  5.0c established the pipeline *runs* using scalars (pose count, rate, path length). Those cannot
+  separate a correct trajectory from a wrong one of the same length, so the same log was replayed into
+  `scripts/vo/rerun_multicam.py`: 8 virtual pinholes with their features, the 4 raw fisheyes, the
+  landmark map and the trajectory on one timeline. Four things it established that the scalars hid.
+
+  **(1) One virtual camera is effectively blind in this log.** vcam3 (cam2's +45° carve) yields
+  **~12 features/frame against 2402/frame overall** — the operator's head occludes it. So 5.0c's
+  "tracked continuously" is true but not evenly sourced, and this qualifies 5.4's tracking result.
+  A repeat run must keep the operator out of that carve.
+
+  **(2) The map has large-range outliers.** `obs_20260903_140714` carries 26 759 landmarks of which
+  only **24 234 are within 20 m — the map reaches 310 m in a 14 m indoor log.**
+
+  **(3) Vertical drift is visible, and its cause is structural, not a tuning fault.** This path is
+  pure VO — no IMU, no loop closure — so nothing pins roll and pitch to gravity and forward motion
+  leaks into apparent vertical motion. Measured wander is **±0.4 m** over the walk. `bev_imu` +
+  MPU9250 already exist in the repo and are the structural fix; this is evidence that they are
+  justified, and it is the honest form of 5.2 that a log with no ground truth can support.
+
+  **(4) Not all of the vertical motion was drift — and the operator was right where the fit was
+  wrong.** A floor estimate taken along each pose's **own** up axis (immune to odometry tilt) puts the
+  floor 0.22 m below the camera for t < 6 s and ~1.27 m from t = 7.4 s; the t = 6–9 s segment has
+  **dz = +1.22 m with only 0.30 m of horizontal motion**, which drift cannot produce. That is the rig
+  being lifted onto the head, i.e. real. **A global plane fitted once in the odometry frame reported
+  the height swinging 0.03 → 1.56 m on what was a constant-height walk — it was measuring map drift,
+  not the floor.** Fitting locally, near each pose in that pose's own frame, gives 1.36 m ± 0.20 m.
+
+  **Caveat, unchanged from 5.0c:** this log carries no ground truth, so none of the above closes 5.1
+  or 5.2. It sharpens what to measure when a run with ground truth is made.
+
 - [ ] 5.1 Move the rig a measured straight-line distance; record `/cuvslam/odometry` + `/tf` and compare reported translation against the tape measure (spec: *Translation is recovered at true scale*, 5 %).
+      **Now the highest-value open item in this change.** `add-replay-visual-diagnostics` 3.5 finds the
+      floor **1.36 m** below a head-carried rig, against an expected ~1.60–1.75 m — a suspected
+      **15–20 % scale underestimate**. Scale enters only through the extrinsic translations in
+      `config/rig/rig_extrinsics_imx296.yaml`, so if this confirms, the fix is there and never a
+      correction factor on the odometry. A tape measure settles it for free; do this before building
+      any ToF or T265 comparison.
+
 - [ ] 5.2 Return the rig to its starting pose and check the trajectory returns near the origin; record the drift.
+      Partial evidence in 5.0d(3): ±0.4 m vertical wander, attributed to the absence of a gravity
+      reference. A return-to-origin run is still required for the horizontal figure.
 - [~] 5.3 **Answered offline, pending live confirmation.** cuVSLAM does not take declared stereo pairs: it samples a grid per camera, back-projects to 2 m and 4 m, and connects pairs exceeding 0.5 (`frustum_intersection_graph.cpp:33`). Re-running that on our ring-closed rig gives **0.939 / 0.951 / 0.926 / 0.949** against a 0.961 ceiling, all 8 virtual cameras paired, no spurious edges. The links form with room to spare and the `CUVSLAM_FRUSTUM_THRESHOLD` patch is not needed for the pinholes. Still to confirm on the live pipeline.
 - [~] 5.4 **Rate confirmed on the 4-camera replay, tracking/drift pending live ground truth.** The
   2026-09-03 replay (5.0c) produced **11.18 Hz** odometry from a 20 Hz input — above the old bundled
@@ -955,4 +995,7 @@ physically moved - the remaining items are not doable from here.
 - [ ] 6.1 Tick `bring-up-end-to-end-vo` tasks 3.4/3.6 with the evidence from §5, or state precisely why they remain open.
 - [ ] 6.2 Update `README.md` and `docs/` for the IMX296 rig: population, trigger prerequisite, `jetson-clocks`, new resolution, calibration layout. **Must also carry 3R.16b's outcome:** the odometry child frame is `cam1_optical_frame`, not `base_link`, and what a consumer has to compose to get a vehicle frame.
 - [ ] 6.3 Update the project memory notes with the measured outcome (skew, rate, whether tracking is metric, Δ).
+      Partly done: rig conventions, the row-vector frame trap, the drift/scale findings and the
+      visualisation gotchas are in the repo memory notes and in `add-replay-visual-diagnostics`.
+      "Whether tracking is metric" remains open pending 5.1.
 - [ ] 6.4 Archive this change once §5 has a verdict.

@@ -12,6 +12,17 @@
 
 ## 1. Ground-plane calibration
 
+> **Interim cross-check available, and it is not a substitute.** `add-replay-visual-diagnostics` §3
+> fits the floor from VO landmarks near each pose: **1.36 m below the camera, std 0.20 m**, tilt
+> 0.1–0.7°. A seam-NCC sweep agrees to 7 cm at matched frames — but both derive from the same
+> extrinsic translations, so that is self-consistency, not metres. `ground_plane.yaml` is therefore
+> **left `status: unmeasured`** on purpose. Two findings that change how 1.1–1.5 should be done:
+> a plane fitted **once in the odometry frame is invalid** because map drift makes it measure drift
+> (it reported 0.03–1.56 m on a constant-height walk), and indoors the **largest** consensus plane is
+> a wall, not the floor — take the lowest dense one. There is also a suspected **15–20 % scale
+> underestimate** (1.36 m against an expected ~1.6–1.75 m worn height) that 1.5's tape measure would
+> settle immediately.
+
 - [ ] 1.1 Write `scripts/calib/ground_plane_calib.py`: detect the AprilGrid lying flat on the floor
       in cam1, solve its pose, emit `T_ground_rig` — reusing the detector and solver already in the
       calibration path, not a second implementation.
@@ -35,8 +46,14 @@
       across cameras so the sum is 1 wherever any camera sees.
 - [ ] 2.5 Emit the combined validity mask, leaving the under-rig blind cone unpainted. Assert no cell
       is painted from zero cameras.
-- [ ] 2.6 Offline check before any node exists: render one recorded synchronised set through the maps
-      in Python and eyeball the mosaic. A wrong sign or a swapped camera is obvious here and subtle later.
+- [~] 2.6 **Done in `add-replay-visual-diagnostics` §2 — the prototype exists and found two defects.**
+      `bev_maps()` in `scripts/vo/rerun_multicam.py` renders recorded synchronised sets through exactly
+      this path (cell → plane point in rig FLU → `T_cam_rig` → Mei → source pixel, with overlap weights),
+      per frame rather than once. It did what this task predicts it would: an inverted row-vector frame
+      transform and a stale-image bug were both obvious in the picture and would have been subtle in CUDA.
+      Seams land on the ±45°/±135° bisectors, which is the free check that 0.2's "wrong file rotates the
+      entire mosaic" needs. **Still open**: diffing the Python reference against the CUDA implementation
+      cell for cell, which cannot happen until §3 exists.
 
 ## 3. The node
 
@@ -56,10 +73,16 @@
 
 - [ ] 4.1 Scale check: a known length on the ground measures correctly in the output at ~1 m and
       again at ~3 m. Two ranges, because a plane-tilt error is invisible at one.
+      **Nothing has validated scale yet**, and `add-replay-visual-diagnostics` 3.5 suspects a 15–20 %
+      underestimate. Scale enters only through the extrinsic translations, so on failure the fix is
+      `rig_extrinsics_imx296.yaml` — never a correction factor on the output.
 - [ ] 4.2 Parallax residual: measure how far the same ground feature lands from itself between two
       cameras, **reported per seam**, not averaged. This is the number the change is judged by.
 - [ ] 4.3 Characterise above-plane smearing: a vertical object of known height, and how far its top
       is displaced. Record it; do not claim it away.
+      **The Python prototype can measure this now** (`add-replay-visual-diagnostics` 2.7) and no such
+      number exists yet. Related evidence from the panorama prototype: with 0.15–0.22 m baselines and
+      a scene at 2–4 m, mis-assumed depth ghosts *visibly*, and no single surface removes it.
 - [ ] 4.4 Startup refusal: a mismatched rig fingerprint, or a ground plane recorded against a
       different fingerprint, must exit with a message naming the mismatch — not produce a mosaic.
 - [ ] 4.5 Timing on the TX2 with capture running: sustained stitch rate at the 15 Hz capture rate,
@@ -69,6 +92,11 @@
 
 - [ ] 5.1 Quantify the brightness step at each seam with no compensation, so a photometric defect is
       never later mistaken for a geometric one.
+      **Confirmed present and already a hazard.** In `add-replay-visual-diagnostics` §4 the per-camera
+      brightness difference measured ~**40 grey levels** in overlap regions — large enough that it
+      swamped a geometric alignment metric and made that metric select the wrong stitch geometry.
+      That is this task's rationale demonstrated. The 40 is an aggregate; this task still needs the
+      **per-seam** number, and any alignment metric used here must be gain-invariant (edge NCC).
 - [ ] 5.2 Estimate a per-camera gain on the overlap regions and apply it before blending.
 - [ ] 5.3 Re-measure 5.1 and 4.2 after compensation — gain must not have moved the geometry.
 
