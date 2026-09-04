@@ -80,13 +80,19 @@ def fisheye_dome(o, img_w, img_h, radius, n_th=48, n_ph=144, th_max=93.0):
     return (d * radius).astype(np.float32), tris.astype(np.uint32), uv
 
 
-def bev_maps(omni, rig, R_rig_cam1, height, extent, ppm, normal=None, iw=1456, ih=1088):
+def bev_maps(omni, rig, R_rig_cam1, height, extent, ppm, normal=None, max_incidence=75.0,
+             iw=1456, ih=1088):
     """Ground-plane remap tables, one per camera, plus the per-pixel owner.
 
     `height` is the drop from cam1's optical centre to the plane along `normal` (rig FLU,
     default level). The grid stays ego-centric: rig-forward projected onto the plane.
     Ownership is the camera whose optical axis is closest to the pixel's ray, which puts
-    the seams on the bisectors between neighbouring cameras."""
+    the seams on the bisectors between neighbouring cameras.
+
+    A ground point at planar radius r is seen at incidence arctan(r/h), so its ground
+    sample distance blows up as the rig nears the plane. Past `max_incidence` the pixels
+    are dropped: that is what stops a low pass smearing a few source pixels across the
+    whole square, and it shrinks the BEV to nothing as h -> 0, which is the truth."""
     n = int(2 * extent * ppm)
     nrm = np.array([0.0, 0.0, 1.0]) if normal is None else np.asarray(normal, float)
     nrm = nrm / np.linalg.norm(nrm)
@@ -98,13 +104,15 @@ def bev_maps(omni, rig, R_rig_cam1, height, extent, ppm, normal=None, iw=1456, i
     X, Y = np.meshgrid(fwd, left, indexing="ij")
     P = (-height * nrm + X[..., None] * e1 + Y[..., None] * e2).reshape(-1, 3)
     P_cam1 = P @ R_rig_cam1                        # v_cam1 = R_rig_cam1^T @ v_rig
+    r_max = height * np.tan(np.radians(max_incidence))
+    resolvable = (np.hypot(X, Y) <= r_max).reshape(-1)
     mx, my, cosang = {}, {}, []
     for c in CAMS:
         R_c, t_c = np.array(rig[c])[:3, :3], np.array(rig[c])[:3, 3]
         v = (P_cam1 - t_c) @ R_c
         rng = np.linalg.norm(v, axis=1)
         u, w = project_omni(omni[c], v[:, 0], v[:, 1], v[:, 2])
-        ok = (v[:, 2] > 0) & (u >= 0) & (u < iw) & (w >= 0) & (w < ih)
+        ok = resolvable & (v[:, 2] > 0) & (u >= 0) & (u < iw) & (w >= 0) & (w < ih)
         mx[c] = np.where(ok, u, -1).reshape(n, n).astype(np.float32)
         my[c] = np.where(ok, w, -1).reshape(n, n).astype(np.float32)
         cosang.append(np.where(ok, v[:, 2] / rng, -2.0).reshape(n, n))
@@ -195,6 +203,10 @@ def main():
                          "picked up. Overrides --bev-height")
     ap.add_argument("--bev-extent", type=float, default=4.0, help="BEV half-extent (m)")
     ap.add_argument("--bev-ppm", type=float, default=70.0, help="BEV pixels per metre")
+    ap.add_argument("--bev-max-incidence", type=float, default=75.0,
+                    help="drop BEV pixels seen at a grazing angle beyond this (deg from "
+                         "the plane normal). Caps the usable radius at h*tan(this), which "
+                         "is what keeps a low pass from smearing")
     ap.add_argument("--upright", action=argparse.BooleanOptionalAction, default=True,
                     help="display-only: undo the 180 mount roll so the scene reads upright")
     ap.add_argument("--save", nargs="?", const="", default=None)
@@ -249,6 +261,7 @@ def main():
     # ---- Ground plane. Either fixed in the rig frame at a hand-supplied height, or fitted
     # once in the odom frame and re-expressed in the rig frame at every pose.
     bev_on = a.bev_height is not None or a.bev_fit_plane
+    bev_n = int(2 * a.bev_extent * a.bev_ppm)
     R_rig_cam1 = plane = bev_static = None
     if bev_on:
         gp = yaml.safe_load(open("config/rig/ground_plane.yaml"))
@@ -272,7 +285,8 @@ def main():
                       "and the height CONSTANT. It is PROVISIONAL - scale and flatness "
                       "are not validated. --bev-fit-plane drops both assumptions."
                       % (gp["plane"]["status"], gp["plane"]["height_m"], a.bev_height))
-            bev_static = bev_maps(omni, rig, R_rig_cam1, a.bev_height, a.bev_extent, a.bev_ppm)
+            bev_static = bev_maps(omni, rig, R_rig_cam1, a.bev_height, a.bev_extent,
+                                  a.bev_ppm, max_incidence=a.bev_max_incidence)
             print("BEV %dx%d px at %.0f px/m, %.0f%% of the square is covered"
                   % (bev_static[2].shape[0], bev_static[2].shape[1], a.bev_ppm,
                      100.0 * (bev_static[2] >= 0).mean()))
@@ -374,19 +388,18 @@ def main():
                 h = float((np.asarray(t_wr) - c_w) @ n_w)
                 n_rig = R_rig_cam1 @ (R_wr.T @ n_w)
                 heights.append(h)
-                # Below ~5 cm the ground fills the whole grid and the remap degenerates.
                 pkey = (round(h, 2), tuple(np.round(n_rig, 3)))
-                if h < 0.05:
-                    tables = None
+                if h <= 0.02:
+                    tables = None            # rig is on or below the plane: nothing to see
                 elif pkey in bev_cache:
                     tables = bev_cache[pkey]
                 else:
                     tables = bev_maps(omni, rig, R_rig_cam1, h, a.bev_extent, a.bev_ppm,
-                                      normal=n_rig)
+                                      normal=n_rig, max_incidence=a.bev_max_incidence)
                     bev_cache[pkey] = tables
+            plan = np.zeros((bev_n, bev_n), np.uint8)
             if tables is not None:
                 mx, my, owner = tables
-                plan = np.zeros(owner.shape, np.uint8)
                 for ci, c in enumerate(CAMS):
                     fish = frame_at(c, key)
                     if fish is None:
@@ -394,11 +407,14 @@ def main():
                     m = owner == ci
                     if m.any():
                         plan[m] = cv2.remap(fish, mx[c], my[c], cv2.INTER_LINEAR)[m]
-                rr.log("bev/image", rr.Image(plan).compress(jpeg_quality=80))
-                if plane is not None:
-                    rr.log("bev/height", rr.TextLog(
-                        "h = %.2f m, tilt %.1f deg"
-                        % (h, np.degrees(np.arccos(min(1.0, abs(n_rig[2])))))))
+            # Logged unconditionally - skipping would leave the previous frame on screen,
+            # which reads as a frozen BEV rather than an absent one.
+            rr.log("bev/image", rr.Image(plan).compress(jpeg_quality=80))
+            if plane is not None:
+                rr.log("bev/height", rr.TextLog(
+                    "h = %.2f m, tilt %.1f deg, usable radius %.2f m"
+                    % (h, np.degrees(np.arccos(min(1.0, abs(n_rig[2])))),
+                       max(0.0, h) * np.tan(np.radians(a.bev_max_incidence)))))
 
         if a.fisheye:
             for c in CAMS:
