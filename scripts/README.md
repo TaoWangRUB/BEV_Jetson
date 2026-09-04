@@ -19,11 +19,11 @@ Index of the helper scripts in this folder. "Runs on" = **TX2** (the board, usua
 |---|---|---|
 | [calib/online_calib.py](calib/online_calib.py) | dev/TX2 | online interactive fisheye (Kannala-Brandt) **intrinsic** calibration |
 | [calib/offline_calib.py](calib/offline_calib.py) | dev | offline outlier-rejection fisheye **intrinsic** calibration |
-| [calib/scale_calib.py](calib/scale_calib.py) | dev | scale KB `camN.yaml` intrinsics to a downscaled output resolution |
+| [calib/scale_calib.py](calib/scale_calib.py) | dev | **retired (IMX219/KB)** — exits; scaled KB `camN.yaml` to a downscaled output resolution |
 | [calib/grid_view_tx2.sh](calib/grid_view_tx2.sh) | TX2 | live 2×3 IMX219 grid on the TX2 HDMI display (identify/label cameras) |
 | [calib/capture_calib_sets.sh](calib/capture_calib_sets.sh) | TX2 | grab N raw 4-cam sets for **extrinsic** calibration (pan the rig) |
-| [calib/extrinsic_calib.py](calib/extrinsic_calib.py) | dev | feature-based relative-rotation **extrinsic** calibration (joint solve + before/after render) |
-| [calib/pano_tuner.py](calib/pano_tuner.py) | dev | interactive panorama extrinsics tuner (web UI; manual rot/trans) |
+| [calib/extrinsic_calib.py](calib/extrinsic_calib.py) | dev | **retired (IMX219/KB)** — exits; feature-based relative-rotation **extrinsic** calibration. Port via `mei_project()` in `bev_panorama_node.cpp` |
+| [calib/pano_tuner.py](calib/pano_tuner.py) | dev | **retired (IMX219/KB)** — exits; interactive panorama extrinsics tuner (web UI) |
 
 | [calib/calibration_pipeline.ipynb](calib/calibration_pipeline.ipynb) | dev | **the end-to-end runbook** — every command actually used, each failure and why. Start here before any calibration work |
 | [calib/record_calib_session.sh](calib/record_calib_session.sh) | TX2 | record one staged ROS session (preflight refuses a rig with the trigger off); **the only path with capture timestamps**, so the camera↔IMU stage must use it |
@@ -36,7 +36,7 @@ Index of the helper scripts in this folder. "Runs on" = **TX2** (the board, usua
 | [calib/vstereo_epipolar.py](calib/vstereo_epipolar.py) | dev | measure a virtual pair's epipolar residual by tag identity (ORB is worthless on a repetitive grid) |
 | [calib/vstereo_disparity.py](calib/vstereo_disparity.py) | dev | dense disparity on a virtual pair — *not* evidence on a calibration sweep; needs a textured scene at 1–3 m |
 | [calib/regen_vstereo.sh](calib/regen_vstereo.sh) | dev | regenerate all four virtual pairs on a closed rig and report measured vs closed |
-| [calib/fold_roll_for_vo.py](calib/fold_roll_for_vo.py) | dev | fold the 180° mounting roll into the VO extrinsics instead of hiding it downstream |
+| [calib/fold_roll_for_vo.py](calib/fold_roll_for_vo.py) | dev | **retired (IMX219/KB)** — exits; folded the 180° mounting roll into the VO extrinsics. The IMX296 calibration is solved on raw inverted frames, so no fold is needed |
 | [calib/rig_design.py](calib/rig_design.py) | dev | rig geometry helper |
 | [calib/cuvslam_frustum_check.py](calib/cuvslam_frustum_check.py) | dev | re-run cuVSLAM's own frustum-overlap test on our poses (its 0.5 threshold is hard-coded) |
 

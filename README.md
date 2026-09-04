@@ -123,8 +123,11 @@ runs with `docker stop`, not `docker rm -f` — a SIGKILL leaks the Argus sessio
 Procedure and how to read the results: **[docs/extrinsic_calibration.md](docs/extrinsic_calibration.md)**.
 The end-to-end capture→solve walkthrough is
 [scripts/calib/calibration_pipeline.ipynb](scripts/calib/calibration_pipeline.ipynb).
-`scripts/calib/pano_tuner.py` is an interactive host-side tuner (sliders for per-camera yaw/pitch/roll,
-translation and scene depth, with live re-render).
+
+`extrinsic_calib.py`, `pano_tuner.py`, `scale_calib.py` and `fold_roll_for_vo.py` are IMX219-lineage
+(equidistant intrinsics, `board_center` rig format) and now exit on startup — their inputs no longer
+exist. Porting them means teaching them the Mei projection; `mei_project()` in
+[bev_panorama_node.cpp](ros2/bev_cuvslam/src/bev_panorama_node.cpp) is the reference.
 
 ## 5. Repo layout
 

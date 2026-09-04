@@ -197,8 +197,9 @@ Beating ~22 Hz needs the 720p mode (44 fps) which **crops the fisheye FOV** (hur
 surround overlap) and costs more CPU. Per-call `Track` rises with the *processing rate*
 (more frames/s → cuVSLAM async-SBA overlaps across frames → GPU contention), not just pixels.
 See the [fused-zerocopy OpenSpec change](../openspec/changes/archive/2026-06-25-fused-zerocopy-argus-cuvslam/tasks.md)
-for the full data. Calibration per output resolution lives in `scripts/config/<WxH>/`
-(scale with [`scripts/calib/scale_calib.py`](../scripts/calib/scale_calib.py)).
+for the full data. Calibration per output resolution lived in `scripts/config/<WxH>/` for the IMX219
+rig; that set is deleted and `scripts/calib/scale_calib.py` now exits. IMX296 intrinsics are
+resolution-specific and live in `config/calib/imx296_1456x1088/`.
 
 ---
 
