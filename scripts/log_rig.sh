@@ -55,17 +55,36 @@ TRIGGER_FPS=$(( FPS_MILLI / 1000 ))
 STAMP=$(date +%Y%m%d_%H%M%S)
 DIR="imglog_${LABEL}_${STAMP}"
 IMU_NAME="bev_imulog_${STAMP}"
+RANGE_NAME="bev_rangelog_${STAMP}"
 
 echo "preflight OK  trigger_mode=1  active_low  ${TRIGGER_FPS} fps  exposure_us=${EXPOSURE_US}"
-echo "output ${HOST_LOGS}/${DIR}  (camN.raw + camN.csv + imu0.csv)"
+echo "output ${HOST_LOGS}/${DIR}  (camN.raw + camN.csv + imu0.csv + range0.csv)"
 mkdir -p "${HOST_LOGS}/${DIR}"
 
 # The IMU container is started detached and stopped by NAME. `docker stop` sends the
 # compose stop_signal (SIGINT), which is what makes imu_node close its CSV - a killed node
 # leaves the last line truncated, which a parser reports as corruption.
-cleanup() { docker stop -t 20 "$IMU_NAME" >/dev/null 2>&1 || true
-            docker rm -f "$IMU_NAME"      >/dev/null 2>&1 || true; }
+cleanup() { docker stop -t 20 "$RANGE_NAME" >/dev/null 2>&1 || true
+            docker rm -f "$RANGE_NAME"      >/dev/null 2>&1 || true
+            docker stop -t 20 "$IMU_NAME"   >/dev/null 2>&1 || true
+            docker rm -f "$IMU_NAME"        >/dev/null 2>&1 || true; }
 trap cleanup EXIT
+
+# THE RANGEFINDER IS OPTIONAL AND MUST NEVER FAIL THE RUN, so this does not gate on it the
+# way the IMU does below. It also has to start HERE and not earlier: it takes sole ownership
+# of /dev/ttyTHS1, which the preflight above was still using for the generator status. From
+# this point until cleanup nothing else may open that port - the range stream and the
+# trigger console share it, and two readers steal each other's bytes.
+echo "starting the range logger (sole owner of $TRIG_PORT from here)"
+RANGE_CSV="/logs/${DIR}/range0.csv" TRIG_PORT="$TRIG_PORT" RANGE_DIV="${RANGE_DIV:-15}" \
+  docker compose run -d --name "$RANGE_NAME" rangelog >/dev/null 2>&1 || true
+sleep 3
+if docker ps --format '{{.Names}}' | grep -qx "$RANGE_NAME"; then
+  echo "range logger up (1 reading / ${RANGE_DIV:-15} pulses)"
+else
+  echo "NOTE: the range logger did not start - recording without range." >&2
+  docker logs "$RANGE_NAME" 2>&1 | tail -5 >&2 || true
+fi
 
 echo "starting the IMU first, so it brackets the cameras"
 EXPOSURE_US="$EXPOSURE_US" IMU_CSV="/logs/${DIR}/imu0.csv" IMU_RATE="${IMU_RATE:-200}" \
@@ -83,7 +102,7 @@ EXPOSURE_US="$EXPOSURE_US" TRIGGER_FPS="$TRIGGER_FPS" \
   MOTION_SECONDS="$SECS" \
   docker compose run --rm -T logonly
 
-echo "cameras done - stopping the IMU last"
+echo "cameras done - stopping the IMU and range logger last"
 cleanup
 trap - EXIT
 
@@ -94,4 +113,17 @@ if [ -s "${HOST_LOGS}/${DIR}/imu0.csv" ]; then
   echo "imu0.csv: $(grep -vc '^#' "${HOST_LOGS}/${DIR}/imu0.csv") samples"
 else
   echo "WARNING: imu0.csv is empty - the IMU produced nothing this run." >&2
+fi
+# A range channel that produced nothing is a NOTE, not a WARNING: it is the one OPTIONAL
+# stream here and the recording is complete without it. Join it to the frames on
+# `pulses` <-> `seq`, never on the timestamp - see the header inside the file.
+if [ -f "${HOST_LOGS}/${DIR}/range0.csv" ]; then
+  nrange=$(grep -vc '^#' "${HOST_LOGS}/${DIR}/range0.csv" 2>/dev/null || echo 0)
+  if [ "${nrange:-0}" -gt 0 ]; then
+    echo "range0.csv: ${nrange} readings"
+  else
+    echo "NOTE: range0.csv has no readings - rangefinder absent this run."
+  fi
+else
+  echo "NOTE: no range0.csv - the range logger did not run."
 fi

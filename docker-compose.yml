@@ -55,7 +55,7 @@ services:
 
   build-ws:
     <<: *bev
-    command: bash -lc "colcon build --packages-select bev_camera bev_cuvslam bev_imu --cmake-args -DCMAKE_BUILD_TYPE=Release"
+    command: bash -lc "colcon build --packages-select bev_camera bev_cuvslam bev_imu bev_range --cmake-args -DCMAKE_BUILD_TYPE=Release"
 
   # Recommended runtime: fused zero-copy Argus -> cuVSLAM (params in bev_cuvslam/config/fused_vo_params.yaml)
   fused:
@@ -289,6 +289,31 @@ services:
         ros2 run bev_imu imu_node --ros-args \
           -p csv:=${IMU_CSV:-/logs/imu0.csv} \
           -p rate:="$$RATE"
+
+  # Garmin LIDAR-Lite -> range0.csv, alongside imu0.csv. Mirrors `imulog`.
+  #
+  # NEEDS SOLE OWNERSHIP OF /dev/ttyTHS1 for the whole run. That port is the camtrig
+  # console as well as the range stream - it is full duplex and carries both - so nothing
+  # else may open it while this is up, or the two readers steal each other's bytes.
+  # log_rig.sh therefore finishes its trigger preflight BEFORE starting this.
+  #
+  # root + privileged for /dev/ttyTHS1 (crw-rw---- root:dialout); /dev is already bound by
+  # the shared anchor. NOT a device passthrough list, because the port name is a parameter.
+  rangelog:
+    <<: *bev
+    user: root
+    privileged: true
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+    command:
+      - bash
+      - -lc
+      - |
+        ros2 run bev_range range_node --ros-args \
+          -p csv:=${RANGE_CSV:-/logs/range0.csv} \
+          -p port:=${TRIG_PORT:-/dev/ttyTHS1} \
+          -p divisor:=${RANGE_DIV:-15}
 
   # MPU-9250 IMU -> /imu0, stamped at the data-ready edge on CLOCK_MONOTONIC (README 4.7).
   # Needs root for /dev/spidev1.0 + /dev/gpiochip* and for SCHED_FIFO.
