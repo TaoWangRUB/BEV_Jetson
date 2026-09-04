@@ -104,8 +104,10 @@
 - [x] 4.3 **Finite-radius sphere to compensate the baselines.** Measured baselines are
   **0.153 / 0.155 / 0.219 / 0.221 / 0.153 / 0.161 m** and the scene is 2–4 m away, so rotation-only
   stitching ghosted visibly. Rays are cast as `v = (depth·d_cam1 − t_c) @ R_c` (construction borrowed
-  from `scripts/calib/pano_tuner.py`). Default stays **infinity** to match the deployed node;
-  `--pano-depth` opts in.
+  from `scripts/calib/pano_tuner.py`). A later `auto` mode tracks the landmark cloud per frame at a
+  low percentile (p25 — ghost displacement goes as baseline/depth, so erring near costs far less than
+  erring far); measured 2.01–3.87 m, median 2.45 m over the walk.
+  **Real but second-order** — see the correction in 4.5. This helps; the blend geometry mattered more.
 
 - [x] 4.4 **Radius selected by measurement — after two metrics gave confidently wrong answers.**
   See design Decision 5. (1) Mean |diff| between overlapping cameras ranked **infinity best** because
@@ -115,8 +117,41 @@
   90° pairs peaks cleanly at **3.0 m: NCC 0.058, all four pairs positive (0.082/0.043/0.046/0.061),
   against −0.007 at infinity.** Confirmed visually against `/tmp/pano_compare.png`.
 
-- [x] 4.5 **Residual ghosting recorded as method-inherent, not tuned away.** One sphere radius cannot
-  fit a scene spanning many depths; absolute NCC stays low (~0.06).
+- [x] 4.5 **CORRECTION — most of the ghosting was the blend geometry, not the method.** This task
+  previously read "residual ghosting recorded as method-inherent, not tuned away". That was wrong,
+  and the sphere-radius work in 4.3/4.4 was treating a symptom.
+
+  **Root cause.** Weights feathered on absolute angle from each optical axis,
+  `w = clip((fov_half − th)/feather, 0, 1)`, which is 1.0 for all `th < 65°`. Adjacent cameras are
+  **90° apart**, so at the bisector both sit 45° off axis and **both get weight exactly 1.0**. The
+  output was a literal 50/50 double exposure over a ~60° band at each of the four seams.
+  **Measured: 65 % of the horizon, 39 % of the whole canvas.** No sphere radius can fix this — the
+  radius only makes two views agree at *its* radius, and everything nearer or further doubles at
+  full strength across that band.
+
+  **Fix** (commit `22144d5`): rank cameras by angular distance and cross-fade only over
+  `--pano-seam` (8°) where two are nearly equidistant, so each pixel comes from the camera looking
+  most directly at it. Ranking against the best **valid** camera keeps weight 1.0 where only one
+  camera sees, so coverage stays 100 % with no normalisation dip.
+
+  **Detail retained in the overlap region: 0.87 → 1.85** relative to a single camera; equal-blend
+  area 39 % → 4 %. Above 1.0 because nearest-axis also selects the *sharper* view — a ray far off
+  axis lands in the fisheye's compressed periphery. **For scale, the per-frame auto radius alone
+  moved the same number 0.87 → 0.96.** The blend geometry was worth roughly ten times the radius.
+
+  What remains genuinely method-inherent is much smaller: a narrow mis-registered band at each seam
+  for scene off the sphere radius, plus the photometric step (4.6).
+
+- [x] 4.8 **The deployed `bev_panorama_node` has the same defect.** `bev_panorama_node.cpp:295`
+  computes `fw = (fov_max - th)/feather` — the identical construction. With its shipped parameters
+  (`fisheye_fov_half_deg: 80`, `feather_deg: 20`) weight is 1.0 for `th < 60°`, giving a **30°-wide
+  50/50 band at each seam, ~33 % of the horizon**. Milder than the viewer's was, same mechanism.
+  This matters now because the node has just been ported to Mei/IMX296 (`18319fb`), so it will ghost
+  on the TX2 for the same reason. **Not fixed here** — the node is another change's surface.
+
+- [ ] 4.9 Port the nearest-axis seam into `bev_panorama_node`. It is a change to the host-side table
+  build only (the CUDA kernel already just weight-blends precomputed maps), so the kernel is untouched.
+  Needs a second pass over the cameras to rank them, which the current single-pass loop does not do.
 
 - [ ] 4.6 **Quantify the per-camera brightness step at each seam** — feeds `add-bev-ground-stitch` 5.1,
   which wants exactly this number so "a photometric defect is never later mistaken for a geometric one".
