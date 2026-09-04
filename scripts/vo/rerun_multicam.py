@@ -80,17 +80,23 @@ def fisheye_dome(o, img_w, img_h, radius, n_th=48, n_ph=144, th_max=93.0):
     return (d * radius).astype(np.float32), tris.astype(np.uint32), uv
 
 
-def bev_maps(omni, rig, R_rig_cam1, height, extent, ppm, iw=1456, ih=1088):
+def bev_maps(omni, rig, R_rig_cam1, height, extent, ppm, normal=None, iw=1456, ih=1088):
     """Ground-plane remap tables, one per camera, plus the per-pixel owner.
 
-    The plane is fixed in the rig frame, so this is computed once and reused every frame.
+    `height` is the drop from cam1's optical centre to the plane along `normal` (rig FLU,
+    default level). The grid stays ego-centric: rig-forward projected onto the plane.
     Ownership is the camera whose optical axis is closest to the pixel's ray, which puts
     the seams on the bisectors between neighbouring cameras."""
     n = int(2 * extent * ppm)
+    nrm = np.array([0.0, 0.0, 1.0]) if normal is None else np.asarray(normal, float)
+    nrm = nrm / np.linalg.norm(nrm)
+    e1 = np.array([1.0, 0.0, 0.0]) - nrm * nrm[0]  # forward, projected onto the plane
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(nrm, e1)                         # left
     fwd = np.linspace(extent, -extent, n)          # image row 0 = forward
     left = np.linspace(extent, -extent, n)         # image col 0 = left
     X, Y = np.meshgrid(fwd, left, indexing="ij")
-    P = np.stack([X, Y, np.full_like(X, -height)], -1).reshape(-1, 3)
+    P = (-height * nrm + X[..., None] * e1 + Y[..., None] * e2).reshape(-1, 3)
     P_cam1 = P @ R_rig_cam1                        # v_cam1 = R_rig_cam1^T @ v_rig
     mx, my, cosang = {}, {}, []
     for c in CAMS:
@@ -105,6 +111,53 @@ def bev_maps(omni, rig, R_rig_cam1, height, extent, ppm, iw=1456, ih=1088):
     stack = np.stack(cosang)
     owner = np.where(stack.max(0) > -2.0, stack.argmax(0), -1)
     return mx, my, owner
+
+
+def fit_ground_plane(lm, traj, R_rig_cam1, radius=6.0, tol=0.05, min_nz=0.99,
+                     iters=8000, seed=0):
+    """RANSAC the floor out of the landmark cloud. Returns (normal, point) in the odom
+    frame, plus a fit report, or None.
+
+    Priors, all applied in rig FLU: near-horizontal, near the trajectory, and below
+    essentially every pose. The last one is what stops it locking onto a ceiling or a
+    table top, and it replaces the fragile 'below the start pose' rule - the rig can
+    start sitting on the floor. min_nz is the one that bites: at 0.95 the winning plane
+    is an implausible 11.8 deg plank that also disagrees with the seam-parallax height."""
+    L = np.asarray(lm, float) @ R_rig_cam1.T       # v_rig = R @ v_cam1, so rows use R.T
+    T = np.asarray(traj, float) @ R_rig_cam1.T
+    L = L[np.linalg.norm(L[:, :2] - T[:, :2].mean(0), axis=1) < radius]
+    if len(L) < 100:
+        return None
+    rng = np.random.default_rng(seed)
+    best = None
+    for _ in range(iters):
+        s = L[rng.choice(len(L), 3, replace=False)]
+        nv = np.cross(s[1] - s[0], s[2] - s[0])
+        nn = np.linalg.norm(nv)
+        if nn < 1e-9:
+            continue
+        nv = nv / nn
+        if nv[2] < 0:
+            nv = -nv
+        if nv[2] < min_nz:
+            continue
+        d = nv @ s[0]
+        if np.percentile(T @ nv - d, 2) < -0.05:
+            continue
+        k = int((np.abs(L @ nv - d) < tol).sum())
+        if best is None or k > best[0]:
+            best = (k, nv, d)
+    if best is None:
+        return None
+    inl = np.abs(L @ best[1] - best[2]) < tol
+    pts = L[inl]
+    c = pts.mean(0)
+    nv = np.linalg.svd(pts - c)[2][2]
+    nv = nv if nv[2] > 0 else -nv
+    rep = dict(inliers=int(inl.sum()), total=int(len(L)),
+               tilt_deg=float(np.degrees(np.arccos(min(1.0, abs(nv[2]))))),
+               rms=float(np.sqrt((((pts - c) @ nv) ** 2).mean())))
+    return nv @ R_rig_cam1, c @ R_rig_cam1, rep    # back to odom (= cam1 optical)
 
 
 def main():
@@ -134,6 +187,12 @@ def main():
                          "the BEV row. config/rig/ground_plane.yaml has status: unmeasured "
                          "and height_m: null, so there is no value to default to - anything "
                          "passed here is PROVISIONAL and assumes the plane is level")
+    ap.add_argument("--bev-fit-plane", action="store_true",
+                    help="fit the ground plane from the landmark cloud and carry it "
+                         "through the VO pose, so height and tilt are re-derived every "
+                         "frame. This is the correct model whenever the rig's height is "
+                         "not constant - a drone, or in practice any log where it gets "
+                         "picked up. Overrides --bev-height")
     ap.add_argument("--bev-extent", type=float, default=4.0, help="BEV half-extent (m)")
     ap.add_argument("--bev-ppm", type=float, default=70.0, help="BEV pixels per metre")
     ap.add_argument("--upright", action=argparse.BooleanOptionalAction, default=True,
@@ -187,6 +246,37 @@ def main():
         k = int(np.abs(cam_ts[c] - t).argmin())
         return cam_im[c][k] if abs(cam_ts[c][k] - t) <= tol else None
 
+    # ---- Ground plane. Either fixed in the rig frame at a hand-supplied height, or fitted
+    # once in the odom frame and re-expressed in the rig frame at every pose.
+    bev_on = a.bev_height is not None or a.bev_fit_plane
+    R_rig_cam1 = plane = bev_static = None
+    if bev_on:
+        gp = yaml.safe_load(open("config/rig/ground_plane.yaml"))
+        R_rig_cam1 = np.array(gp["rig_frame"]["R_rig_cam1"], float)
+        if a.bev_fit_plane:
+            fit = fit_ground_plane(lm, np.asarray(P), R_rig_cam1)
+            if fit is None:
+                sys.exit("--bev-fit-plane: not enough landmarks near the trajectory to fit")
+            n_w, c_w, rep = fit
+            h_all = (np.asarray(P) - c_w) @ n_w
+            print("ground plane fitted from landmarks: %d/%d inliers, tilt %.2f deg, "
+                  "RMS %.3f m" % (rep["inliers"], rep["total"], rep["tilt_deg"], rep["rms"]))
+            print("rig height above it: %.2f .. %.2f m (median %.2f) - a single "
+                  "--bev-height cannot cover that"
+                  % (h_all.min(), h_all.max(), np.median(h_all)))
+            plane = (n_w, c_w)
+        else:
+            if gp["plane"]["status"] != "measured":
+                print("WARNING: ground_plane.yaml status is '%s' and height_m is %s. The "
+                      "BEV below uses --bev-height %.3f m and assumes the plane is LEVEL "
+                      "and the height CONSTANT. It is PROVISIONAL - scale and flatness "
+                      "are not validated. --bev-fit-plane drops both assumptions."
+                      % (gp["plane"]["status"], gp["plane"]["height_m"], a.bev_height))
+            bev_static = bev_maps(omni, rig, R_rig_cam1, a.bev_height, a.bev_extent, a.bev_ppm)
+            print("BEV %dx%d px at %.0f px/m, %.0f%% of the square is covered"
+                  % (bev_static[2].shape[0], bev_static[2].shape[1], a.bev_ppm,
+                     100.0 * (bev_static[2] >= 0).mean()))
+
     # ---- Rerun blueprint: 8 image panes above/below a central 3D view (as in the example).
     def v2d(idx, name):
         return rrb.Spatial2DView(origin=f"rig/cam{idx}", name=name)
@@ -204,9 +294,11 @@ def main():
         rrb.Horizontal(contents=[v2d(i, labels[i]) for i in order[4:]]),
     ]
     shares = [0.25, 0.5, 0.25]
-    if a.bev_height is not None:
+    if bev_on:
         rows.append(rrb.Horizontal(contents=[rrb.Spatial2DView(
-            origin="bev", name="BEV ground plane (PROVISIONAL height)")]))
+            origin="bev", name="BEV ground plane (%s)"
+                                % ("fitted, per-frame h and tilt" if plane is not None
+                                   else "PROVISIONAL height"))]))
         shares = [0.21, 0.37, 0.21, 0.21]
     blueprint = rrb.Blueprint(rrb.Vertical(row_shares=shares, contents=rows),
                               rrb.TimePanel(state="collapsed"))
@@ -236,19 +328,6 @@ def main():
                           width=W, height=H), static=True)
 
     dome = {}
-    bev = None
-    if a.bev_height is not None:
-        gp = yaml.safe_load(open("config/rig/ground_plane.yaml"))
-        if gp["plane"]["status"] != "measured":
-            print("WARNING: ground_plane.yaml status is '%s' and height_m is %s. The BEV "
-                  "below uses --bev-height %.3f m and assumes the plane is LEVEL. It is "
-                  "PROVISIONAL - scale and flatness are not validated."
-                  % (gp["plane"]["status"], gp["plane"]["height_m"], a.bev_height))
-        R_rig_cam1 = np.array(gp["rig_frame"]["R_rig_cam1"], float)
-        bev = bev_maps(omni, rig, R_rig_cam1, a.bev_height, a.bev_extent, a.bev_ppm)
-        cov = 100.0 * (bev[2] >= 0).mean()
-        print("BEV %dx%d px at %.0f px/m, %.0f%% of the square is covered"
-              % (bev[2].shape[0], bev[2].shape[1], a.bev_ppm, cov))
     if a.fisheye:
         ih, iw = 1088, 1456
         for c in CAMS:
@@ -270,6 +349,7 @@ def main():
                static=True)
 
     traj = []
+    heights, bev_cache = [], {}
     for n, i in enumerate(idxs):
         rr.set_time("wall", timestamp=ts[i])
         R_wr, t_wr = quat_to_R(Q[i]), P[i]
@@ -287,17 +367,38 @@ def main():
             near = obs_ts[int(np.abs(obs_ts - ts[i]).argmin())]
             ob = obs[near] if abs(near - ts[i]) < 1e-3 else None
 
-        if bev is not None:
-            mx, my, owner = bev
-            plan = np.zeros(owner.shape, np.uint8)
-            for ci, c in enumerate(CAMS):
-                fish = frame_at(c, key)
-                if fish is None:
-                    continue
-                m = owner == ci
-                if m.any():
-                    plan[m] = cv2.remap(fish, mx[c], my[c], cv2.INTER_LINEAR)[m]
-            rr.log("bev/image", rr.Image(plan).compress(jpeg_quality=80))
+        if bev_on:
+            tables = bev_static
+            if plane is not None:
+                n_w, c_w = plane
+                h = float((np.asarray(t_wr) - c_w) @ n_w)
+                n_rig = R_rig_cam1 @ (R_wr.T @ n_w)
+                heights.append(h)
+                # Below ~5 cm the ground fills the whole grid and the remap degenerates.
+                pkey = (round(h, 2), tuple(np.round(n_rig, 3)))
+                if h < 0.05:
+                    tables = None
+                elif pkey in bev_cache:
+                    tables = bev_cache[pkey]
+                else:
+                    tables = bev_maps(omni, rig, R_rig_cam1, h, a.bev_extent, a.bev_ppm,
+                                      normal=n_rig)
+                    bev_cache[pkey] = tables
+            if tables is not None:
+                mx, my, owner = tables
+                plan = np.zeros(owner.shape, np.uint8)
+                for ci, c in enumerate(CAMS):
+                    fish = frame_at(c, key)
+                    if fish is None:
+                        continue
+                    m = owner == ci
+                    if m.any():
+                        plan[m] = cv2.remap(fish, mx[c], my[c], cv2.INTER_LINEAR)[m]
+                rr.log("bev/image", rr.Image(plan).compress(jpeg_quality=80))
+                if plane is not None:
+                    rr.log("bev/height", rr.TextLog(
+                        "h = %.2f m, tilt %.1f deg"
+                        % (h, np.degrees(np.arccos(min(1.0, abs(n_rig[2])))))))
 
         if a.fisheye:
             for c in CAMS:
@@ -356,6 +457,9 @@ def main():
                 rr.log(f"rig/cam{idx}/observations",
                        rr.Points2D(uv, colors=cols, radii=3))
 
+    if heights:
+        print("BEV plane: %d distinct (height, tilt) tables over %d frames, h %.2f .. %.2f m"
+              % (len(bev_cache), len(heights), min(heights), max(heights)))
     print("done." + (" wrote %s" % out if out else ""))
     if out:
         print("  open with:  rerun %s" % out)
