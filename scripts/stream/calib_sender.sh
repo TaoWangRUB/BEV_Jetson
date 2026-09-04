@@ -14,7 +14,7 @@
 # ⚠ The RTP/TCP path carries NO capture timestamp. That is fine for intrinsics and for
 # the pairwise extrinsics, which need no time at all. It is NOT fine for the camera-IMU
 # stage, where the offset is the thing being measured - that stage needs the ROS path
-# (README 4.7) or the J106 frame-time tooling.
+# (docs/timestamps.md) or the J106 frame-time tooling.
 #
 #   ./calib_sender.sh <port-letter|all> [fps] [quality]
 #   e.g. ./calib_sender.sh c 4        -> front-left camera on tcp 5000

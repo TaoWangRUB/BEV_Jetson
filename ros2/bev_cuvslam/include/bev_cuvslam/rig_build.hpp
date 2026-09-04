@@ -69,7 +69,7 @@ struct VirtualRig {
 
 // Carve each of the 4 fisheyes into two virtual pinholes at -+45 deg and build the rig.
 // The lenses are ~192 deg and cuVSLAM's only fisheye model is the equidistant one, capped
-// below 180 deg, so this carve is REQUIRED, not an optimisation (README 4.8).
+// below 180 deg, so this carve is REQUIRED, not an optimisation (docs/cuvslam_tx2.md).
 inline VirtualRig BuildVirtualRig(const std::string& calib_dir, const std::string& rig_path,
                                   const std::string& vstereo_path,
                                   const std::vector<std::string>& cams) {

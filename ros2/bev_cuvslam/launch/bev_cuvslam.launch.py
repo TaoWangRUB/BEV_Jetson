@@ -2,7 +2,7 @@
 #
 # The node subscribes to the four fisheyes and carves each into two virtual pinholes
 # before cuVSLAM sees anything - the raw cameras are ~192 deg and cuVSLAM's equidistant
-# model is capped below 180, so this is required rather than preferred. See README 4.8.
+# model is capped below 180, so this is required rather than preferred. See docs/cuvslam_tx2.md.
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration

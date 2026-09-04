@@ -37,7 +37,7 @@ ament_target_dependencies(cuvslam_multicam_node
   rclcpp sensor_msgs nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs
   cv_bridge image_transport message_filters)
 
-# --- CUDA: nvcc .cu (g++-8/sm_62) compiles inside colcon gcc-9 (validated by cuda_spike) ---
+# --- CUDA: nvcc .cu (g++-8/sm_62) compiles inside colcon gcc-9 ---
 # nvcc 10.2 needs host gcc<=8; pin nvcc + g++-8 + sm_62 so the default colcon build just works.
 if(NOT DEFINED CMAKE_CUDA_COMPILER)
   set(CMAKE_CUDA_COMPILER /usr/local/cuda/bin/nvcc)

@@ -14,7 +14,7 @@
 //
 // SYNC: the rig is hardware-triggered (4x IMX296 on one STM32 edge, measured skew 1 us),
 // so the cameras really do capture the same instant and each frame carries its own
-// exposure-midpoint timestamp (README 4.7). A set is four frames whose stamps span less
+// exposure-midpoint timestamp (docs/timestamps.md). A set is four frames whose stamps span less
 // than max_skew_us — cuVSLAM's own Multicamera gate is 1 ms — and a set that fails is
 // DROPPED AND COUNTED, never re-stamped.
 //

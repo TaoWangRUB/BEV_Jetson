@@ -87,7 +87,7 @@ cat > "$OUT/meta.json" <<JSON
   "recorded": "$(date -Is)",
   "git_commit": "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)",
   "clock": "CLOCK_MONOTONIC",
-  "camera_stamp": "exposure midpoint (SOF - exposure/2), see README 4.7",
+  "camera_stamp": "exposure midpoint (SOF - exposure/2), see docs/timestamps.md",
   "imu_stamp": "data-ready edge, CLOCK_MONOTONIC",
   "trigger": {"period_us": $PERIOD_US, "pulse_ns": $PULSE_NS, "exposure_us": $EXPOSURE_US,
               "source": "j106-trigctl.py status on $TRIG_PORT"},

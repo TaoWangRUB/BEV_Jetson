@@ -43,7 +43,7 @@ mkdir -p "$OUT"
 sed -e "s/\${NET_IFACE}/$IFACE/" -e "s/\${PEER}/$HOST_IP/" \
     "$(dirname "$0")/cyclonedds_lowlat.xml" > "$OUT/cyclonedds.xml"
 
-# Preflight: free-running cameras are the silent failure (see README 4.7 / rig_layout).
+# Preflight: free-running cameras are the silent failure (see docs/timestamps.md / rig_layout).
 MODE=$(cat /sys/module/imx296/parameters/trigger_mode 2>/dev/null || echo missing)
 [ "$MODE" = "1" ] || { echo "trigger_mode=$MODE — set it to 1 first"; exit 1; }
 

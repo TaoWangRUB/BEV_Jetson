@@ -13,7 +13,7 @@ find_package(yaml-cpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
-# Per-frame timing metadata (frame number, capture id, SOF, exposure) - see README 4.7.
+# Per-frame timing metadata (frame number, capture id, SOF, exposure) - see docs/timestamps.md.
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FrameMeta.msg"
   DEPENDENCIES std_msgs)

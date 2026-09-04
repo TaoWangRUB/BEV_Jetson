@@ -1,6 +1,6 @@
 # Per-frame timing metadata for one camera. Published alongside the image so that a
 # recording carries what the image alone cannot: which trigger edge a frame came from,
-# and whether any were lost. See README 4.7 for the timestamp convention.
+# and whether any were lost. See docs/timestamps.md for the timestamp convention.
 
 # stamp = this frame's EXPOSURE MIDPOINT on CLOCK_MONOTONIC (not ROS system time);
 # frame_id = the camera name (cam1..cam4).

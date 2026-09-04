@@ -14,7 +14,7 @@
 # camera frame has IMU samples on both sides of it to interpolate between. A frame outside
 # the IMU span cannot be used by a VIO at all.
 #
-# delta_camera_imu IS STILL UNMEASURED (README 4.7). Both streams are on one clock, so they
+# delta_camera_imu IS STILL UNMEASURED (docs/timestamps.md). Both streams are on one clock, so they
 # are comparable, but the fixed offset between the exposure midpoint and the IMU data-ready
 # edge has never been solved for on this rig. Until a Kalibr cam-IMU run says otherwise,
 # treat this as data to CALIBRATE from, not as a calibrated dataset.

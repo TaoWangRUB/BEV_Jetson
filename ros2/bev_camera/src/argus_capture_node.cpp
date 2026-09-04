@@ -6,7 +6,7 @@
 // frame's luma (Y) plane — which is exactly the grayscale image cuVSLAM wants —
 // and publishes it as sensor_msgs/Image (mono8) on /camN/image_raw.
 //
-// TIMESTAMPS (the contract — see README 4.7): header.stamp is that frame's own
+// TIMESTAMPS (the contract — see docs/timestamps.md): header.stamp is that frame's own
 // EXPOSURE MIDPOINT on CLOCK_MONOTONIC, derived from the Argus sensor (SOF) timestamp
 // minus half the exposure. It is NOT ROS system time, so it must never be compared
 // against now(); the IMU has to be stamped on the same clock for the two to be fused.
@@ -697,7 +697,7 @@ class ArgusCaptureNode : public rclcpp::Node {
           << "# exposure_source=" << (exposure_us_ > 0 ? "trigger pulse width (exposure_us param)"
                                                        : "as reported by Argus — NOT the pulse width")
           << "\n"
-          << "# delta_camera_imu = UNMEASURED (see README 4.7)\n"
+          << "# delta_camera_imu = UNMEASURED (see docs/timestamps.md)\n"
           << "#timestamp [ns],seq,capture_id,t_sof [ns],exposure [ns],image\n";
     }
     RCLCPP_INFO(get_logger(), "writing frame-time CSVs to %s", frame_log_dir_.c_str());

@@ -10,7 +10,7 @@
 #
 # Consequence: cuVSLAM cannot consume these cameras directly - its only fisheye model is
 # that same equidistant one. The virtual-stereo path (rectify to pinhole, feed cuVSLAM
-# plain Pinhole) is required, not preferred. See README 4.8.
+# plain Pinhole) is required, not preferred. See docs/cuvslam_tx2.md.
 #
 # SOLVED ON RAW, INVERTED FRAMES - the capture node memcpys and does not rotate, and the
 # modules are mounted upside-down. Re-confirmed 2026-09-01 from stage1_cam1_sel.bag,

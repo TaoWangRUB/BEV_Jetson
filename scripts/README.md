@@ -92,12 +92,6 @@ See [docs/extrinsic_calibration.md](../docs/extrinsic_calibration.md) for the fu
 | [vo/run_motion_test.sh](vo/run_motion_test.sh) | TX2 | record a motion test (§5). Preflight **gates, not warns**: refuses unless `trigger_mode=1`, the generator is running and `active_low`, and it reads the real pulse width back so `exposure_us` is never a stale guess. `--record-images` also bags the four camera streams, making the run replayable — move the rig once, re-run the VO against it as often as needed. Do two passes: one with images for replay, one without for the live numbers, because the recorder's own load is indistinguishable from the rig misbehaving |
 | [vo/analyze_motion.py](vo/analyze_motion.py) | dev | compare recorded odometry against the tape measure: scale, drift, return-to-origin |
 
-## rig/ — rig geometry
-
-| script | runs on | purpose |
-|---|---|---|
-| [rig/gen_rig_extrinsics.py](rig/gen_rig_extrinsics.py) | dev | generate the cuVSLAM rig extrinsics (`rig_from_camera`/`imu`) from the physical layout |
-
 ## bev/ — bird's-eye ground stitch
 
 | script | runs on | purpose |

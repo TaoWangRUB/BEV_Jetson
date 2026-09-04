@@ -315,7 +315,7 @@ services:
           -p port:=${TRIG_PORT:-/dev/ttyTHS1} \
           -p divisor:=${RANGE_DIV:-15}
 
-  # MPU-9250 IMU -> /imu0, stamped at the data-ready edge on CLOCK_MONOTONIC (README 4.7).
+  # MPU-9250 IMU -> /imu0, stamped at the data-ready edge on CLOCK_MONOTONIC (docs/timestamps.md).
   # Needs root for /dev/spidev1.0 + /dev/gpiochip* and for SCHED_FIFO.
   imu:
     <<: *bev

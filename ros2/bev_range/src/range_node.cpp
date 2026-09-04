@@ -7,7 +7,7 @@
 //   pulses     the trigger edge counter, produced on the MCU. The capture side's `seq`
 //              advances exactly one per trigger edge, so this is the column to JOIN a
 //              range to a camera frame on: an integer identity, no clock comparison and
-//              no offset to estimate. Unlike delta_camera_imu (README 4.7), there is
+//              no offset to estimate. Unlike delta_camera_imu (docs/timestamps.md), there is
 //              nothing here left unmeasured.
 //
 //   t_mono_ns  CLOCK_MONOTONIC when this process READ the line — the same clock imu0.csv

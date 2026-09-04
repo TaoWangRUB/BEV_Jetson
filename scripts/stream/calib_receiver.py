@@ -24,7 +24,7 @@ what the calibrator sees is what the sensor sent, minus the one transport JPEG.
 ⚠ There is NO capture timestamp in this path - MJPEG over TCP carries none, and the
 host arrival time is not one. That is fine for intrinsics and for the pairwise
 extrinsics, which use no time at all. The camera-IMU stage is different: the offset is
-the measurement, so it needs the ROS path (README 4.7).
+the measurement, so it needs the ROS path (docs/timestamps.md).
 """
 import argparse
 import os

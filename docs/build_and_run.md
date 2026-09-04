@@ -196,7 +196,7 @@ cuts CPU at full FOV** → the **1640→832×624** default (~22 Hz, full surroun
 Beating ~22 Hz needs the 720p mode (44 fps) which **crops the fisheye FOV** (hurts the
 surround overlap) and costs more CPU. Per-call `Track` rises with the *processing rate*
 (more frames/s → cuVSLAM async-SBA overlaps across frames → GPU contention), not just pixels.
-See the [fused-zerocopy OpenSpec change](../openspec/changes/fused-zerocopy-argus-cuvslam/tasks.md)
+See the [fused-zerocopy OpenSpec change](../openspec/changes/archive/2026-06-25-fused-zerocopy-argus-cuvslam/tasks.md)
 for the full data. Calibration per output resolution lives in `scripts/config/<WxH>/`
 (scale with [`scripts/calib/scale_calib.py`](../scripts/calib/scale_calib.py)).
 

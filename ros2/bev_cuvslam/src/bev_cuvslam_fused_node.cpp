@@ -305,7 +305,7 @@ class FusedNode : public rclcpp::Node {
         if (!inb || !ensure_gpu_buffer(i, inb)) return false;
         // The SENSOR timestamp, not IFrame::getTime(). getTime() is consumer-side and
         // measured the capture loop's own phase - it put the four cameras ~7 ms apart in
-        // visit order (README 4.7, and 4.2 flagged this node as carrying the same bug).
+        // visit order (docs/timestamps.md, and 4.2 flagged this node as carrying the same bug).
         uint64_t sof = 0, expo = 0;
         if (auto* iacm = interface_cast<EGLStream::IArgusCaptureMetadata>(frame.get()))
           if (auto* imeta = interface_cast<ICaptureMetadata>(iacm->getMetadata())) {
@@ -375,7 +375,7 @@ class FusedNode : public rclcpp::Node {
       }
 
       // The ImageSet is the 8 CARVED views, not the 4 fisheyes: cuVSLAM's only fisheye model
-      // is equidistant and cannot represent these ~192 deg lenses at all (README 4.8).
+      // is equidistant and cannot represent these ~192 deg lenses at all (docs/cuvslam_tx2.md).
       cuvslam::Odometry::ImageSet images; images.reserve(desc_.size());
       for (uint32_t k = 0; k < desc_.size(); ++k) {
         cuvslam::Image im{};

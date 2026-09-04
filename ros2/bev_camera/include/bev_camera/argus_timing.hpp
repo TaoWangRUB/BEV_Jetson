@@ -2,7 +2,7 @@
 // a frame corresponds to. Header-only, and used by BOTH the capture node and the fused
 // VO node — these two facts must not be allowed to drift apart between them.
 //
-// The full reasoning is in README 4.7. In short:
+// The full reasoning is in docs/timestamps.md. In short:
 //   * Argus assigns sensor-ids in /dev/video bind order, which is not port order and is
 //     not stable across boots, so the map is resolved at runtime from each node's i2c
 //     name — never hard-coded.

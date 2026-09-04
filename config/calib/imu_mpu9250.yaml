@@ -17,7 +17,7 @@
 # config change, which is why it is not done pre-emptively.
 #
 # The reader is `bev_imu/imu_node`: samples are stamped at the DATA-READY EDGE on
-# CLOCK_MONOTONIC, the same clock as the cameras (README 4.7). Group delays from the
+# CLOCK_MONOTONIC, the same clock as the cameras (docs/timestamps.md). Group delays from the
 # DLPF are reported by the node and NOT applied — at the configured bandwidths the gyro
 # lags the accel by ~1.02 ms, which no single correction can fix.
 

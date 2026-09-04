@@ -7,7 +7,7 @@
 // node blocks on that edge, stamps it, and only then fetches numbers whose time is
 // already known.
 //
-// TIMESTAMPS (the contract — README 4.7): header.stamp is CLOCK_MONOTONIC, matching
+// TIMESTAMPS (the contract — docs/timestamps.md): header.stamp is CLOCK_MONOTONIC, matching
 // argus_capture_node. It is NOT ROS system time; never compare it against now().
 //
 // Three facts about this board shape the code:
@@ -409,7 +409,7 @@ class ImuNode : public rclcpp::Node {
                 rate, gyro_fs_, GYRO_DLPF[gyro_dlpf_].bw_hz, GYRO_DLPF[gyro_dlpf_].delay_ms,
                 accel_fs_, ACCEL_DLPF[accel_dlpf_].bw_hz, ACCEL_DLPF[accel_dlpf_].delay_ms);
     RCLCPP_WARN(get_logger(), "group delays are REPORTED, not applied: the gyro lags the accel by "
-                "%.2f ms. camera<->IMU offset Delta is UNMEASURED (see README 4.7)",
+                "%.2f ms. camera<->IMU offset Delta is UNMEASURED (see docs/timestamps.md)",
                 GYRO_DLPF[gyro_dlpf_].delay_ms - ACCEL_DLPF[accel_dlpf_].delay_ms);
   }
 
