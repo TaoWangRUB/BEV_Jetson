@@ -121,6 +121,53 @@ def bev_maps(omni, rig, R_rig_cam1, height, extent, ppm, normal=None, max_incide
     return mx, my, owner
 
 
+def pano_maps(omni, rig, R_rig_cam1, out_w=1280, el_max_deg=50.0, fov_half_deg=90.0,
+              feather_deg=25.0, depth=None, iw=1456, ih=1088):
+    """Equirectangular remap tables and feather weights, one per camera.
+
+    Same convention as the panorama node's spec: az=0 is forward, elevation runs +el_max
+    at row 0. With depth=None the sphere is at infinity and the stitch is rotation only,
+    which is exact for distant scene and ghosts badly on anything close - the baselines
+    are ~0.15 m. A finite `depth` puts the sphere at that radius instead, cancelling
+    parallax for scene at roughly that distance.
+
+    Overlaps cross-fade on angular distance from each optical axis rather than being cut
+    on a seam, so no camera boundary shows as a hard edge."""
+    out_h = int(round(out_w * (2 * el_max_deg) / 360.0))       # square pixels
+    el_max = np.radians(el_max_deg)
+    az = 2 * np.pi * (np.arange(out_w) + 0.5) / out_w - np.pi
+    el = el_max - 2 * el_max * (np.arange(out_h) + 0.5) / out_h
+    A, E = np.meshgrid(az, el)
+    # rig FLU: +x forward, +y left, +z up, so az sweeps forward -> left.
+    d = np.stack([np.cos(E) * np.cos(A), np.cos(E) * np.sin(A), np.sin(E)], -1).reshape(-1, 3)
+    d_cam1 = d @ R_rig_cam1
+    fov, feath = np.radians(fov_half_deg), np.radians(feather_deg)
+    mx, my, wt = {}, {}, {}
+    for c in CAMS:
+        R_c, t_c = np.array(rig[c])[:3, :3], np.array(rig[c])[:3, 3]
+        v = d_cam1 @ R_c if depth is None else (depth * d_cam1 - t_c) @ R_c
+        th = np.arccos(np.clip(v[:, 2] / np.maximum(np.linalg.norm(v, axis=1), 1e-9), -1, 1))
+        u, w = project_omni(omni[c], v[:, 0], v[:, 1], v[:, 2])
+        ok = (v[:, 2] > 0) & (u >= 0) & (u < iw) & (w >= 0) & (w < ih)
+        mx[c] = np.where(ok, u, -1).reshape(out_h, out_w).astype(np.float32)
+        my[c] = np.where(ok, w, -1).reshape(out_h, out_w).astype(np.float32)
+        wt[c] = (np.clip((fov - th) / feath, 0, 1) * ok).reshape(out_h, out_w).astype(np.float32)
+    return mx, my, wt
+
+
+def render_pano(tables, frames):
+    mx, my, wt = tables
+    h, w = wt[CAMS[0]].shape
+    acc = np.zeros((h, w), np.float32)
+    wsum = np.zeros((h, w), np.float32)
+    for c in CAMS:
+        if frames.get(c) is None:
+            continue
+        acc += wt[c] * cv2.remap(frames[c], mx[c], my[c], cv2.INTER_LINEAR)
+        wsum += wt[c]
+    return np.where(wsum > 0, acc / np.maximum(wsum, 1e-6), 0).astype(np.uint8)
+
+
 def plane_near_pose(lm, p, R_wr, R_rig_cam1, radius=5.0, band=0.12, min_nz=0.97):
     """Ground plane from the landmarks around ONE pose, in that pose's own rig frame.
     Returns (height below the camera, normal in rig FLU) or None.
@@ -193,6 +240,21 @@ def main():
                     help="drop BEV pixels seen at a grazing angle beyond this (deg from "
                          "the plane normal). Caps the usable radius at h*tan(this), which "
                          "is what keeps a low pass from smearing")
+    ap.add_argument("--panorama", action="store_true",
+                    help="add an equirectangular 360 stitch of the 4 fisheyes, feather "
+                         "blended in the overlaps")
+    ap.add_argument("--pano-width", type=int, default=1280,
+                    help="panorama width in px; height follows from the elevation range")
+    ap.add_argument("--pano-elevation", type=float, default=50.0,
+                    help="panorama elevation half-range (deg)")
+    ap.add_argument("--pano-fov-half", type=float, default=90.0,
+                    help="per-camera half-FOV (deg) used for the feather falloff")
+    ap.add_argument("--pano-feather", type=float, default=25.0,
+                    help="width (deg) of the cross-fade band at the edge of each camera")
+    ap.add_argument("--pano-depth", type=float, default=None,
+                    help="put the panorama sphere at this radius (m) instead of infinity. "
+                         "Cancels parallax for scene at that distance; without it the "
+                         "0.15 m baselines ghost everything closer than a few metres")
     ap.add_argument("--upright", action=argparse.BooleanOptionalAction, default=True,
                     help="display-only: undo the 180 mount roll so the scene reads upright")
     ap.add_argument("--save", nargs="?", const="", default=None)
@@ -266,6 +328,19 @@ def main():
                   % (bev_static[2].shape[0], bev_static[2].shape[1], a.bev_ppm,
                      100.0 * (bev_static[2] >= 0).mean()))
 
+    # ---- Panorama. Rotation only, so the tables never change.
+    pano = None
+    if a.panorama:
+        gp = yaml.safe_load(open("config/rig/ground_plane.yaml"))
+        R_pano = np.array(gp["rig_frame"]["R_rig_cam1"], float)
+        pano = pano_maps(omni, rig, R_pano, out_w=a.pano_width,
+                         el_max_deg=a.pano_elevation, fov_half_deg=a.pano_fov_half,
+                         feather_deg=a.pano_feather, depth=a.pano_depth)
+        cov = np.stack([pano[2][c] for c in CAMS]).max(0)
+        print("panorama %dx%d, %.0f%% of the sphere band covered, %.0f%% in 2+ cameras"
+              % (cov.shape[1], cov.shape[0], 100.0 * (cov > 0).mean(),
+                 100.0 * ((np.stack([pano[2][c] for c in CAMS]) > 0).sum(0) > 1).mean()))
+
     # ---- Rerun blueprint: 8 image panes above/below a central 3D view (as in the example).
     def v2d(idx, name):
         return rrb.Spatial2DView(origin=f"rig/cam{idx}", name=name)
@@ -279,16 +354,20 @@ def main():
              [f"- /rig/cam{i}/**" for i in (1, 3, 5, 7)]
     rows = [
         rrb.Horizontal(contents=[v2d(i, labels[i]) for i in order[:4]]),
-        rrb.Spatial3DView(name="3D", origin="/", contents=["+ /**"] + hide3d),
+        rrb.Spatial3DView(name="3D", origin="/",
+                          contents=["+ /**", "- /bev/**", "- /pano/**"] + hide3d),
         rrb.Horizontal(contents=[v2d(i, labels[i]) for i in order[4:]]),
     ]
-    shares = [0.25, 0.5, 0.25]
+    extras = []
     if bev_on:
-        rows.append(rrb.Horizontal(contents=[rrb.Spatial2DView(
-            origin="bev", name="BEV ground plane (%s)"
-                                % ("fitted per frame" if fit_plane
-                                   else "PROVISIONAL height"))]))
-        shares = [0.21, 0.37, 0.21, 0.21]
+        extras.append(rrb.Spatial2DView(origin="bev", name="BEV ground plane (%s)"
+                      % ("fitted per frame" if fit_plane else "PROVISIONAL height")))
+    if pano is not None:
+        extras.append(rrb.Spatial2DView(
+            origin="pano", name="equirectangular 360 (rotation only: close objects ghost)"))
+    scale = 1.0 - 0.18 * len(extras)
+    shares = [0.25 * scale, 0.5 * scale, 0.25 * scale] + [0.18] * len(extras)
+    rows += [rrb.Horizontal(contents=[e]) for e in extras]
     blueprint = rrb.Blueprint(rrb.Vertical(row_shares=shares, contents=rows),
                               rrb.TimePanel(state="collapsed"))
 
@@ -356,6 +435,11 @@ def main():
         if ob is None and len(obs_ts):
             near = obs_ts[int(np.abs(obs_ts - ts[i]).argmin())]
             ob = obs[near] if abs(near - ts[i]) < 1e-3 else None
+
+        if pano is not None:
+            rr.log("pano/image",
+                   rr.Image(render_pano(pano, {c: frame_at(c, key) for c in CAMS}))
+                   .compress(jpeg_quality=80))
 
         if bev_on:
             tables = bev_static
