@@ -122,7 +122,7 @@ def bev_maps(omni, rig, R_rig_cam1, height, extent, ppm, normal=None, max_incide
 
 
 def pano_maps(omni, rig, R_rig_cam1, out_w=1280, el_max_deg=50.0, fov_half_deg=90.0,
-              feather_deg=25.0, depth=None, iw=1456, ih=1088):
+              feather_deg=25.0, seam_deg=8.0, depth=None, iw=1456, ih=1088):
     """Equirectangular remap tables and feather weights, one per camera.
 
     Same convention as the panorama node's spec: az=0 is forward, elevation runs +el_max
@@ -131,8 +131,17 @@ def pano_maps(omni, rig, R_rig_cam1, out_w=1280, el_max_deg=50.0, fov_half_deg=9
     are ~0.15 m. A finite `depth` puts the sphere at that radius instead, cancelling
     parallax for scene at roughly that distance.
 
-    Overlaps cross-fade on angular distance from each optical axis rather than being cut
-    on a seam, so no camera boundary shows as a hard edge."""
+    Each pixel is taken from the camera whose optical axis is CLOSEST to it, cross-fading
+    only over `seam_deg` where two cameras are nearly equidistant. Feathering on absolute
+    angle from the axis instead - the obvious thing, and what this used to do - gives every
+    camera full weight out to fov_half-feather, which is 65 deg here. Adjacent cameras are
+    90 deg apart, so both sit 45 deg off axis at the bisector and both get weight 1.0: the
+    output becomes an exact 50/50 average of two cameras over a ~60 deg band, four times
+    round, i.e. 65% of the horizon is a literal double exposure. That is the ghost, and no
+    choice of `depth` removes it - the sphere only makes the two views agree at ITS radius,
+    and everything nearer or further doubles at full strength. Nearest-axis confines the
+    disagreement to the seam, and picks the sharper view besides, since a ray far off axis
+    lands in the fisheye's compressed periphery."""
     out_h = int(round(out_w * (2 * el_max_deg) / 360.0))       # square pixels
     el_max = np.radians(el_max_deg)
     az = 2 * np.pi * (np.arange(out_w) + 0.5) / out_w - np.pi
@@ -141,17 +150,24 @@ def pano_maps(omni, rig, R_rig_cam1, out_w=1280, el_max_deg=50.0, fov_half_deg=9
     # rig FLU: +x forward, +y left, +z up, so az sweeps forward -> left.
     d = np.stack([np.cos(E) * np.cos(A), np.cos(E) * np.sin(A), np.sin(E)], -1).reshape(-1, 3)
     d_cam1 = d @ R_rig_cam1
-    fov, feath = np.radians(fov_half_deg), np.radians(feather_deg)
-    mx, my, wt = {}, {}, {}
+    fov, feath, seam = np.radians(fov_half_deg), np.radians(feather_deg), np.radians(seam_deg)
+    mx, my, th, ok = {}, {}, {}, {}
     for c in CAMS:
         R_c, t_c = np.array(rig[c])[:3, :3], np.array(rig[c])[:3, 3]
         v = d_cam1 @ R_c if depth is None else (depth * d_cam1 - t_c) @ R_c
-        th = np.arccos(np.clip(v[:, 2] / np.maximum(np.linalg.norm(v, axis=1), 1e-9), -1, 1))
+        th[c] = np.arccos(np.clip(v[:, 2] / np.maximum(np.linalg.norm(v, axis=1), 1e-9), -1, 1))
         u, w = project_omni(omni[c], v[:, 0], v[:, 1], v[:, 2])
-        ok = (v[:, 2] > 0) & (u >= 0) & (u < iw) & (w >= 0) & (w < ih)
-        mx[c] = np.where(ok, u, -1).reshape(out_h, out_w).astype(np.float32)
-        my[c] = np.where(ok, w, -1).reshape(out_h, out_w).astype(np.float32)
-        wt[c] = (np.clip((fov - th) / feath, 0, 1) * ok).reshape(out_h, out_w).astype(np.float32)
+        ok[c] = (v[:, 2] > 0) & (u >= 0) & (u < iw) & (w >= 0) & (w < ih) & (th[c] < fov)
+        mx[c] = np.where(ok[c], u, -1).reshape(out_h, out_w).astype(np.float32)
+        my[c] = np.where(ok[c], w, -1).reshape(out_h, out_w).astype(np.float32)
+    # Ranked against the best VALID camera, so a pixel only one camera sees keeps weight 1
+    # and no normalisation dip appears at the edge of coverage.
+    best = np.stack([np.where(ok[c], th[c], np.inf) for c in CAMS]).min(0)
+    wt = {}
+    for c in CAMS:
+        w = np.clip(1.0 - (th[c] - best) / seam, 0, 1) * ok[c]
+        w *= np.clip((fov - th[c]) / feath, 0, 1)          # taper at the extreme periphery
+        wt[c] = w.reshape(out_h, out_w).astype(np.float32)
     return mx, my, wt
 
 
@@ -198,6 +214,35 @@ def plane_near_pose(lm, p, R_wr, R_rig_cam1, radius=5.0, band=0.12, min_nz=0.97)
     if nv[2] < min_nz:
         return None
     return float(-(c @ nv)), nv
+
+
+def scene_radius_near_pose(lm, p, R_wr, R_rig_cam1, lo=0.4, hi=25.0, min_pts=150,
+                           el_max_deg=50.0, pct=25.0):
+    """Robust distance to the scene around ONE pose, for the panorama sphere. None if thin.
+
+    Rotation-only stitching puts all four cameras at a single point, which is only true for
+    scene at infinity. Indoors the walls are 1-3 m away and the ~0.155 m baselines then
+    throw the same object to two different bearings in the overlaps - the ghost. Putting
+    the sphere at the scene's actual radius cancels it there.
+
+    A LOW PERCENTILE, not the median. Ghost displacement goes as baseline/depth, so the
+    cost is wildly asymmetric: too far still ghosts the near scene badly, while slightly
+    too near costs the far scene almost nothing. VO landmarks make that worse by sitting
+    preferentially on distant textured surfaces and on whatever shows through doorways, so
+    the median runs long. Measured on cloud_20260903_123848: p50 gives a 3.8 m median
+    against p25's 2.4 m, and the same frame rendered at 4 m still visibly doubles near
+    objects that 2 m resolves cleanly.
+
+    Restricted to the elevation band the panorama actually shows, so floor and ceiling
+    points outside the canvas cannot pull the radius."""
+    V = ((lm - p) @ R_wr) @ R_rig_cam1.T           # landmarks in rig FLU, camera at origin
+    r = np.linalg.norm(V, axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        el = np.degrees(np.arcsin(np.clip(V[:, 2] / np.maximum(r, 1e-9), -1, 1)))
+    sel = r[(r > lo) & (r < hi) & (np.abs(el) < el_max_deg)]
+    if len(sel) < min_pts:
+        return None
+    return float(np.percentile(sel, pct))
 
 
 def main():
@@ -250,11 +295,19 @@ def main():
     ap.add_argument("--pano-fov-half", type=float, default=90.0,
                     help="per-camera half-FOV (deg) used for the feather falloff")
     ap.add_argument("--pano-feather", type=float, default=25.0,
-                    help="width (deg) of the cross-fade band at the edge of each camera")
-    ap.add_argument("--pano-depth", type=float, default=None,
-                    help="put the panorama sphere at this radius (m) instead of infinity. "
-                         "Cancels parallax for scene at that distance; without it the "
-                         "0.15 m baselines ghost everything closer than a few metres")
+                    help="width (deg) of the taper at the outer edge of each camera's field")
+    ap.add_argument("--pano-seam", type=float, default=8.0,
+                    help="width (deg) of the cross-fade where two cameras are equidistant "
+                         "from a ray. Each pixel otherwise comes from the camera looking "
+                         "most directly at it. Widening this back toward 90 restores the "
+                         "old behaviour, in which most of the horizon was a 50/50 average "
+                         "of two cameras and everything off the sphere doubled")
+    ap.add_argument("--pano-depth", default="auto",
+                    help="panorama sphere radius: 'auto' (default) tracks the landmark "
+                         "cloud per frame, 'inf' for the old rotation-only stitch, or a "
+                         "fixed radius in metres. Rotation-only puts all four cameras at "
+                         "one point, so the ~0.155 m baselines ghost everything closer "
+                         "than a few metres - which indoors is everything")
     ap.add_argument("--upright", action=argparse.BooleanOptionalAction, default=True,
                     help="display-only: undo the 180 mount roll so the scene reads upright")
     ap.add_argument("--save", nargs="?", const="", default=None)
@@ -328,14 +381,31 @@ def main():
                   % (bev_static[2].shape[0], bev_static[2].shape[1], a.bev_ppm,
                      100.0 * (bev_static[2] >= 0).mean()))
 
-    # ---- Panorama. Rotation only, so the tables never change.
+    # ---- Panorama.
+    #
+    # A fixed radius builds the tables once. `auto` follows the scene, so they are rebuilt
+    # when the radius moves and cached on a quantised key - the same shape as the BEV
+    # per-frame plane fit below, and for the same reason: one radius chosen once is wrong
+    # as soon as the rig changes room.
+    pano_mode = str(a.pano_depth).strip().lower()
+    if pano_mode in ("inf", "none", "infinity"):
+        pano_depth, pano_auto = None, False
+    elif pano_mode == "auto":
+        pano_depth, pano_auto = None, True
+    else:
+        pano_depth, pano_auto = float(a.pano_depth), False
+    pano_cache, pano_radii = {}, []
+
     pano = None
     if a.panorama:
         gp = yaml.safe_load(open("config/rig/ground_plane.yaml"))
         R_pano = np.array(gp["rig_frame"]["R_rig_cam1"], float)
         pano = pano_maps(omni, rig, R_pano, out_w=a.pano_width,
                          el_max_deg=a.pano_elevation, fov_half_deg=a.pano_fov_half,
-                         feather_deg=a.pano_feather, depth=a.pano_depth)
+                         feather_deg=a.pano_feather, seam_deg=a.pano_seam, depth=pano_depth)
+        print("panorama sphere: %s" % ("auto (per-frame, from the landmark cloud)"
+              if pano_auto else "infinity - rotation only, close objects WILL ghost"
+              if pano_depth is None else "%.2f m" % pano_depth))
         cov = np.stack([pano[2][c] for c in CAMS]).max(0)
         print("panorama %dx%d, %.0f%% of the sphere band covered, %.0f%% in 2+ cameras"
               % (cov.shape[1], cov.shape[0], 100.0 * (cov > 0).mean(),
@@ -437,6 +507,24 @@ def main():
             ob = obs[near] if abs(near - ts[i]) < 1e-3 else None
 
         if pano is not None:
+            if pano_auto:
+                # R_pano, not R_rig_cam1: the latter is only populated on the --bev
+                # path, and the panorama must work without it.
+                rad = scene_radius_near_pose(lm, t_wr, R_wr, R_pano,
+                                             el_max_deg=a.pano_elevation)
+                if rad is not None:
+                    pano_radii.append(rad)
+                    # Quantise so a jittering estimate does not rebuild every frame; 10%
+                    # steps are far finer than the ghost is sensitive to.
+                    qk = int(round(float(np.log(rad) / np.log(1.1))))
+                    if qk not in pano_cache:
+                        pano_cache[qk] = pano_maps(
+                            omni, rig, R_pano, out_w=a.pano_width,
+                            el_max_deg=a.pano_elevation, fov_half_deg=a.pano_fov_half,
+                            feather_deg=a.pano_feather, seam_deg=a.pano_seam,
+                            depth=1.1 ** qk)
+                    pano = pano_cache[qk]
+                    rr.log("pano/sphere_radius_m", rr.Scalars(rad))
             rr.log("pano/image",
                    rr.Image(render_pano(pano, {c: frame_at(c, key) for c in CAMS}))
                    .compress(jpeg_quality=80))
@@ -541,6 +629,11 @@ def main():
     if heights:
         print("BEV plane: %d distinct (height, tilt) tables over %d frames, h %.2f .. %.2f m"
               % (len(bev_cache), len(heights), min(heights), max(heights)))
+    if pano_radii:
+        pr = np.array(pano_radii)
+        print("panorama sphere radius: %.2f-%.2f m (median %.2f) over %d frames, "
+              "%d distinct remap tables built"
+              % (pr.min(), pr.max(), float(np.median(pr)), len(pr), len(pano_cache)))
     print("done." + (" wrote %s" % out if out else ""))
     if out:
         print("  open with:  rerun %s" % out)
