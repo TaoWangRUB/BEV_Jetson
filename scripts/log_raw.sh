@@ -19,6 +19,19 @@
 # 60 s had none, 90 s had one, 180 s had two. A single short run showing 100% is luck, not
 # proof; quote the rate, not one run.
 #
+# WHAT 30 fps ON ONE TARGET ACTUALLY COSTS, since that is the mistake worth naming:
+#   30 fps, LOG_DIR=/logs (all four)             95.4% complete sets  27.71 Hz  (2026-09-05)
+# 190 MB/s onto a 136 MB/s device. It fits on disk, so the space check passed it happily -
+# which is why there is now a BANDWIDTH gate below as well.
+#
+# AND THE STARTUP TRANSIENT IS NOW SKIPPED RATHER THAN RECORDED (log_warmup_ms, default
+# 500 ms). Measured 2026-09-05 at 20 fps over 58 s on one target: every missed trigger edge
+# in the whole run was inside the first 0.15 s - cam1 missed seq 3-4, cam2 2-3, cam3 2,
+# cam4 none - and steady state missed NOT ONE edge on any camera. So the residual 0.2% was
+# entirely the four Argus streams coming up ~170 ms apart, and the node now waits for all
+# four plus a settle before it writes the first image. The frame CSVs still record the
+# skipped edges with image=0, so frame accounting is unchanged.
+#
 # THAT RESIDUAL IS STORAGE BANDWIDTH, and it is worth knowing before chasing it elsewhere.
 # Decimating the IMAGES 10x (PUBLISH_EVERY_N=10, ~12.7 MB/s instead of 126.7) while the frame
 # CSV still records every trigger edge gave ZERO stalls in 118 s. So it scales with write
@@ -104,6 +117,35 @@ for base in "${!SEEN[@]}"; do
   rate=$(( EFF_FPS * n * BYTES_PER_FRAME / 1048576 ))
   printf "  %-28s %d cam  ~%d MB/s  needs %d MB, %d MB free\n" "$base" "$n" "$rate" "$need" "$free"
   [ "$free" -ge "$need" ] || { echo "REFUSING: $base has $free MB free, needs ~$need MB." >&2; exit 1; }
+
+  # AND GATE ON BANDWIDTH, NOT ONLY ON SPACE. Space was the only check here, so the
+  # commonest mistake sailed straight through: all four cameras at 30 fps onto /logs is
+  # 190 MB/s against eMMC's measured 136, which fits on disk easily and then quietly loses
+  # trigger edges. Measured 2026-09-05 that way: 95.4% complete sets. The same rig at 20 fps
+  # on the same single target loses nothing outside the startup transient.
+  #
+  # These are the MEASURED buffered write rates of the bind mounts (docker-compose.yml), not
+  # datasheet figures. /ramlog is tmpfs so bandwidth is not its limit - capacity is, and the
+  # space check above already covers that.
+  case "$base" in
+    /ramlog*) cap=400 ;;
+    /sdlog*)  cap=62  ;;
+    /logs*)   cap=136 ;;
+    *)        cap=0   ;;
+  esac
+  if [ "$cap" -gt 0 ] && [ "$rate" -gt "$cap" ]; then
+    echo "REFUSING: $base would take ~${rate} MB/s from $n camera(s) but measures ~${cap} MB/s." >&2
+    echo "  It would fit on disk and still drop trigger edges, which is the failure this" >&2
+    echo "  check exists to prevent. Two honest fixes, in order of preference:" >&2
+    echo "    1. Lower the trigger:  j106-trigctl.py --port /dev/ttyTHS1 fps 20" >&2
+    echo "       then re-run with TRIGGER_FPS=20. Four cameras at 20 fps is ~127 MB/s and" >&2
+    echo "       fits this target with all four on it." >&2
+    echo "    2. Split the cameras:  LOG_DIRS=\"/logs,/logs,/sdlog,/ramlog\"" >&2
+    echo "       which keeps each target inside its own limit at 30 fps." >&2
+    echo "  Set LOG_BANDWIDTH_OK=1 to record anyway and accept the loss." >&2
+    [ "${LOG_BANDWIDTH_OK:-0}" = "1" ] || exit 1
+    echo "  LOG_BANDWIDTH_OK=1 - proceeding, and expect incomplete sets." >&2
+  fi
 done
 
 # Writeback settings matter for runs over ~30 s and are NOT the container's to set - they

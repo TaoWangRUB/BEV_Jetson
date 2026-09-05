@@ -104,6 +104,10 @@ class ArgusCaptureNode : public rclcpp::Node {
     // A set whose frames span more than this is not a set. cuVSLAM's Multicamera gate
     // is 1 ms; the triggered rig measures 1 us, so anything near the limit is a fault.
     max_skew_us_ = declare_parameter<int>("max_skew_us", 1000);
+    // How long to let the rig settle before the IMAGE LOG starts (ms). Applies only when
+    // image_log_dir is set, so the DDS/VO path is unaffected. 0 disables it and restores the
+    // old behaviour of logging from the very first frame. See the gate in capture_loop().
+    log_warmup_ms_ = declare_parameter<int>("log_warmup_ms", 500);
     // Empty (default) = resolve from sysfs. Set it only to override a resolution you
     // have already checked by hand — it bypasses the port mapping entirely.
     auto forced = declare_parameter<std::vector<int64_t>>("sensor_ids", std::vector<int64_t>{});
@@ -851,6 +855,11 @@ class ArgusCaptureNode : public rclcpp::Node {
     std::vector<int> timeouts(n_, 0);
     std::vector<uint64_t> set_ts(n_, 0);
     int empty_sweeps = 0;
+    // Warmup state. log_start_ns stays 0 until every camera has delivered a frame; see the
+    // gate on `send` below for why the image log must not begin before that.
+    size_t first_seen = 0;
+    uint64_t log_start_ns = 0;
+    bool logging_announced = false;
     try {
       while (running_ && rclcpp::ok()) {
         size_t got = 0;
@@ -890,8 +899,41 @@ class ArgusCaptureNode : public rclcpp::Node {
             const int64_t edge = (static_cast<int64_t>(ft.sof_ns) + period_ns / 2) / period_ns;
             send = (edge % publish_every_n_) == 0;
           }
+          // DO NOT WRITE THE STARTUP TRANSIENT INTO THE IMAGE LOG.
+          //
+          // The four Argus streams do not come up together - measured ~170 ms apart - and
+          // while they are still starting, cameras miss trigger edges INDEPENDENTLY. Those
+          // edges are then incomplete sets, and a set that is not a set is worth very little
+          // from a synchronised rig.
+          //
+          // How much this is worth, measured 2026-09-05, 20 fps, 58 s, all four on eMMC:
+          // every missed edge in the entire run was inside the first 0.15 s (cam1 missed
+          // seq 3-4, cam2 2-3, cam3 2, cam4 nothing at all), and steady state missed NOT ONE
+          // edge. So set completeness was 99.8% and the whole 0.2% was startup. Skipping the
+          // warmup is therefore the difference between "almost lossless" and lossless, and it
+          // costs nothing that was ever usable.
+          //
+          // Gated on image_log_dir_ so the DDS/VO path is untouched, and the skipped frames
+          // still get a CSV row with image=0 - that column exists precisely so the record of
+          // every trigger edge survives while saying which ones reached disk.
+          if (!image_log_dir_.empty() && (log_start_ns == 0 || ft.stamp_ns < log_start_ns))
+            send = false;
           publish_meta(i, ft, send && publish_y(i, ft.stamp_ns));
-          if (first[i]) { RCLCPP_INFO(get_logger(), "cam idx %zu: first frame published", i); first[i] = false; }
+          if (first[i]) {
+            RCLCPP_INFO(get_logger(), "cam idx %zu: first frame", i);
+            first[i] = false;
+            if (++first_seen == n_) {
+              log_start_ns = ft.stamp_ns + static_cast<uint64_t>(log_warmup_ms_) * 1000000ULL;
+              if (!image_log_dir_.empty())
+                RCLCPP_INFO(get_logger(), "all %zu cameras streaming - image log opens in %d ms "
+                            "(warmup; the frame CSVs record the skipped edges with image=0)",
+                            n_, log_warmup_ms_);
+            }
+          }
+          if (!logging_announced && !image_log_dir_.empty() && send) {
+            RCLCPP_INFO(get_logger(), "warmup over - writing images from here");
+            logging_announced = true;
+          }
         }
 
         if (got == n_) {
@@ -991,6 +1033,7 @@ class ArgusCaptureNode : public rclcpp::Node {
   int exposure_us_ = 0;
   uint64_t rig_exposure_ns_ = 0;
   int width_, height_, fps_, max_skew_us_, publish_every_n_ = 1;
+  int log_warmup_ms_ = 500;
   int64_t sets_ = 0, bad_sets_ = 0, worst_skew_us_ = 0;
   static constexpr size_t kHistory = 8;                 // ~0.27 s at 30 Hz
   std::vector<std::deque<uint64_t>> ts_history_;
