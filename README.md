@@ -175,6 +175,9 @@ MOTION_SECONDS=60 LOG_LABEL=run1 ./scripts/log_rig.sh
 #    imu0.csv               CLOCK_MONOTONIC, brackets the cameras (~200 Hz)
 #    range0.csv             one reading per trigger edge by default (RANGE_DIV=1 → 20 Hz
 #                           at the preferred fps); join on pulses, not stamp (±1 frame)
+
+# override range rate only if you must (higher than 1 is slower; 1 is the firmware max)
+# RANGE_DIV=2 MOTION_SECONDS=60 LOG_LABEL=run1 ./scripts/log_rig.sh
 ```
 
 **Rates (measured on this board)**

@@ -63,6 +63,110 @@ def motion_window(dirs):
     return None
 
 
+def report_imu(dirs, cam_t0, cam_t1):
+    """Rate / continuity of imu0.csv. Returns True if a file was found."""
+    for d in dirs:
+        p = os.path.join(d, "imu0.csv")
+        if not os.path.exists(p):
+            continue
+        t, seq = [], []
+        n_bad = 0
+        for line in open(p):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            f = line.split(",")
+            if len(f) < 9:
+                n_bad += 1
+                continue
+            try:
+                t.append(int(f[0]))
+                seq.append(int(f[8]))
+            except ValueError:
+                n_bad += 1
+        if len(t) < 2:
+            print("\nIMU: imu0.csv present but fewer than 2 valid rows")
+            return True
+        span = (t[-1] - t[0]) / 1e9
+        rate = (len(t) - 1) / span
+        dts = [(b - a) / 1e6 for a, b in zip(t, t[1:])]
+        med = sorted(dts)[len(dts) // 2]
+        gaps = sum(1 for d in dts if d > 1.5 * med)
+        seq_gaps = sum(1 for a, b in zip(seq, seq[1:]) if b - a != 1)
+        # Does the IMU bracket the cameras? log_rig starts it first and stops it last.
+        lead = (cam_t0 - t[0]) / 1e9 if cam_t0 else None
+        trail = (t[-1] - cam_t1) / 1e9 if cam_t1 else None
+        print("\nIMU (imu0.csv):")
+        print("  %d samples over %.2f s -> %.2f Hz  (median dt %.3f ms)"
+              % (len(t), span, rate, med))
+        print("  seq gaps: %d   timing gaps (>1.5 med): %d   truncated/bad rows: %d"
+              % (seq_gaps, gaps, n_bad))
+        if lead is not None:
+            print("  brackets cameras: lead %+.2f s, trail %+.2f s%s"
+                  % (lead, trail,
+                     "" if lead > 0 and trail > 0 else
+                     "   <- WARNING: IMU does not fully cover the camera span"))
+        if abs(rate - 200) > 5 and abs(rate - 1000) > 50:
+            print("  ^ rate is far from the usual 200 Hz — check IMU_RATE / DLPF config")
+        return True
+    return False
+
+
+def report_range(dirs, cam_t0, cam_t1):
+    """Rate / pulse continuity of range0.csv. Returns True if a file was found."""
+    for d in dirs:
+        p = os.path.join(d, "range0.csv")
+        if not os.path.exists(p):
+            continue
+        t, cm, pulses = [], [], []
+        divisor = None
+        for line in open(p):
+            line = line.strip()
+            if line.startswith("#") and "divisor=" in line:
+                try:
+                    divisor = int(line.split("divisor=")[1].split()[0])
+                except (IndexError, ValueError):
+                    pass
+                continue
+            if not line or line.startswith("#"):
+                continue
+            f = line.split(",")
+            if len(f) < 3:
+                continue
+            try:
+                t.append(int(f[0])); cm.append(int(f[1])); pulses.append(int(f[2]))
+            except ValueError:
+                continue
+        print("\nRANGE (range0.csv):")
+        if len(t) < 2:
+            print("  present but fewer than 2 readings — sensor absent or auto stream never started")
+            return True
+        span = (t[-1] - t[0]) / 1e9
+        rate = (len(t) - 1) / span
+        dp = [b - a for a, b in zip(pulses, pulses[1:])]
+        # Expected step is the configured divisor (default now 1 = every trigger edge).
+        step = divisor if divisor and divisor > 0 else (sorted(dp)[len(dp) // 2] if dp else 1)
+        skipped = sum(max(0, d // step - 1) for d in dp) if step else 0
+        lead = (cam_t0 - t[0]) / 1e9 if cam_t0 else None
+        trail = (t[-1] - cam_t1) / 1e9 if cam_t1 else None
+        print("  %d readings over %.2f s -> %.2f Hz  (divisor=%s, median pulse step=%d)"
+              % (len(t), span, rate, divisor if divisor is not None else "?",
+                 sorted(dp)[len(dp) // 2] if dp else 0))
+        print("  range_cm: min=%d median=%d max=%d"
+              % (min(cm), sorted(cm)[len(cm) // 2], max(cm)))
+        print("  missed pulse steps: %d%s"
+              % (skipped, "   <- LOSSLESS vs trigger" if skipped == 0 else ""))
+        if lead is not None:
+            print("  vs cameras: first reading %+.2f s, last %+.2f s relative to cam span ends"
+                  % (lead, trail))
+        if divisor and divisor > 1:
+            print("  ^ divisor=%d — raise to 1 for one reading per trigger edge "
+                  "(RANGE_DIV=1)." % divisor)
+        return True
+    print("\nRANGE: no range0.csv — recording has no rangefinder channel")
+    return False
+
+
 def load(dirs):
     frames = {}
     for d in dirs:
@@ -182,6 +286,14 @@ def main():
                 print("    MOTION duration, not the recording duration, as what it contains.")
             print("  to convert only the moving part:")
             print("    raw_log_to_bag.py <dir> -o out.bag --motion")
+
+    # AUX SENSORS. Completeness of the cameras does not imply the IMU or rangefinder
+    # actually wrote anything — log_rig treats range as optional, and a failed start used
+    # to leave a directory with perfect cam*.raw and no range0.csv at all.
+    f0, f1 = frames[anchor][0], frames[anchor][-1]
+    if not report_imu(dirs, f0, f1):
+        print("\nIMU: no imu0.csv — recording has no IMU channel")
+    report_range(dirs, f0, f1)
 
     print("\n(raw per-camera fps is not the number that matters here - a log whose sets are")
     print(" broken cannot be replayed as a synchronised rig, whatever its frame count.)")
