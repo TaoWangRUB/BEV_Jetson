@@ -989,6 +989,15 @@ physically moved - the remaining items are not doable from here.
   inter-camera skew 0 µs, worst 146 µs cam1↔cam2. `check_log_sets.py` and a raw index-vs-`.raw`
   frame-count check both pass.
 
+  **Correction, 2026-09-05 — "88.9 s" is the recording length, not the amount of data. See 5.0f.**
+  The rig was only moving for **45.7 s** of it: 5.7 s stationary at the start and **37.5 s
+  stationary at the end**, after the operator had stopped walking. Quoting the recording duration
+  here was misleading, and the 30 s replay subset below made it worse — `--max-frames` takes the
+  FIRST 600 frames, so the replay spent its first 5.7 s on a motionless rig and discarded 21 s of
+  motion that came later. (The frames themselves are all genuinely there and all distinct; this is
+  not truncation. Re-checked today: interior set completeness is 100.0 %, so even the "99.9 %"
+  above was only the ragged final edge.)
+
   Converted to a Foxy rosbag2 with `scripts/port/raw_log_to_bag.py` (topics `/cam{1..4}/image_raw`,
   `sensor_msgs/msg/Image`, mono8 1456×1088), a 30 s / 600-frame subset pushed to the TX2, and
   replayed through `bev_cuvslam.launch.py` (the modular `cuvslam_multicam_node`) inside
@@ -1097,6 +1106,50 @@ physically moved - the remaining items are not doable from here.
   90 s (126.7 MB/s against ~15.8 GB free, with its 1.4× startup allowance). Longer runs need
   `LOG_DIRS` — and note 2 cameras at 20 fps is 66 MB/s, which genuinely exceeds the SD's measured
   62.6, so the split has to be 3 on eMMC + 1 elsewhere rather than 2 + 2.
+
+- [x] 5.0f **A recording's DURATION is not its usable CONTENT — the 90 s log holds 45.7 s of
+  motion. Verified 2026-09-05 against the surviving log, not re-recorded.**
+
+  The operator's recollection was that a claimed 90 s 20 fps log turned out to be "only around
+  30 s". Both halves of that are right, for two separate reasons, and neither is data loss.
+
+  **The bytes are all there.** `datasets/imglog_vio1_20260903_103102` holds 1774 frames per camera
+  (1773 on cam4), and `index_rows × 1584128 == raw_bytes` to the byte on all four — zero shortfall.
+  Nor are the frames stale: a 64-row central stripe from every frame gives **0 exact duplicates**,
+  longest identical run 2, and no zero-difference frames. So there is no truncation and no frozen
+  stream, which was the failure worth ruling out — a silently failing `copyToNvBuffer` would
+  re-copy old pixels under fresh timestamps and every existing check would still pass, because
+  `check_log_sets.py` reads only index timestamps and `locate_frame_loss.py` only `camN.csv`.
+
+  **But the rig stopped moving 37.5 s before the recording did.** The frame-to-frame luma
+  difference collapses from ~1.0–2.6 to ~0.10 after 50 s, and `imu0.csv` — already in the log —
+  puts it exactly: |gyro| crosses the still baseline at **+5.8 s** and drops back at **+51.4 s**.
+
+  | | frames | | |
+  |---|---|---|---|
+  | before motion | 113 | 6.4 % | 5.7 s stationary |
+  | **during motion** | **912** | **51.4 %** | **45.7 s — the usable data** |
+  | after motion | 749 | 42.2 % | 37.5 s stationary |
+
+  **And the 30 s the operator remembers is the replay subset, which was chosen badly.** 5.0c
+  converted `--max-frames 600` — the FIRST 600 frames, 30.2 s, of which only **487 (24.4 s) were
+  moving**. So the replay saw about half the motion the log actually contained.
+
+  **Fixed in the two tools that allowed it**, rather than by adding another script (nothing
+  existing reads the `.raw` content or the IMU for this: `luma_stability.py` is a live ROS
+  subscriber, `analyze_motion.py` reads VO output):
+  - `check_log_sets.py` now reports the motion window from `imu0.csv` alongside completeness, and
+    says so loudly when over a fifth of a log is a stationary rig. Completeness says the log is
+    *intact*; the motion window says it is *useful*; neither implies the other, and printing only
+    the first is how "90 s of 20 fps data" got said.
+  - `raw_log_to_bag.py --motion` cuts to the moving window (±`--pad-s`, default 1 s) using the
+    same threshold via a shared `motion_window()`, so the tool that reports the window and the
+    tool that cuts on it cannot drift apart. On this log it keeps **952 frames / 47.6 s** against
+    the old subset's 24.4 s of motion. `--max-frames` is now documented as taking the first N.
+
+  Nothing here needs re-recording; the finding is that **runs should be quoted by motion duration,
+  and stopped when the motion stops.** 37.5 s of stationary frames cost 3.7 GB of eMMC on a board
+  whose free space caps a 20 fps run at ~90 s (5.0e).
 
 - [ ] 5.1 Move the rig a measured straight-line distance; record `/cuvslam/odometry` + `/tf` and compare reported translation against the tape measure (spec: *Translation is recovered at true scale*, 5 %).
       **Now the highest-value open item in this change.** `add-replay-visual-diagnostics` 3.5 finds the

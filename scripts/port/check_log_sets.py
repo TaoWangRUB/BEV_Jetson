@@ -17,6 +17,51 @@ import sys
 
 TOL_NS = 5_000_000          # 5 ms: far wider than the 66 us real skew, far under a 33 ms period
 
+# How far above the measured still baseline |gyro| has to sit before the rig counts as
+# moving, rad/s. 0.03 is ~1.7 deg/s: far above the MPU-9250's noise (the baseline measures
+# ~0.024 including bias) and far below anything a walking operator produces (0.2-1.0).
+IMU_STILL_MARGIN = 0.03
+
+
+def motion_window(dirs):
+    """When was the rig actually MOVING? -> (lo_ns, hi_ns, baseline, thresh, imu_t0, imu_t1).
+
+    Set completeness says the log is intact; it says nothing about whether the rig did
+    anything, and those are separately necessary. A stationary rig produces a flawless log
+    that is worth nothing to VO, and reporting only "88.9 s, 99.9% complete" is how a
+    recording with 46 s of motion in it came to be described as 90 s of data.
+
+    lo_ns is None when the rig never moved. Returns None when there is no imu0.csv.
+    """
+    for d in dirs:
+        p = os.path.join(d, "imu0.csv")
+        if not os.path.exists(p):
+            continue
+        t, w = [], []
+        for line in open(p):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            f = line.split(",")
+            if len(f) < 7:      # the tail line of a SIGKILLed run is truncated
+                continue
+            try:
+                t.append(int(f[0]))
+                w.append((float(f[4]) ** 2 + float(f[5]) ** 2 + float(f[6]) ** 2) ** 0.5)
+            except ValueError:
+                continue
+        if len(t) < 100:
+            continue
+        # 10th percentile, not the minimum: the still level includes gyro bias, and one quiet
+        # sample would put the baseline below it and make the threshold too tight.
+        base = sorted(w)[len(w) // 10]
+        thr = base + IMU_STILL_MARGIN
+        hot = [i for i, v in enumerate(w) if v > thr]
+        if not hot:
+            return (None, None, base, thr, t[0], t[-1])
+        return (t[hot[0]], t[hot[-1]], base, thr, t[0], t[-1])
+    return None
+
 
 def load(dirs):
     frames = {}
@@ -103,7 +148,42 @@ def main():
 
     span = (frames[anchor][-1] - frames[anchor][0]) / 1e9
     print("effective SET rate: %.2f Hz over %.1f s" % (complete / span, span))
-    print("(raw per-camera fps is not the number that matters here - a log whose sets are")
+
+    # AND SAY HOW MUCH OF IT THE RIG WAS MOVING FOR, when the IMU is in the log.
+    #
+    # This report used to end at the line above, and that is precisely how a recording was
+    # described as "90 s of 20 fps data" when 42% of its frames were a rig sitting still
+    # after the operator had stopped walking. Both numbers are needed: completeness says the
+    # log is INTACT, the motion window says it is USEFUL, and neither implies the other.
+    mw = motion_window(dirs)
+    if mw:
+        lo, hi, base, thr, imu_t0, imu_t1 = mw
+        f0 = frames[anchor][0]
+        print("\nMOTION (from imu0.csv; still baseline %.4f rad/s, threshold %.4f):" % (base, thr))
+        print("  all times relative to the first camera frame; IMU covers %+.1f s to %+.1f s"
+              % ((imu_t0 - f0) / 1e9, (imu_t1 - f0) / 1e9))
+        if lo is None:
+            print("  the gyro NEVER crossed the threshold - this log is a STATIONARY rig.")
+        else:
+            inside = sum(1 for t in frames[anchor] if lo <= t <= hi)
+            before = sum(1 for t in frames[anchor] if t < lo)
+            after = sum(1 for t in frames[anchor] if t > hi)
+            rate = len(frames[anchor]) / span
+            print("  motion runs %+.1f s to %+.1f s (%.1f s)"
+                  % ((lo - f0) / 1e9, (hi - f0) / 1e9, (hi - lo) / 1e9))
+            print("  frames before motion : %5d  (%4.1f%%)  %5.1f s stationary"
+                  % (before, 100.0 * before / len(frames[anchor]), before / rate))
+            print("  frames DURING motion : %5d  (%4.1f%%)  %5.1f s   <- the usable data"
+                  % (inside, 100.0 * inside / len(frames[anchor]), inside / rate))
+            print("  frames after motion  : %5d  (%4.1f%%)  %5.1f s stationary"
+                  % (after, 100.0 * after / len(frames[anchor]), after / rate))
+            if before + after > 0.2 * len(frames[anchor]):
+                print("  ^ over a fifth of this log is a rig that is not moving. Quote the")
+                print("    MOTION duration, not the recording duration, as what it contains.")
+            print("  to convert only the moving part:")
+            print("    raw_log_to_bag.py <dir> -o out.bag --motion")
+
+    print("\n(raw per-camera fps is not the number that matters here - a log whose sets are")
     print(" broken cannot be replayed as a synchronised rig, whatever its frame count.)")
 
 

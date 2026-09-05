@@ -90,7 +90,20 @@ def main():
                     help="zstd the .db3, as rosbag2 --compression-mode file does. Free here: "
                          "nothing is real time at conversion, which is exactly why the board "
                          "could not do it.")
-    ap.add_argument("--max-frames", type=int, default=0, help="per camera, 0 = all")
+    # --max-frames TAKES THE FIRST N, which is almost never the N you want. The rig is
+    # stationary while the operator starts the run and reaches the rig, so the first frames
+    # are the least useful in the log: on imglog_vio1_20260903_103102 a `--max-frames 600`
+    # subset (30 s, used for the 5.0c replay) spent its first 5.7 s on a stationary rig and
+    # threw away 21 s of motion that came later. Use --motion instead and let the IMU pick.
+    ap.add_argument("--max-frames", type=int, default=0,
+                    help="per camera, 0 = all. Takes the FIRST N - see --motion.")
+    ap.add_argument("--motion", action="store_true",
+                    help="convert only the window where the IMU says the rig was moving, "
+                         "read from imu0.csv in the log dir. This is normally what you want: "
+                         "a stationary rig makes a flawless log with nothing in it.")
+    ap.add_argument("--pad-s", type=float, default=1.0,
+                    help="seconds to keep either side of the motion window (default 1.0), "
+                         "so VO has a moment to initialise before anything moves")
     a = ap.parse_args()
 
     d = pathlib.Path(a.log_dir)
@@ -101,6 +114,24 @@ def main():
     if not cams:
         sys.exit("no cam*_index.csv in %s" % d)
 
+    lo = hi = None
+    if a.motion:
+        # Shared with check_log_sets.py rather than reimplemented: two thresholds that drift
+        # apart would mean the tool that reports the motion window and the tool that cuts on
+        # it disagree about where it is.
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+        from check_log_sets import motion_window
+        mw = motion_window([str(d)])
+        if not mw:
+            sys.exit("--motion needs imu0.csv in %s" % d)
+        lo, hi = mw[0], mw[1]
+        if lo is None:
+            sys.exit("--motion: the gyro never crossed %.4f rad/s - the rig never moved in "
+                     "this log, so there is nothing worth converting." % mw[3])
+        pad = int(a.pad_s * 1e9)
+        lo, hi = lo - pad, hi + pad
+        print("motion window: %.2f s (+/- %.1f s pad)" % ((hi - lo) / 1e9, a.pad_s))
+
     # Merge all cameras into ONE time-ordered stream. A bag whose messages are not sorted by
     # timestamp still plays, but every consumer that assumes monotonic time gets it wrong, and
     # the whole point of these logs is debugging timing.
@@ -108,11 +139,18 @@ def main():
     for cam in cams:
         idx = read_index(d / (cam + "_index.csv"))
         have = (d / (cam + ".raw")).stat().st_size // nbytes
+        # Integrity FIRST, on the whole index, and only then the motion cut - checking a
+        # filtered index against the full .raw would report every --motion run as damaged.
         if len(idx) != have:
             # The capture node stops the log if either stream fails, so a mismatch means the
             # run was killed mid-write. Trust the index: those frames are known-complete.
             print("  %s: index %d vs raw %d frames - using %d" % (cam, len(idx), have, min(len(idx), have)))
-        n = min(len(idx), have)
+        idx = idx[:min(len(idx), have)]
+        if lo is not None:
+            kept = [(s, o) for s, o in idx if lo <= s <= hi]
+            print("  %s: %d of %d frames inside the motion window" % (cam, len(kept), len(idx)))
+            idx = kept
+        n = len(idx)
         if a.max_frames:
             n = min(n, a.max_frames)
         entries += [(stamp, cam, off) for stamp, off in idx[:n]]
