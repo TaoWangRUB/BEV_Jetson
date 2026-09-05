@@ -309,8 +309,13 @@ services:
     command:
       - bash
       - -lc
+      # `exec` MATTERS HERE. stop_signal is SIGINT (line 24) so the node can close its CSV,
+      # but bash -lc does not forward signals to a child it is waiting on: the SIGINT killed
+      # the shell, the node ran on until the 20 s grace expired, and SIGKILL then skipped the
+      # destructor that writes the trailer and flushes. imulog has no wrapper and never had
+      # this problem. exec replaces the shell so the node IS pid 1 and gets the signal.
       - |
-        ros2 run bev_range range_node --ros-args \
+        exec ros2 run bev_range range_node --ros-args \
           -p csv:=${RANGE_CSV:-/logs/range0.csv} \
           -p port:=${TRIG_PORT:-/dev/ttyTHS1} \
           -p divisor:=${RANGE_DIV:-15}

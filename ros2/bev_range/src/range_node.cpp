@@ -4,11 +4,26 @@
 //
 // TIMESTAMPS. Two columns, and only one of them is exact:
 //
-//   pulses     the trigger edge counter, produced on the MCU. The capture side's `seq`
-//              advances exactly one per trigger edge, so this is the column to JOIN a
-//              range to a camera frame on: an integer identity, no clock comparison and
-//              no offset to estimate. Unlike delta_camera_imu (docs/timestamps.md), there is
-//              nothing here left unmeasured.
+//   pulses     the trigger edge counter, produced on the MCU. This is the column to JOIN a
+//              range to a camera frame on, and the join is exact ONCE ONE CONSTANT IS
+//              KNOWN — which it currently is not. Read this before using it:
+//
+//              An earlier version of this comment claimed `pulses` and the capture side's
+//              `seq` were the same number, so the join needed nothing solved. They are NOT.
+//              Both advance exactly one per trigger edge, but their ORIGINS differ: `seq`
+//              is Argus's per-session frame counter and restarts near 0 every recording,
+//              while `pulses` is the MCU's free-running lifetime counter. Measured on
+//              imglog_final_20260905_091337: cam1 `seq` began at 3 while `pulses` was
+//              ~60 550. So a constant integer offset separates them, and nothing in the
+//              recording writes it down.
+//
+//              The offset is recoverable from the two CLOCK_MONOTONIC columns, but only to
+//              about +-1 frame, because t_mono_ns below is the READ instant and its 7-22 ms
+//              of latency is a large fraction of the 33 ms frame period. +-1 frame is
+//              precisely the ambiguity the pulse counter was supposed to remove. Pinning it
+//              exactly needs the capture side to see the pulse counter too; until then treat
+//              the frame association as good to +-1 frame and say so in anything derived
+//              from it. Tracked in openspec add-replay-visual-diagnostics.
 //
 //   t_mono_ns  CLOCK_MONOTONIC when this process READ the line — the same clock imu0.csv
 //              and the camera CSVs use, so range is roughly comparable to those. It is
@@ -168,8 +183,12 @@ class RangeNode : public rclcpp::Node {
     *csv_ << "# Garmin LIDAR-Lite v3 on the camtrig MCU (I2C1, PB6/PB7)\n"
           << "# port=" << port_ << " divisor=" << divisor_
           << " (one reading every " << divisor_ << " trigger pulses)\n"
-          << "# pulses = the trigger edge counter; JOIN ON THIS - the capture side's seq\n"
-          << "#   advances one per edge, so range->frame is an exact integer match\n"
+          << "# pulses = the MCU's FREE-RUNNING trigger edge counter. Join frames on this,\n"
+          << "#   but note the capture side's `seq` is Argus's PER-SESSION counter and\n"
+          << "#   starts near 0, so a constant integer offset separates the two and this\n"
+          << "#   recording does not state it. Recover it from the t_mono_ns columns:\n"
+          << "#   good to about +-1 frame only, because t_mono_ns is the READ instant.\n"
+          << "#   frame_offset = UNMEASURED\n"
           << "# t_mono_ns = CLOCK_MONOTONIC when this node READ the line. Same clock as\n"
           << "#   imu0.csv and the camera CSVs, but NOT the measurement instant: it\n"
           << "#   includes acquisition (5-20 ms) + UART transit (~2 ms) + wake-up.\n"
@@ -224,7 +243,12 @@ class RangeNode : public rclcpp::Node {
       return;
     }
 
-    if (csv_) *csv_ << t << ',' << cm << ',' << pulses << '\n';
+    // FLUSH EVERY ROW. These arrive at ~2 Hz (one per `divisor` trigger pulses), so the cost
+    // is nothing, and the alternative lost an entire recording: the rows sat in the stream
+    // buffer and only the destructor flushed them, so any end that skips the destructor - a
+    // SIGKILL after the stop grace, a crash, a power cut - wrote a file with a correct header
+    // and no data. That is worse than no file, because it looks like "the sensor said nothing".
+    if (csv_) { *csv_ << t << ',' << cm << ',' << pulses << '\n'; csv_->flush(); }
     n_rows_++;
 
     sensor_msgs::msg::Range msg;

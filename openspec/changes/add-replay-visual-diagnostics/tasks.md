@@ -196,6 +196,51 @@
         lever arm between the devices is negligible, rather than aligning trajectories directly.
   - [ ] 5.5d Write the analysis scripts once a bag containing either sensor exists. Offered, not started.
 
+- [x] 5.7 **The rig logger's range channel never worked, and the first run of it found four
+  separate faults.** `bev_range` + the `rangelog` service were committed 2026-09-04 (`a870470`)
+  and deployed, but had never been run once — `/home/nvidia/logs` was empty. Running it produced
+  cameras and IMU with a `range0.csv` containing a correct provenance header and **zero data rows**,
+  which is the worst possible failure shape: it reads as "the sensor said nothing" rather than as a
+  bug. The sensor was fine throughout — `lidar_present=1`, streaming `!range_cm=N pulses=M` every
+  15 pulses exactly.
+
+  1. **The container never started.** `log_rig.sh` launched `rangelog` without `EXPOSURE_US`, and
+     `docker compose run <one service>` interpolates the WHOLE file at parse time, so the `capture`
+     service's `${EXPOSURE_US:?...}` aborted the command. `imulog` had always passed it. The
+     failure was invisible because the call ended in `>/dev/null 2>&1 || true`, and the fallback
+     diagnostic asked `docker logs` for a container a failed `run` never created. Same trap as
+     `retarget-vo-to-imx296-rig` 5.0c hit with the `shell` service.
+  2. **SIGINT never reached the node.** `rangelog` wraps it in `bash -lc`, which does not forward
+     signals to a child it is waiting on, so `stop_signal: SIGINT` killed the shell and the node
+     was SIGKILLed at the end of the grace period — skipping the destructor that closes the CSV.
+     `imulog` has no wrapper and never had this. Fixed with `exec`.
+  3. **The CSV buffered its rows** and only flushed in that destructor, so every reading was lost
+     with it. Now flushed per row: they arrive at ~2 Hz, so the cost is nothing, and a crash or a
+     power cut no longer empties the file.
+  4. **A leaked Argus session** failed the next capture with "no session for 0". `log_rig.sh` now
+     restarts `nvargus-daemon` in preflight every time, as `retarget-vo-to-imx296-rig` 4.6 asks.
+
+  Verified end to end on `imglog_final_20260905_091337`: 276 sets at 14 us skew, 11 426 IMU
+  samples, **17 range readings**, `pulses` advancing exactly +15.
+
+- [x] 5.8 **The range->frame join is NOT the exact integer identity `a870470` claimed.** That commit
+  and the node's header both stated `pulses` and the capture side's `seq` were the same counter, so
+  "there is nothing here left to solve for". They are not. Both advance one per trigger edge, but
+  `seq` is Argus's **per-session** counter (starts near 0) and `pulses` is the MCU's **free-running
+  lifetime** counter: on the verification log cam1 `seq` began at 3 while `pulses` was ~60 550.
+  A constant integer offset separates them and **no recording writes it down**.
+
+  It is recoverable from the two CLOCK_MONOTONIC columns, but only to about **+-1 frame**, because
+  the range `t_mono_ns` is the READ instant and carries 5-20 ms of acquisition plus ~2 ms of UART
+  against a 33 ms frame period — which is exactly the ambiguity the pulse counter existed to remove.
+  The claim is corrected in the node comment and in the CSV header (`frame_offset = UNMEASURED`).
+
+- [ ] 5.9 **Pin the range->frame offset exactly.** Needs the capture side to see the MCU pulse
+  counter, since the range node cannot: it owns the port for the run. Cheapest option is for
+  `log_rig.sh` to read the counter at preflight (it already holds the port then) and record it with
+  the first frame's `t_sof`. Until this is done, anything derived from a range-to-frame association
+  is good to +-1 frame and must say so — including 5.5b, which is the reason it matters.
+
 - [ ] 5.6 Tick or annotate `retarget-vo-to-imx296-rig` 5.0c with 5.2/5.3 above — the replay it records
   is the same log, and the vcam3 occlusion qualifies its tracking result.
 

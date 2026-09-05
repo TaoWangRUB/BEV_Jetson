@@ -52,6 +52,16 @@ FPS_MILLI=$(echo "$status" | sed -n 's/^fps_milli=\([0-9]*\)$/\1/p')
 TRIGGER_FPS=$(( FPS_MILLI / 1000 ))
 [ "$TRIGGER_FPS" -gt 0 ] || fail "generator reports ${TRIGGER_FPS} fps"
 
+# A SIGKILLed or crashed run leaks its Argus CaptureSession and the NEXT run dies with
+# "no session for 0" / "Argus setup failed" - which is what happened on the first two runs of
+# this script. Restarting the daemon is the documented cure and costs a second, so do it every
+# time rather than only after a visible crash: the leak is invisible until the next start.
+# (openspec retarget-vo-to-imx296-rig 4.6 asks for exactly this on the VO path.)
+if ! sudo systemctl restart nvargus-daemon 2>/dev/null; then
+  echo "NOTE: could not restart nvargus-daemon; a leaked session may fail the capture." >&2
+fi
+sleep 2
+
 STAMP=$(date +%Y%m%d_%H%M%S)
 DIR="imglog_${LABEL}_${STAMP}"
 IMU_NAME="bev_imulog_${STAMP}"
@@ -75,14 +85,25 @@ trap cleanup EXIT
 # of /dev/ttyTHS1, which the preflight above was still using for the generator status. From
 # this point until cleanup nothing else may open that port - the range stream and the
 # trigger console share it, and two readers steal each other's bytes.
+# EXPOSURE_US AND MOTION_SECONDS ARE PASSED TO A SERVICE THAT DOES NOT USE THEM, deliberately.
+# `docker compose run <one service>` still interpolates the WHOLE file at parse time, so the
+# `capture` service's `${EXPOSURE_US:?...}` aborts the command before rangelog is even looked
+# at. The imulog call below has always passed them and worked; this one did not, and the first
+# real run recorded cameras and IMU with no range at all. (Same trap as openspec
+# retarget-vo-to-imx296-rig 5.0c hit with the `shell` service.)
 echo "starting the range logger (sole owner of $TRIG_PORT from here)"
-RANGE_CSV="/logs/${DIR}/range0.csv" TRIG_PORT="$TRIG_PORT" RANGE_DIV="${RANGE_DIV:-15}" \
-  docker compose run -d --name "$RANGE_NAME" rangelog >/dev/null 2>&1 || true
+range_err=$(EXPOSURE_US="$EXPOSURE_US" MOTION_SECONDS="$SECS" \
+  RANGE_CSV="/logs/${DIR}/range0.csv" TRIG_PORT="$TRIG_PORT" RANGE_DIV="${RANGE_DIV:-15}" \
+  docker compose run -d --name "$RANGE_NAME" rangelog 2>&1 >/dev/null) || true
 sleep 3
 if docker ps --format '{{.Names}}' | grep -qx "$RANGE_NAME"; then
   echo "range logger up (1 reading / ${RANGE_DIV:-15} pulses)"
 else
+  # Print what actually failed. The old version discarded stderr and then asked docker for the
+  # logs of a container that a failed `run` never created, so it reported nothing at all - the
+  # reason a missing range channel went unexplained.
   echo "NOTE: the range logger did not start - recording without range." >&2
+  [ -n "$range_err" ] && echo "$range_err" | tail -5 >&2
   docker logs "$RANGE_NAME" 2>&1 | tail -5 >&2 || true
 fi
 
@@ -115,10 +136,16 @@ else
   echo "WARNING: imu0.csv is empty - the IMU produced nothing this run." >&2
 fi
 # A range channel that produced nothing is a NOTE, not a WARNING: it is the one OPTIONAL
-# stream here and the recording is complete without it. Join it to the frames on
-# `pulses` <-> `seq`, never on the timestamp - see the header inside the file.
+# stream here and the recording is complete without it. Join it to the frames on `pulses`,
+# NOT on the timestamp - but read the header inside the file first: `pulses` is the MCU's
+# free-running counter and the camera `seq` is Argus's per-session one, so a constant offset
+# separates them and this recording does not state it (recoverable from the timestamps to
+# about +-1 frame).
 if [ -f "${HOST_LOGS}/${DIR}/range0.csv" ]; then
-  nrange=$(grep -vc '^#' "${HOST_LOGS}/${DIR}/range0.csv" 2>/dev/null || echo 0)
+  # `|| echo 0` here was a bug: grep -c exits 1 when it counts zero, so BOTH its own "0" and
+  # the echo fired and nrange became "0\n0", which `[ -gt ]` then rejected as a non-integer.
+  # Put the fallback on the ASSIGNMENT, not inside the substitution.
+  nrange=$(grep -vc '^#' "${HOST_LOGS}/${DIR}/range0.csv" 2>/dev/null) || nrange=0
   if [ "${nrange:-0}" -gt 0 ]; then
     echo "range0.csv: ${nrange} readings"
   else
