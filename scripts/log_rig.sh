@@ -92,10 +92,12 @@ trap cleanup EXIT
 # real run recorded cameras and IMU with no range at all. (Same trap as openspec
 # retarget-vo-to-imx296-rig 5.0c hit with the `shell` service.)
 echo "starting the range logger (sole owner of $TRIG_PORT from here)"
+# RANGE_DIV=1 = one reading per trigger edge (20 Hz at the preferred fps). The LIDAR-Lite
+# v3 acquisition is 5-20 ms, which fits inside a 50 ms frame; divisor 15 was ~1.3 Hz and
+# threw away usable floor-height samples for no bandwidth reason (a row is ~40 bytes).
+# NO comments between the backslash-continued lines below - a # ends the whole command
+# (same trap as log_raw.sh documented for image_log_direct).
 range_err=$(EXPOSURE_US="$EXPOSURE_US" MOTION_SECONDS="$SECS" \
-  # RANGE_DIV=1 = one reading per trigger edge (20 Hz at the preferred fps). The LIDAR-Lite
-  # v3 acquisition is 5-20 ms, which fits inside a 50 ms frame; divisor 15 was ~1.3 Hz and
-  # threw away usable floor-height samples for no bandwidth reason (a row is ~40 bytes).
   RANGE_CSV="/logs/${DIR}/range0.csv" TRIG_PORT="$TRIG_PORT" RANGE_DIV="${RANGE_DIV:-1}" \
   docker compose run -d --name "$RANGE_NAME" rangelog 2>&1 >/dev/null) || true
 sleep 3
