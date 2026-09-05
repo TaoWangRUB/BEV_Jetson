@@ -226,8 +226,9 @@ python3 scripts/port/check_log_sets.py datasets/imglog_run1_<stamp>
 ```
 
 Reports complete 4-camera sets, **interior** completeness (excludes the ragged start/stop edge),
-and — when `imu0.csv` is present — the **motion window** (how many frames are actually useful).
-Look for `INTERIOR sets: … <- LOSSLESS` and the `frames DURING motion` line.
+the **motion window** from `imu0.csv`, and — when present — **IMU rate / seq gaps / camera
+bracket** plus **rangefinder rate / pulse-step misses / divisor**. Look for
+`INTERIOR sets: … <- LOSSLESS`, `frames DURING motion`, and range `missed pulse steps: 0`.
 
 **2. Where did a missing edge go?** (sensor missed it vs capture loop too slow)
 
