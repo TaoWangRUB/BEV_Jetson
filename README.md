@@ -47,69 +47,245 @@ calibrates omni in the first place. The full argument — including the arctan p
 ceiling and the frustum-overlap gate that otherwise rejects a surround rig — is in
 [docs/cuvslam_tx2.md](docs/cuvslam_tx2.md).
 
-## 3. Quick start
+## 3. Procedures
 
-Everything runs through [docker-compose.yml](docker-compose.yml) from the repo root **on the TX2**
-(`/media/nvidia/workspace/BEV_Jetson`).
+Everything below runs through [docker-compose.yml](docker-compose.yml) from the repo root **on the
+TX2** (`/media/nvidia/workspace/BEV_Jetson`). Edit on the host, push, pull on the board.
 
 ```bash
 export TX2=tx2-eth                              # or tx2-wlan
 export BEVDIR=/media/nvidia/workspace/BEV_Jetson
 ssh    $TX2 "cd $BEVDIR && <command>"           # non-interactive
 ssh -t $TX2 "cd $BEVDIR && <command>"           # interactive (a run you watch live)
+
+# sync host → board
+git push
+ssh $TX2 "cd $BEVDIR && git pull --no-recurse-submodules"
 ```
 
-Sync code host→board: edit on host → `git push` → `ssh $TX2 "cd $BEVDIR && git pull --no-recurse-submodules"`.
+Script index (what each file does, and where it runs): [scripts/README.md](scripts/README.md).
+Deep build / fused-vs-modular numbers: [docs/build_and_run.md](docs/build_and_run.md).
 
-**Build**
+### 3.0 One-time build
 
 ```bash
-sudo ./scripts/setup_tx2_docker.sh        # one-time board prep (log out/in for the docker group)
-docker compose build                      # the cuvslam-foxy:tx2 image
-docker compose run --rm build-cuvslam     # libcuvslam.so, CUDA-10.2 port
-docker compose run --rm build-ws          # colcon build the ROS 2 workspace
+# on the TX2, from $BEVDIR
+sudo ./scripts/setup_tx2_docker.sh        # once: docker + nvidia runtime (log out/in for the group)
+docker compose build                      # cuvslam-foxy:tx2 image
+docker compose run --rm build-cuvslam     # libcuvslam.so (CUDA-10.2 port)
+docker compose run --rm build-ws          # ROS 2 workspace (bev_camera, bev_cuvslam, bev_imu, bev_range)
 ```
 
-`./scripts/port/build_and_validate.sh` does image → `libcuvslam.so` → `WarmUpGPU` smoke test in one shot.
+`./scripts/port/build_and_validate.sh` does image → `libcuvslam.so` → `WarmUpGPU` smoke test in one
+shot. Re-run `build-ws` after any C++ change; re-run `build-cuvslam` only after a cuVSLAM / patch
+change.
 
-**Run**
+### 3.1 Run the whole pipeline (live VO)
+
+The deployed path is the **fused** node: Argus NVMM → CUDA → cuVSLAM in one process (no DDS
+images). Prefer it for measurement. The **modular** path (capture node + VO over DDS) is for
+bring-up and bag replay — the fused node cannot replay a bag, by construction.
+
+**Preflight (do this after every reboot / power cycle).** `trigger_mode` and generator polarity
+reset silently; a free-running or wrong-polarity rig still produces images and then wastes a run.
 
 ```bash
-docker compose run --rm fused             # fused zero-copy Argus -> cuVSLAM VO (recommended)
-docker compose run --rm modular           # modular capture + VO, for comparison
-docker compose run --rm logonly           # raw frames straight to disk: no DDS, no VO, no rosbag2
-docker compose run --rm panorama          # publish /bev/panorama (mono8) for rviz
+# on the TX2 host
+echo 1 | sudo tee /sys/module/imx296/parameters/trigger_mode
+python3 /home/nvidia/j106-trigctl.py --port /dev/ttyTHS1 status
+# expect: running=1, polarity=active_low, fps_milli=20000 (or whatever you set)
+# if polarity wrong:  python3 /home/nvidia/j106-trigctl.py --port /dev/ttyTHS1 raw 'pol 0'
+# set rate:           python3 /home/nvidia/j106-trigctl.py --port /dev/ttyTHS1 fps 20
+sudo systemctl restart nvargus-daemon; sleep 2
 ```
 
-`docker compose run --rm shell` drops you into the container. See
-[docs/build_and_run.md](docs/build_and_run.md) for the full guide, the recording modes and their
-measured throughput, and the fused-vs-modular numbers.
-
-**Look at a run**
+**Live VO**
 
 ```bash
-python3 scripts/vo/rerun_multicam.py <obs_dir> --panorama --bev-fit-plane --serve
+docker compose run --rm fused             # recommended: zero-copy VO → /cuvslam/odometry + TF
+# RECORD=1 docker compose run --rm fused  # also bags odometry + TF (no images)
+
+docker compose run --rm modular           # capture + VO over DDS (bring-up / comparison)
+docker compose run --rm panorama          # /bev/panorama for rviz
+docker compose run --rm shell             # interactive Foxy shell
 ```
 
-A Rerun viewer with the eight pinholes, the trajectory and landmarks, a ground-plane BEV and a 360°
-panorama. `./scripts/capture_montage_tx2.sh /tmp/bev.png` gets a single still montage off the board.
+Params: [ros2/bev_cuvslam/config/fused_vo_params.yaml](ros2/bev_cuvslam/config/fused_vo_params.yaml)
+(`ports: [c,d,e,f]`, `exposure_us`, `ae_lock: auto`). Override with
+`... bev_cuvslam_fused.launch.py params:=/abs/path.yaml`.
 
-**When a camera goes black** (a montage tile is dark, or the node logs `acquireFrame timeout`), reset
-from least to most invasive — each step fixes a different failure:
+**Measured motion test (tape + odometry)** — gates on trigger_mode / polarity / pulse width,
+restarts Argus, writes a run directory under `/media/nvidia/workspace/motion_<label>_…`:
 
 ```bash
-# 1. Argus daemon wedged (most common, after a SIGKILL'd run leaked a session) -> all cams may go black
+# on the TX2, from $BEVDIR
+./scripts/vo/run_motion_test.sh walk1 5.0                 # fused VO, bag odom+tf; tape = 5.0 m
+MOTION_SECONDS=60 ./scripts/vo/run_motion_test.sh walk1 5.0   # auto-stop after 60 s
+./scripts/vo/run_motion_test.sh walk1 5.0 --record-images     # modular + camera bag (replayable)
+# then on the host:
+python3 scripts/vo/analyze_motion.py /path/to/motion_walk1_…
+```
+
+Do **two passes** if you want both live numbers and a replayable image bag: `--record-images`
+competes for CPU/I/O and is a different pipeline. Stop with `Ctrl-C` / `docker stop`, never
+`docker rm -f` — a SIGKILL leaks the Argus session.
+
+**Quick visual check that cameras are alive**
+
+```bash
+./scripts/capture_montage_tx2.sh /tmp/bev.png    # 4-up still off the board
+# or live preview (host + board): scripts/stream/csi_sender.sh + csi_receiver.sh
+```
+
+**When a camera goes black** (`acquireFrame timeout`, dark montage tile) — least to most invasive:
+
+```bash
+# 1. Argus wedged (usual after SIGKILL)
 ssh $TX2 "docker ps -aq --filter ancestor=cuvslam-foxy:tx2 | xargs -r docker rm -f; echo nvidia | sudo -S systemctl restart nvargus-daemon"
 
-# 2. One camera binds but won't stream: pulse the shared reset from a BOUND sibling on the same bus
+# 2. One cam binds but won't stream — shared reset from a bound sibling
 ssh $TX2 "echo 1 | sudo tee /sys/bus/i2c/devices/2-0010/j106_reset_recover; echo nvidia | sudo -S systemctl restart nvargus-daemon"
 
-# 3. Still dead -> true cold power-cycle (pull the DC barrel jack ~10 s; a soft reboot leaves the rails up)
+# 3. Still dead → cold power-cycle (pull the DC barrel ~10 s; soft reboot leaves rails up)
 ```
 
-If it binds at i2c (`i2cdetect -y -r 2` shows `UU`) but never delivers frames after all three steps,
-it is a physical CSI fault: re-seat the ribbon at both ends, or swap that port's module. Always stop
-runs with `docker stop`, not `docker rm -f` — a SIGKILL leaks the Argus session and wedges the daemon.
+If i2c shows `UU` but frames never arrive after all three, it is a CSI ribbon fault.
+
+---
+
+### 3.2 Log data (raw cameras + IMU + range)
+
+**Do not bag images on the board.** `ros2 bag record` tops out at ~6–7 fps (writer-bound). Log
+**raw** at the trigger rate, then convert offline.
+
+The one command for a full rig recording (cameras + IMU + range into one directory) is
+[scripts/log_rig.sh](scripts/log_rig.sh). It runs on the **TX2 host**, gates on trigger_mode /
+polarity / generator rate, restarts `nvargus-daemon`, and brackets the cameras with the IMU.
+
+```bash
+# on the TX2, from $BEVDIR — prefer 20 fps (see rates below)
+python3 /home/nvidia/j106-trigctl.py --port /dev/ttyTHS1 fps 20
+
+MOTION_SECONDS=60 LOG_LABEL=run1 ./scripts/log_rig.sh
+# → /home/nvidia/logs/imglog_run1_<stamp>/
+#    cam{1..4}.raw          concatenated mono8 (1456×1088)
+#    cam{1..4}_index.csv    stamp_ns, byte_offset
+#    cam{1..4}.csv          every trigger edge (seq, capture_id, sof, exposure, image=0|1)
+#    geometry.txt           width / height / bytes_per_frame
+#    imu0.csv               CLOCK_MONOTONIC, brackets the cameras
+#    range0.csv             optional; join on pulses, not stamp
+```
+
+**Rates (measured on this board)**
+
+| config | bandwidth | result |
+|---|---|---|
+| **20 fps, all four on eMMC** (`LOG_DIR=/logs`) | ~127 MB/s | **lossless** interior sets; practical max ~90 s of free eMMC |
+| 30 fps, split `LOG_DIRS=/logs,/logs,/sdlog,/ramlog` | ~190 MB/s split | ~97 % complete sets; degrades over the run |
+| 30 fps, all four on `/logs` | 190 MB/s vs 136 | **refused** by the bandwidth gate (would drop frames) |
+
+```bash
+# 20 fps, single target (default / recommended)
+MOTION_SECONDS=60 LOG_LABEL=run1 ./scripts/log_rig.sh
+
+# 30 fps only if you need it — must split, and accept residual loss
+python3 /home/nvidia/j106-trigctl.py --port /dev/ttyTHS1 fps 30
+LOG_DIRS="/logs,/logs,/sdlog,/ramlog" MOTION_SECONDS=60 LOG_LABEL=run30 ./scripts/log_rig.sh
+```
+
+Images alone (no IMU): `EXPOSURE_US=4986 TRIGGER_FPS=20 LOG_DIR=/logs MOTION_SECONDS=60 docker compose run --rm logonly`
+— but prefer `log_rig.sh`; it owns the preflight. Cameras-only detail and the bandwidth /
+warmup rules live in the header of [scripts/log_raw.sh](scripts/log_raw.sh).
+
+**Space.** eMMC is tight (~16 GB free typical). Delete or copy off finished logs before the next
+long run. Quote **motion duration**, not wall-clock recording length — stop when the motion
+stops (see §3.3).
+
+**Pull a log to the host**
+
+```bash
+scp -r $TX2:/home/nvidia/logs/imglog_run1_<stamp> datasets/
+```
+
+---
+
+### 3.3 Analyse logged data
+
+All of these run on the **host** (or anywhere with the repo + python deps), against a raw log
+directory. Completeness and usefulness are separate: a stationary rig produces a flawless log
+with nothing in it for VO.
+
+**1. Is the log intact? Was the rig moving?**
+
+```bash
+python3 scripts/port/check_log_sets.py datasets/imglog_run1_<stamp>
+```
+
+Reports complete 4-camera sets, **interior** completeness (excludes the ragged start/stop edge),
+and — when `imu0.csv` is present — the **motion window** (how many frames are actually useful).
+Look for `INTERIOR sets: … <- LOSSLESS` and the `frames DURING motion` line.
+
+**2. Where did a missing edge go?** (sensor missed it vs capture loop too slow)
+
+```bash
+python3 scripts/port/locate_frame_loss.py datasets/imglog_run1_<stamp>
+# optional: --period-us 50000   # 20 fps; default = median inter-frame gap
+```
+
+**3. Convert raw → rosbag2 (Foxy v4), then replay VO**
+
+```bash
+# convert only the moving part (recommended) — same motion_window() as check_log_sets
+python3 scripts/port/raw_log_to_bag.py datasets/imglog_run1_<stamp> \
+  -o /tmp/run1.bag --motion
+# optional: --pad-s 1.0   # keep ±1 s of stillness so VO can initialise
+# optional: --compress    # zstd the .db3
+# avoid --max-frames N alone: it takes the FIRST N frames (often the stationary lead-in)
+
+# replay into the modular VO on the board (fused cannot replay bags)
+scp -r /tmp/run1.bag $TX2:/media/nvidia/workspace/
+ssh -t $TX2 "cd $BEVDIR && docker compose run --rm shell"
+# inside the container:
+ros2 launch bev_cuvslam bev_cuvslam.launch.py &
+ros2 bag play /media/nvidia/workspace/run1.bag --clock
+# record odometry if you want a host-side verdict:
+#   ros2 bag record /cuvslam/odometry /tf /cuvslam/landmarks /cuvslam/observations -o /tmp/obs
+```
+
+**4. Visual diagnostics (Rerun)** — eight virtual pinholes, trajectory, landmarks, optional
+panorama / BEV. Needs an odometry/observations bag **and** the camera bag:
+
+```bash
+# on the host
+python3 scripts/vo/rerun_multicam.py /path/to/obs_or_odom_bag \
+  --images /path/to/run1.bag \
+  --panorama --bev-fit-plane --serve
+# --frames N limits how much is logged into the viewer; --save out.rrd writes an .rrd
+```
+
+**5. Scale / drift verdict** (from a `run_motion_test.sh` directory that has `tape_metres.txt`)
+
+```bash
+python3 scripts/vo/analyze_motion.py /path/to/motion_walk1_…
+# 5.1: tape > 0 → true-scale pass/fail (±5 %)
+# 5.2: tape = 0 → return-to-origin drift over path length
+```
+
+**6. Live capture health** (while a node is publishing images — modular / capture, not fused)
+
+```bash
+# inside docker compose run --rm shell, with capture already up
+python3 scripts/port/luma_stability.py --seconds 30   # AE hunting → large luma p2p
+python3 scripts/port/sync_check.py                    # inter-camera timestamp spread
+python3 scripts/port/topic_rate.py /cam1/image_raw
+```
+
+**Typical offline chain**
+
+```text
+log_rig.sh  →  check_log_sets.py  →  raw_log_to_bag.py --motion
+         →  ros2 bag play + modular VO  →  analyze_motion.py / rerun_multicam.py
+```
 
 ## 4. Calibration
 
@@ -149,6 +325,7 @@ exist. Porting them means teaching them the Mei projection; `mei_project()` in
 
 | doc | covers |
 |---|---|
+| [README §3](README.md#3-procedures) | **how to run, log, and analyse** — start here for commands |
 | [docs/build_and_run.md](docs/build_and_run.md) | full build and run guide, recording modes, benchmarks |
 | [docs/cuvslam_tx2.md](docs/cuvslam_tx2.md) | the CUDA-10.2 port, and which camera models cuVSLAM can consume |
 | [docs/timestamps.md](docs/timestamps.md) | the camera/IMU timestamp contract — the four rules |

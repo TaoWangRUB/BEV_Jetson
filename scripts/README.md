@@ -3,6 +3,10 @@
 Index of the helper scripts in this folder. "Runs on" = **TX2** (the board, usually inside the
 `cuvslam-foxy:tx2` container) or **dev** (your workstation, needs python3 + opencv + numpy).
 
+**How to use them end to end** (run VO, log raw data, analyse): see
+[README §3 Procedures](../README.md#3-procedures). This file is the catalogue; that section is the
+runbook.
+
 ## Top level — build & run
 
 | script | runs on | purpose |
