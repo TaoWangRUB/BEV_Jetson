@@ -1043,6 +1043,61 @@ physically moved - the remaining items are not doable from here.
   **Caveat, unchanged from 5.0c:** this log carries no ground truth, so none of the above closes 5.1
   or 5.2. It sharpens what to measure when a run with ground truth is made.
 
+- [x] 5.0e **Raw logging is now LOSSLESS at 20 fps, and the residual 0.1–0.2 % everything above
+  quotes was startup, not storage. 2026-09-05.**
+
+  5.0c and 5.0d both reported "99.9 % complete sets" and left it there, as if a fraction of a
+  percent were simply the cost of recording. It was not. Locating the missed edges by sequence
+  number instead of counting them showed the loss was **entirely in the first 0.15 s**:
+
+  | | missed trigger edges |
+  |---|---|
+  | cam1 | seq 3–4 |
+  | cam2 | seq 2–3 |
+  | cam3 | seq 2 |
+  | cam4 | **none at all** |
+
+  and **58 s of steady state missed not one edge on any camera.** The four Argus streams come up
+  ~215 ms apart and miss edges *independently* while they do, so those first few edges are
+  incomplete sets — and an incomplete set from a synchronised rig is worth very little.
+
+  **Fixed in the node rather than trimmed offline** (`log_warmup_ms`, default 500): the image log
+  waits until every camera has delivered a frame, then settles, then writes. Gated on
+  `image_log_dir` so the DDS/VO path is untouched. The skipped frames still get a frame-CSV row
+  with `image=0`, so every trigger edge stays in the record. Verified over 88 s at 20 fps:
+
+  ```
+  COMPLETE 4-camera sets: 1763 of 1764  (99.9%)
+    ragged boundary edges (run start/stop, not loss): 1
+  INTERIOR sets: 1763 of 1763  (100.00%)   <- LOSSLESS
+  effective SET rate: 20.00 Hz over 88.1 s
+  ```
+
+  `index == logged == .raw frame count` exactly on all four cameras, `writer q max 0–1/64`,
+  `dropped 0`, worst steady-state skew **1 µs**. The one remaining incomplete set is the final
+  trigger edge, which reaches some cameras and not others because the run is stopped while it is
+  running — one edge, and a symptom of nothing. `check_log_sets.py` now reports interior
+  completeness separately for exactly that reason: a lossless log used to read as 99.9 % and was
+  indistinguishable at a glance from real dropping.
+
+  **This also incidentally beat the documented stall rate.** `log_raw.sh` recorded "one brief
+  global stall roughly every 80 s" at 20 fps (60 s had none, 90 s had one, 180 s had two). Three
+  runs totalling 204 s of steady state produced **zero** interior loss, so that rate is at worst
+  pessimistic now — but it was measured over 5.5 min and this is 3.4, so it is not yet retracted.
+
+  **And 30 fps is confirmed impossible on one target, which is arithmetic rather than a bug.**
+  Four cameras at 30 fps is 190 MB/s against eMMC's measured 136; the log_rig default put all
+  four there and produced **95.4 % complete sets** with losses spread through the run. `log_raw.sh`
+  checked *space* but not *bandwidth*, so that sailed through — it fits on disk easily. It now
+  **refuses** and names the two fixes (lower the trigger; or split `LOG_DIRS` so each target stays
+  inside its own measured limit), with `LOG_BANDWIDTH_OK=1` to override. The documented 30 fps
+  split still passes.
+
+  **Practical limit worth knowing:** at 20 fps on eMMC alone the *space* check caps a run at about
+  90 s (126.7 MB/s against ~15.8 GB free, with its 1.4× startup allowance). Longer runs need
+  `LOG_DIRS` — and note 2 cameras at 20 fps is 66 MB/s, which genuinely exceeds the SD's measured
+  62.6, so the split has to be 3 on eMMC + 1 elsewhere rather than 2 + 2.
+
 - [ ] 5.1 Move the rig a measured straight-line distance; record `/cuvslam/odometry` + `/tf` and compare reported translation against the tape measure (spec: *Translation is recovered at true scale*, 5 %).
       **Now the highest-value open item in this change.** `add-replay-visual-diagnostics` 3.5 finds the
       floor **1.36 m** below a head-carried rig, against an expected ~1.60–1.75 m — a suspected
