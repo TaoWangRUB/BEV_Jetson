@@ -583,8 +583,14 @@ than assumes, because a trigger swap is precisely the event that can degrade ske
   part of this change. **The C++ is edited but not compiled** (no ROS 2 on this host); it builds or
   fails in the §4.5 board session like the rest of the node.
 
-- [~] 3R.17 **Run 2026-09-01 as a dry run on the round-2 candidate — PASS, and it found something the
-  check was not looking for.** Left partial: the real run is against the promoted files after 3R.16.
+- [x] 3R.17 **Run 2026-09-01 as a dry run on the round-2 candidate — PASS, and it found something the
+  check was not looking for.** **Real run against the promoted files done 2026-09-05: PASS.**
+  `scripts/vo/verify_rig_build.sh` with no arguments, i.e. the tracked config the node actually
+  loads (`rig_extrinsics_imx296.yaml` + `virtual_stereo_imx296.yaml` + `imx296_1456x1088`):
+  frustum **0.936 / 0.934 / 0.916 / 0.945**, all 8 virtual cameras paired, and all three layout
+  signs correct (cam2 x = −0.1083, cam4 z = −0.2181, cam3 x = +0.1128). Identical to the candidate
+  figures, which is the expected result — 3R.16 promoted that candidate unchanged — and it is worth
+  having as a fact rather than an inference, since promotion is exactly where a file gets swapped.
 
   Frustum, round-2 candidate (`closed.yaml` + `chains/`): **0.936 / 0.934 / 0.916 / 0.945**, all four
   pairs, clear of the hard-coded 0.5 gate. Round-1 tracked config reproduces 4.1b exactly
@@ -824,17 +830,78 @@ physically moved - the remaining items are not doable from here.
   library agree, and a future bump could change it silently. Worth re-checking that constant on
   every cuVSLAM upgrade.
 
-- [ ] 4.7 **Make the fused node resolve ports at runtime, as the capture node already does.**
-  It takes raw 0-based Argus indices from `sensor_ids`, so it assumes bind order equals port
-  order c,d,e,f. Task 1.1 established that this must not be assumed — a different boot shifted
+- [x] 4.7 **DONE 2026-09-05, and it turned out the shared header already existed and nothing used it.**
+  The fused node took raw 0-based Argus indices from `sensor_ids`, so it assumed bind order equals
+  port order c,d,e,f. Task 1.1 established that this must not be assumed — a different boot shifted
   it, which is why `argus_capture_node` resolves at runtime. A shift here permutes the cameras
   against the extrinsics silently, and the frustum graph would still pass: it is the same shape
   of error as the round-1/round-2 mirror (3R.17).
 
-- [ ] 4.6 **Preflight the VO path the way the calibration path is preflighted.** `trigger_mode` silently
+  **The fix is smaller than the finding.** `bev_camera/include/bev_camera/argus_timing.hpp` already
+  held the port table, the sysfs scan, the trigger probe and the exposure-midpoint rule, and its own
+  header comment says it is *"used by BOTH the capture node and the fused VO node — these two facts
+  must not be allowed to drift apart"*. **Nothing included it.** The capture node carried a verbatim
+  copy of the port table and a near-copy of `frame_timing()`; the fused node had a third variant.
+  The header was dead code and the drift it was written to prevent had already happened. Both nodes
+  now include it, and `bev_cuvslam` gained a `bev_camera` build dependency (the CMake comment in
+  `bev_camera/CMakeLists.txt` had been describing this arrangement as though it existed).
+
+  **Verified live on the board**, not merely compiled:
+
+      port c (imx296 2-001a) -> sensor-id 0 -> cam1     port e (imx296 7-001a) -> sensor-id 2 -> cam3
+      port d (imx296 2-0018) -> sensor-id 1 -> cam2     port f (imx296 7-0018) -> sensor-id 3 -> cam4
+
+  On this boot bind order *does* equal port order, so the resolved ids match the `[0,1,2,3]` that was
+  hard-coded — the run proves the resolution works, not that it changed the answer today. That is the
+  point: the value is that a shifted boot now moves with the hardware instead of silently mislabelling
+  the rig. `sensor_ids` survives as an override and warns that the mapping is then unverified;
+  a missing port throws rather than starting a partially populated rig.
+
+- [x] 4.7b **Two further defects found in the fused node while doing 4.7, both from never being
+  retargeted off the IMX219 rig. One of them is worth ~40 % of the odometry rate.**
+
+  1. **No AE lock.** Under external trigger AE cannot reach its main actuator and hunts on gain
+     instead — 1.4 measured a 3.5 Hz limit cycle at 171 % of mean luma and the capture node has
+     clamped gain and locked AE ever since. The fused node never did, so the fused path has been
+     feeding cuVSLAM hunting brightness all along.
+  2. **Per-camera exposure in the midpoint stamp.** All four cameras fire on one trigger edge for one
+     pulse width, so subtracting each camera's *own* Argus-reported half-exposure injects differences
+     the hardware does not have — into the very stamps the 1 µs skew gate then judges. Now latched
+     rig-wide via the shared header, with `exposure_us: 4986` so the stamp rests on the measured pulse
+     width rather than the 0.521 ms fiction Argus reports under trigger (1.10).
+
+  **Controlled A/B, same rig, same scene, minutes apart, ~45 s each:**
+
+  | | AE locked | AE free |
+  |---|---|---|
+  | odometry rate | **14.7–15.0 Hz** | 9.8–12.0 Hz |
+  | `Track()` | **43–45 ms, flat** | 56 → 79 ms, rising, plateaus ~78 |
+  | acquire + gpucopy | 23 ms | 21–23 ms |
+
+  **This answers the question 5.0b left open.** 5.0b recorded `Track()` rising monotonically within a
+  run (70.9 → 93.2 ms over 24 s), ruled out thermal, clocks, CPU availability and library version, and
+  was left with "the scene" as an explicitly unmeasured hypothesis. The rise is **AE hunting**: with AE
+  free the curve climbs and plateaus, with AE locked it is flat for the whole run. `acquire+gpucopy` is
+  unchanged between the two, so this is cuVSLAM's cost responding to the images, not a capture effect.
+
+  Honest limits: one scene, one ~45 s pair, on wall power. 5.0b's run was on battery, so this
+  identifies a sufficient mechanism with the same signature rather than proving that *that* run's rise
+  had this cause. It does remove "the scene" as the leading hypothesis, and 4.8's reading of the
+  morning tail rise as "the shutdown tail" is now doubly unsafe — that run had no AE lock either.
+
+- [~] 4.6 **Preflight the VO path the way the calibration path is preflighted.** `trigger_mode` silently
   resets to 0 on every reboot and the VO then produces nothing but drops, while asking "is the trigger
   running?". `record_calib_session.sh` already checks and sets it; add the same to the VO run path,
   plus the F401 polarity/exposure read-back and an `nvargus-daemon` restart on a leaked session.
+
+  **Partial, 2026-09-05 (4.7).** The fused node now reads `trigger_mode` at startup and warns
+  explicitly that the cameras are free-running and that every set will be dropped by the skew gate —
+  so the failure names itself instead of presenting as four broken cameras. That is the *diagnosis*
+  half only. **Still owed:** the same check in the run scripts as a gate rather than a warning, the
+  polarity and `pulse_ns` read-back that derives `exposure_us` instead of trusting the yaml (the stamp
+  is SOF − exposure/2, so a stale value biases every timestamp rather than failing), and the
+  `nvargus-daemon` restart. `scripts/log_rig.sh` already does the daemon restart and the generator
+  read-back; the VO run path should reuse that block rather than grow a second copy.
 
 - [~] 5.0 **Recording pipeline set up and deployed 2026-09-01; NOT run.** Waiting on rig time.
 
@@ -907,6 +974,12 @@ physically moved - the remaining items are not doable from here.
   and end considerably slower. **Cheap way to settle it:** one longer stationary run with every
   2 s sample captured, and see whether the curve flattens. Worth doing before a long motion run
   is planned around a rate.
+
+  **SETTLED 2026-09-05 by 4.7b: the rise is AE hunting, and the remaining candidate named above
+  ("the scene") was wrong.** With AE free the curve climbs 56 → 79 ms and plateaus; with AE locked
+  it is flat at 43–45 ms for the whole run, at 14.7–15.0 Hz instead of ~10.5. The fused node had no
+  AE lock at all until 4.7b, so every fused measurement in this file — including this task's battery
+  numbers and 4.8's 13.8 Hz — was taken with AE hunting. Re-measure before drawing a rate conclusion.
 
 - [~] 5.0c **First replayable 4-camera IMX296 motion log, replayed through VO end to end, 2026-09-03.**
   This closes the gap 5.0 flagged ("No existing bag can substitute" — every prior IMX296 recording
