@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bev_ground</name>
+  <version>0.1.0</version>
+  <description>Metric bird's-eye ground-plane mosaic from the 4x IMX296 fisheye rig.
+  Projects each camera onto the calibrated ground plane through its full extrinsics and
+  the Mei (omni-radtan) model, so features lying on that plane are parallax-free by
+  construction. Deliberately does NOT depend on cuVSLAM: this is a stitcher, and making
+  it unbuildable without a VO library would be the worse coupling.</description>
+  <maintainer email="archerwang.gyaw@gmail.com">User</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>cv_bridge</depend>
+  <depend>yaml-cpp</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
