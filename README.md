@@ -172,8 +172,9 @@ MOTION_SECONDS=60 LOG_LABEL=run1 ./scripts/log_rig.sh
 #    cam{1..4}_index.csv    stamp_ns, byte_offset
 #    cam{1..4}.csv          every trigger edge (seq, capture_id, sof, exposure, image=0|1)
 #    geometry.txt           width / height / bytes_per_frame
-#    imu0.csv               CLOCK_MONOTONIC, brackets the cameras
-#    range0.csv             optional; join on pulses, not stamp
+#    imu0.csv               CLOCK_MONOTONIC, brackets the cameras (~200 Hz)
+#    range0.csv             one reading per trigger edge by default (RANGE_DIV=1 → 20 Hz
+#                           at the preferred fps); join on pulses, not stamp (±1 frame)
 ```
 
 **Rates (measured on this board)**

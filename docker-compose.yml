@@ -318,7 +318,7 @@ services:
         exec ros2 run bev_range range_node --ros-args \
           -p csv:=${RANGE_CSV:-/logs/range0.csv} \
           -p port:=${TRIG_PORT:-/dev/ttyTHS1} \
-          -p divisor:=${RANGE_DIV:-15}
+          -p divisor:=${RANGE_DIV:-1}
 
   # MPU-9250 IMU -> /imu0, stamped at the data-ready edge on CLOCK_MONOTONIC (docs/timestamps.md).
   # Needs root for /dev/spidev1.0 + /dev/gpiochip* and for SCHED_FIFO.

@@ -371,10 +371,16 @@ class ImuNode : public rclcpp::Node {
       msg.angular_velocity.z = s.gz;
       pub_->publish(msg);
 
-      if (csv)
+      // FLUSH EVERY ROW. Same lesson as bev_range: without it, a SIGKILL (or any end that
+      // skips the destructor) leaves a truncated last line — measured on
+      // imglog_vio1_20260903_103102 as one 8-field row at the end of an otherwise clean
+      // 200 Hz stream. 60 bytes at 200 Hz is ~12 KB/s; the flush is free next to the SPI
+      // transfer that produced the sample.
+      if (csv) {
         *csv << t_ns << ',' << s.ax << ',' << s.ay << ',' << s.az << ','
              << s.gx << ',' << s.gy << ',' << s.gz << ',' << s.temp_c << ','
-             << published << '\n';
+             << published << '\n' << std::flush;
+      }
 
       if (++published % static_cast<int64_t>(actual_rate * 10) == 0)
         RCLCPP_INFO(get_logger(), "%ld samples, %ld dropped (edge seen late), %ld late reads, "

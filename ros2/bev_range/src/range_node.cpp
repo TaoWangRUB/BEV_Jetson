@@ -82,7 +82,10 @@ class RangeNode : public rclcpp::Node {
   RangeNode() : Node("range_node")
   {
     port_     = declare_parameter<std::string>("port", "/dev/ttyTHS1");
-    divisor_  = declare_parameter<int>("divisor", 15);
+    // 1 = one reading per trigger edge (highest rate the firmware exposes). At 20 fps that
+    // is 20 Hz; the v3's 5-20 ms acquisition fits inside the 50 ms frame. Higher would need
+    // a free-running mode the MCU does not have.
+    divisor_  = declare_parameter<int>("divisor", 1);
     csv_path_ = declare_parameter<std::string>("csv", "");
     frame_id_ = declare_parameter<std::string>("frame_id", "range0");
     const auto topic = declare_parameter<std::string>("topic", "/range0");
@@ -119,8 +122,9 @@ class RangeNode : public rclcpp::Node {
                   csv_path_.empty() ? "" : (" + " + csv_path_).c_str());
     }
 
-    // 5 ms: well inside the ~500 ms between readings at the default divisor, so a line is
-    // never left sitting in the kernel buffer long enough to bias t_mono_ns.
+    // 5 ms: at divisor=1 / 20 fps a reading arrives every 50 ms, so a line is never left
+    // sitting in the kernel buffer long enough to bias t_mono_ns by a meaningful fraction
+    // of a frame.
     timer_ = create_wall_timer(std::chrono::milliseconds(5), [this] { poll(); });
   }
 
@@ -243,11 +247,11 @@ class RangeNode : public rclcpp::Node {
       return;
     }
 
-    // FLUSH EVERY ROW. These arrive at ~2 Hz (one per `divisor` trigger pulses), so the cost
-    // is nothing, and the alternative lost an entire recording: the rows sat in the stream
-    // buffer and only the destructor flushed them, so any end that skips the destructor - a
-    // SIGKILL after the stop grace, a crash, a power cut - wrote a file with a correct header
-    // and no data. That is worse than no file, because it looks like "the sensor said nothing".
+    // FLUSH EVERY ROW. Even at divisor=1 / 20 Hz the cost is nothing (~40 B/row), and the
+    // alternative lost an entire recording: the rows sat in the stream buffer and only the
+    // destructor flushed them, so any end that skips the destructor - a SIGKILL after the
+    // stop grace, a crash, a power cut - wrote a file with a correct header and no data.
+    // That is worse than no file, because it looks like "the sensor said nothing".
     if (csv_) { *csv_ << t << ',' << cm << ',' << pulses << '\n'; csv_->flush(); }
     n_rows_++;
 
@@ -270,7 +274,7 @@ class RangeNode : public rclcpp::Node {
   }
 
   std::string port_, csv_path_, frame_id_, buf_;
-  int divisor_ = 15;
+  int divisor_ = 1;
   int fd_ = -1;
   long n_rows_ = 0, n_absent_ = 0;
   std::unique_ptr<std::ofstream> csv_;

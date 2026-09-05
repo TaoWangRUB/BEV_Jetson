@@ -93,11 +93,14 @@ trap cleanup EXIT
 # retarget-vo-to-imx296-rig 5.0c hit with the `shell` service.)
 echo "starting the range logger (sole owner of $TRIG_PORT from here)"
 range_err=$(EXPOSURE_US="$EXPOSURE_US" MOTION_SECONDS="$SECS" \
-  RANGE_CSV="/logs/${DIR}/range0.csv" TRIG_PORT="$TRIG_PORT" RANGE_DIV="${RANGE_DIV:-15}" \
+  # RANGE_DIV=1 = one reading per trigger edge (20 Hz at the preferred fps). The LIDAR-Lite
+  # v3 acquisition is 5-20 ms, which fits inside a 50 ms frame; divisor 15 was ~1.3 Hz and
+  # threw away usable floor-height samples for no bandwidth reason (a row is ~40 bytes).
+  RANGE_CSV="/logs/${DIR}/range0.csv" TRIG_PORT="$TRIG_PORT" RANGE_DIV="${RANGE_DIV:-1}" \
   docker compose run -d --name "$RANGE_NAME" rangelog 2>&1 >/dev/null) || true
 sleep 3
 if docker ps --format '{{.Names}}' | grep -qx "$RANGE_NAME"; then
-  echo "range logger up (1 reading / ${RANGE_DIV:-15} pulses)"
+  echo "range logger up (1 reading / ${RANGE_DIV:-1} pulses)"
 else
   # Print what actually failed. The old version discarded stderr and then asked docker for the
   # logs of a container that a failed `run` never created, so it reported nothing at all - the
