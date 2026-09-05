@@ -37,6 +37,7 @@
 #include <EGLStream/EGLStream.h>
 #include <EGLStream/FrameConsumer.h>
 #include <EGLStream/NV/ImageNativeBuffer.h>
+#include <bev_camera/argus_timing.hpp>
 #include <nvbuf_utils.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -88,7 +89,30 @@ class FusedNode : public rclcpp::Node {
     vstereo_path_ = declare_parameter<std::string>("virtual_stereo", "config/rig/virtual_stereo_imx296.yaml");
     max_skew_ns_ = (int64_t)declare_parameter<int>("max_skew_us", 1000) * 1000;
     cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
-    sensor_ids_ = declare_parameter<std::vector<int64_t>>("sensor_ids", {1, 2, 3, 4});
+    // Cameras are addressed by PHYSICAL PORT, resolved to an Argus sensor-id at runtime,
+    // exactly as argus_capture_node does. The old default was a literal {1,2,3,4}, which
+    // asked for a fifth camera on a four-camera rig AND assumed Argus bind order equals
+    // port order c,d,e,f. Bind order is neither: it follows /dev/video enumeration and has
+    // been observed to shift between boots. A shift here does not fail, it PERMUTES the
+    // cameras against the extrinsics - the same shape of error as the round-1/round-2
+    // mirror (3R.17), and the frustum graph scores ~0.94 either way, so nothing downstream
+    // would catch it (4.7).
+    ports_ = declare_parameter<std::vector<std::string>>("ports", {"c", "d", "e", "f"});
+    // Empty (default) = resolve from sysfs. Set it only to override a mapping already
+    // checked by hand; it bypasses the port table entirely and says so at startup.
+    auto forced = declare_parameter<std::vector<int64_t>>("sensor_ids", std::vector<int64_t>{});
+    // 0 = use the exposure Argus reports. Under external trigger Argus does not own the
+    // exposure and reports a fiction - 0.521 ms against a real 4.986 ms pulse here (1.10),
+    // which biases the midpoint stamp by 2.2 ms. Set this to the measured pulse width.
+    exposure_us_ = declare_parameter<int>("exposure_us", 0);
+    // Pre-seed the latch so frame_timing() uses the measured pulse width instead of
+    // latching whatever Argus reports on the first frame.
+    if (exposure_us_ > 0) rig_exposure_ns_ = static_cast<uint64_t>(exposure_us_) * 1000;
+    // "auto" locks AE whenever the external trigger is active, which is when AE cannot
+    // reach its main actuator and hunts on gain instead (1.4).
+    ae_lock_mode_ = declare_parameter<std::string>("ae_lock", "auto");
+    ae_gain_ = declare_parameter<std::vector<double>>("ae_gain", {16.0, 16.0});
+    ae_dgain_ = declare_parameter<std::vector<double>>("ae_digital_gain", {4.0, 4.0});
     // NATIVE, and not negotiable: this is the resolution the intrinsics were solved at, and
     // the source of the carve. Downscaling here would silently invalidate camN.yaml. The old
     // 832x624/1640x1232 defaults were the IMX219 rig's.
@@ -106,8 +130,27 @@ class FusedNode : public rclcpp::Node {
     // true base_link needs R_body_from_cam1, which is not measured; see
     // config/rig/rig_layout.yaml and 3R.16b. Override the parameter only once it is.
     base_frame_ = declare_parameter<std::string>("base_frame", "cam1_optical_frame");
-    if (cams_.size() != 4 || sensor_ids_.size() != 4)
+    if (cams_.size() != 4 || ports_.size() != 4)
       throw std::runtime_error("fused node is wired for exactly 4 cameras");
+    resolve_sensor_ids(forced);
+
+    trigger_active_ = bev_camera::external_trigger_active();
+    ae_lock_ = (ae_lock_mode_ == "1" || ae_lock_mode_ == "true" || ae_lock_mode_ == "on") ||
+               (ae_lock_mode_ == "auto" && trigger_active_);
+    // A stopped trigger must be diagnosable as a trigger fault, not as four broken
+    // cameras: free-running, the four sensors drift apart by tens of ms and every set is
+    // dropped by the skew gate below, which reads exactly like a capture failure. It has
+    // cost a debugging cycle twice (4.5 defect 2, 5.0b), and trigger_mode resets to 0 on
+    // every reboot (3.2c).
+    if (!trigger_active_)
+      RCLCPP_WARN(get_logger(), "external trigger NOT active (/sys/module/imx296/parameters/"
+                  "trigger_mode = 0) - the cameras are free-running and their frames are not "
+                  "a synchronised set; expect every set to be dropped by the %ld us gate",
+                  max_skew_ns_ / 1000);
+    if (ae_lock_)
+      RCLCPP_INFO(get_logger(), "%s -> locking AE (gain %.1f-%.1f, dgain %.1f-%.1f)",
+                  trigger_active_ ? "external trigger active" : "ae_lock requested",
+                  ae_gain_[0], ae_gain_[1], ae_dgain_[0], ae_dgain_[1]);
 
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("cuvslam/odometry", 10);
     tf_bc_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
@@ -205,6 +248,35 @@ class FusedNode : public rclcpp::Node {
     return false;
   }
 
+  // Map each requested port to an Argus sensor-id and say out loud what was found. Shared
+  // with argus_capture_node through bev_camera/argus_timing.hpp - one port table, so the
+  // capture path and the VO path cannot disagree about which image is cam1.
+  void resolve_sensor_ids(const std::vector<int64_t>& forced) {
+    sensor_ids_.resize(4);
+    if (!forced.empty()) {
+      if (forced.size() != 4) throw std::runtime_error("sensor_ids override length != 4");
+      sensor_ids_ = forced;
+      RCLCPP_WARN(get_logger(), "sensor_ids overridden by parameter - port mapping NOT verified");
+      return;
+    }
+    const auto found = bev_camera::scan_video_nodes();
+    std::vector<std::string> missing;
+    for (size_t i = 0; i < 4; ++i) {
+      const auto it = found.find(ports_[i]);
+      if (it == found.end()) { missing.push_back(ports_[i]); continue; }
+      sensor_ids_[i] = it->second.sensor_id;
+      RCLCPP_INFO(get_logger(), "  port %s (%s %s) -> sensor-id %d -> %s",
+                  ports_[i].c_str(), it->second.family.c_str(), it->second.i2c.c_str(),
+                  it->second.sensor_id, cams_[i].c_str());
+    }
+    if (!missing.empty()) {
+      std::string list;
+      for (const auto& m : missing) list += (list.empty() ? "" : ", ") + m;
+      throw std::runtime_error("no camera on port(s): " + list +
+                               " - refusing to start a partially populated rig");
+    }
+  }
+
   bool setup_argus() {
     if (!init_egl()) return false;
     provider_ = UniqueObj<CameraProvider>(CameraProvider::create());
@@ -243,7 +315,25 @@ class FusedNode : public rclcpp::Node {
                     sensor_width_, sensor_height_, i, width_, height_);
       else if (i == 0)
         RCLCPP_INFO(get_logger(), "sensor mode %dx%d -> output %dx%d", sensor_width_, sensor_height_, width_, height_);
-      interface_cast<ISourceSettings>(requests_[i].get())->setFrameDurationRange(Range<uint64_t>(1e9 / fps_));
+      auto* isrc = interface_cast<ISourceSettings>(requests_[i].get());
+      isrc->setFrameDurationRange(Range<uint64_t>(1e9 / fps_));
+
+      // Under external trigger the exposure IS the trigger pulse width, so AE cannot move
+      // its main actuator (the driver logs "ignoring <n>") and hunts on gain instead - a
+      // measured 3.5 Hz limit cycle swinging 150 luma levels peak-to-peak, 171% of the
+      // mean. The capture node has clamped gain and locked AE since 1.4; this node never
+      // did, so the fused path has been feeding cuVSLAM the hunting brightness all along.
+      if (ae_lock_) {
+        auto* iac = interface_cast<IAutoControlSettings>(
+            interface_cast<IRequest>(requests_[i].get())->getAutoControlSettings());
+        if (iac) {
+          isrc->setGainRange(Range<float>(ae_gain_[0], ae_gain_[1]));
+          iac->setIspDigitalGainRange(Range<float>(ae_dgain_[0], ae_dgain_[1]));
+          iac->setAeLock(true);
+        } else {
+          RCLCPP_WARN(get_logger(), "cam idx %zu: no IAutoControlSettings - AE left free", i);
+        }
+      }
       is->repeat(requests_[i].get());
     }
     return true;
@@ -306,21 +396,28 @@ class FusedNode : public rclcpp::Node {
         // The SENSOR timestamp, not IFrame::getTime(). getTime() is consumer-side and
         // measured the capture loop's own phase - it put the four cameras ~7 ms apart in
         // visit order (docs/timestamps.md, and 4.2 flagged this node as carrying the same bug).
-        uint64_t sof = 0, expo = 0;
-        if (auto* iacm = interface_cast<EGLStream::IArgusCaptureMetadata>(frame.get()))
-          if (auto* imeta = interface_cast<ICaptureMetadata>(iacm->getMetadata())) {
-            sof = imeta->getSensorTimestamp();
-            expo = imeta->getSensorExposureTime();
-          }
-        if (sof == 0) {
-          if (!warned_no_meta_) {
-            RCLCPP_WARN(get_logger(), "no capture metadata - falling back to the EGLStream "
-                        "frame time, which is consumer-side and NOT synchronised");
-            warned_no_meta_ = true;
-          }
-          sof = (uint64_t)iframe->getTime();
+        //
+        // ONE exposure for the whole rig, latched, not one per camera: all four expose on
+        // the same trigger edge for the same pulse width, so subtracting each camera's own
+        // reported half-exposure puts differences into the stamps that the hardware does
+        // not have - and it is those stamps the skew gate below then judges.
+        const auto ft = bev_camera::frame_timing(frame.get(), iframe, &rig_exposure_ns_);
+        if (!ft.from_metadata && !warned_no_meta_) {
+          RCLCPP_WARN(get_logger(), "no capture metadata - falling back to the EGLStream "
+                      "frame time, which is consumer-side and NOT synchronised");
+          warned_no_meta_ = true;
         }
-        ts[i] = (int64_t)sof - (int64_t)expo / 2;  // exposure midpoint: what the image represents
+        if (!logged_exposure_ && ft.from_metadata) {
+          RCLCPP_INFO(get_logger(), "stamping at the exposure midpoint (rig exposure %.3f ms, %s)",
+                      ft.exposure_ns / 1e6,
+                      exposure_us_ > 0 ? "from the exposure_us parameter" : "as reported by Argus");
+          if (trigger_active_ && exposure_us_ == 0)
+            RCLCPP_WARN(get_logger(), "under external trigger the true exposure is the trigger "
+                        "PULSE WIDTH, which Argus does not own - it reported 0.521 ms against a "
+                        "measured 4.986 ms here. Set exposure_us to the pulse width (1.10).");
+          logged_exposure_ = true;
+        }
+        ts[i] = (int64_t)ft.stamp_ns;  // exposure midpoint: what the image represents
         if (first[i]) { RCLCPP_INFO(get_logger(), "%s first GPU frame", cams_[i].c_str()); first[i] = false; }
         return true;
       };
@@ -448,14 +545,18 @@ class FusedNode : public rclcpp::Node {
     tf_bc_->sendTransform(tf);
   }
 
-  std::string calib_dir_, rig_path_, odom_frame_, base_frame_;
-  std::vector<std::string> cams_;
+  std::string calib_dir_, rig_path_, odom_frame_, base_frame_, ae_lock_mode_;
+  std::vector<std::string> cams_, ports_;
   std::vector<int64_t> sensor_ids_;
+  std::vector<double> ae_gain_, ae_dgain_;
   int width_, height_, sensor_width_, sensor_height_, fps_;
+  int exposure_us_ = 0;
+  uint64_t rig_exposure_ns_ = 0;
   int vw_ = 0, vh_ = 0;
   std::string vstereo_path_;
   int64_t max_skew_ns_ = 1000000, worst_skew_ns_ = 0, sets_ = 0, dropped_sets_ = 0;
-  bool warned_no_meta_ = false;
+  bool warned_no_meta_ = false, trigger_active_ = false, ae_lock_ = false;
+  bool logged_exposure_ = false;
   std::vector<bev_cuvslam::VirtualPinhole> vpin_;
   std::vector<int> vsrc_;
   std::vector<VPinDesc> desc_;

@@ -51,6 +51,7 @@
 #include <sensor_msgs/msg/image.hpp>
 
 #include <bev_camera/msg/frame_meta.hpp>
+#include <bev_camera/argus_timing.hpp>
 
 #include <Argus/Argus.h>
 #include <EGLStream/ArgusCaptureMetadata.h>
@@ -65,59 +66,13 @@ using namespace Argus;
 
 namespace {
 
-// Physical carrier port -> the i2c name the sensor on it reports. IMX296 sits at
-// 0x1a/0x18 where IMX219 sits at 0x10/0x12, so the same port reports a different
-// name depending on which module is fitted; match either family.
-struct PortEntry { const char* port; const char* imx296; const char* imx219; };
-constexpr PortEntry kPortTable[] = {
-    {"a", nullptr,  "1-0010"},
-    {"b", nullptr,  "1-0012"},
-    {"c", "2-001a", "2-0010"},
-    {"d", "2-0018", "2-0012"},
-    {"e", "7-001a", "7-0010"},
-    {"f", "7-0018", "7-0012"},
-};
-
-struct CameraNode { int sensor_id; std::string family; std::string i2c; };
-
-// Resolve port -> Argus sensor-id from sysfs. Argus assigns sensor-ids in /dev/video
-// bind order, which is NOT port order and is not stable across boots: binding port F
-// before E was observed live to give video4=7-0012 (port f) and video5=7-0010 (port e),
-// which shifts every hard-coded index by one and silently mislabels the whole rig —
-// extrinsics then belong to the wrong images. So never hard-code it; read it.
-std::map<std::string, CameraNode> scan_video_nodes() {
-  std::vector<int> nodes;
-  if (DIR* d = opendir("/sys/class/video4linux")) {
-    while (dirent* e = readdir(d)) {
-      int n = -1;
-      if (std::sscanf(e->d_name, "video%d", &n) == 1) nodes.push_back(n);
-    }
-    closedir(d);
-  }
-  std::sort(nodes.begin(), nodes.end());  // numeric order == Argus sensor-id order
-
-  std::map<std::string, CameraNode> out;
-  for (size_t sid = 0; sid < nodes.size(); ++sid) {
-    std::ifstream f("/sys/class/video4linux/video" + std::to_string(nodes[sid]) + "/name");
-    std::string name;  // e.g. "vi-output, imx296 2-001a"
-    if (!std::getline(f, name)) continue;
-    const auto sp = name.rfind(' ');
-    if (sp == std::string::npos) continue;
-    const std::string i2c = name.substr(sp + 1);
-    for (const auto& p : kPortTable) {
-      if (p.imx296 && i2c == p.imx296) out[p.port] = {static_cast<int>(sid), "imx296", i2c};
-      else if (p.imx219 && i2c == p.imx219) out[p.port] = {static_cast<int>(sid), "imx219", i2c};
-    }
-  }
-  return out;
-}
-
-// The IMX296 driver exposes Fast Trigger mode as a module parameter, not a control.
-bool external_trigger_active() {
-  std::ifstream f("/sys/module/imx296/parameters/trigger_mode");
-  int v = 0;
-  return static_cast<bool>(f >> v) && v == 1;
-}
+// The port table, the sysfs sensor-id scan and the trigger-mode probe live in
+// bev_camera/argus_timing.hpp, shared verbatim with bev_cuvslam's fused VO node. They
+// used to be copied here, which is precisely the drift that header exists to prevent:
+// the fused node then grew its own hard-coded sensor_ids and assumed bind order equals
+// port order (4.7).
+using bev_camera::external_trigger_active;
+using bev_camera::scan_video_nodes;
 
 // OpenCV writes "%YAML:1.0" (no space), which is not a valid YAML directive — strip it
 // and the document marker, same as the VO nodes do.
@@ -730,49 +685,32 @@ class ArgusCaptureNode : public rclcpp::Node {
   // Under the hardware trigger the true exposure IS the trigger pulse width, and Argus
   // reports the value it commanded, which the driver may be ignoring — so exposure_us
   // overrides the reported value when the pulse width is known.
-  struct FrameTiming {
-    uint64_t stamp_ns = 0;      // what the image and the metadata are stamped with
-    uint64_t sof_ns = 0;        // raw kernel SOF, kept so the correction stays undoable
-    uint64_t exposure_ns = 0;
-    uint32_t capture_id = 0;    // session-side: what Argus produced
-    uint64_t number = 0;        // consumer-side: what reached us
-  };
+  // The computation itself is bev_camera::frame_timing() in argus_timing.hpp, shared with
+  // the fused VO node. ONE exposure for the whole rig, latched, not one per camera: all
+  // four expose on the same trigger edge for the same pulse width, so subtracting each
+  // camera's own reported half-exposure would put differences into the timestamps that
+  // the hardware does not have. Only the reporting is local, because only this node has
+  // the parameters that explain what it chose.
+  using FrameTiming = bev_camera::FrameTiming;
 
   FrameTiming frame_timing(EGLStream::Frame* frame, EGLStream::IFrame* iframe) {
-    FrameTiming ft;
-    ft.number = iframe->getNumber();
-    uint64_t sof = 0, exposure_ns = 0;
-    if (auto* iacm = interface_cast<EGLStream::IArgusCaptureMetadata>(frame)) {
-      if (auto* imeta = interface_cast<ICaptureMetadata>(iacm->getMetadata())) {
-        sof = imeta->getSensorTimestamp();
-        exposure_ns = imeta->getSensorExposureTime();
-        ft.capture_id = imeta->getCaptureId();
-      }
-    }
-    if (sof == 0) {
+    if (rig_exposure_ns_ == 0 && exposure_us_ > 0)
+      rig_exposure_ns_ = static_cast<uint64_t>(exposure_us_) * 1000;
+    const FrameTiming ft =
+        bev_camera::frame_timing(frame, iframe, &rig_exposure_ns_, stamp_midpoint_);
+
+    if (!ft.from_metadata) {
       if (!warned_no_metadata_) {
         RCLCPP_WARN(get_logger(), "no capture metadata — falling back to EGLStream frame time, "
                     "which is consumer-side and NOT comparable across cameras or with the IMU");
         warned_no_metadata_ = true;
       }
-      ft.stamp_ns = iframe->getTime();
       return ft;
     }
-    // ONE exposure for the whole rig, not one per camera. All four expose on the same
-    // trigger edge for the same pulse width, so the exposure is identical by
-    // construction, while Argus reports each camera's own AE state — subtracting a
-    // per-camera half-exposure would put differences into the timestamps that the
-    // hardware does not have. (Measured set spread wanders 1-17 us between runs either
-    // way, so this is correctness by construction, not a measured improvement.)
-    // Latch the first value seen (or the parameter) and use it for every camera.
-    if (rig_exposure_ns_ == 0)
-      rig_exposure_ns_ = exposure_us_ > 0 ? static_cast<uint64_t>(exposure_us_) * 1000 : exposure_ns;
-    exposure_ns = rig_exposure_ns_;
-
     if (!logged_exposure_) {
       RCLCPP_INFO(get_logger(), "stamping at %s (rig exposure %.3f ms, %s)",
                   stamp_midpoint_ ? "exposure midpoint" : "SOF (start of readout)",
-                  exposure_ns / 1e6,
+                  ft.exposure_ns / 1e6,
                   exposure_us_ > 0 ? "from the exposure_us parameter" : "as reported by Argus");
       if (trigger_active_ && exposure_us_ == 0)
         RCLCPP_WARN(get_logger(), "under external trigger the true exposure is the trigger PULSE "
@@ -780,9 +718,6 @@ class ArgusCaptureNode : public rclcpp::Node {
                     "exposure_us to the pulse width once it is known");
       logged_exposure_ = true;
     }
-    ft.sof_ns = sof;
-    ft.exposure_ns = exposure_ns;
-    ft.stamp_ns = stamp_midpoint_ ? sof - exposure_ns / 2 : sof;
     return ft;
   }
 

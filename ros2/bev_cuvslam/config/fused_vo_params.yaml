@@ -22,15 +22,25 @@
     rig_extrinsics: config/rig/rig_extrinsics_imx296.yaml
     virtual_stereo: config/rig/virtual_stereo_imx296.yaml
     cameras: [cam1, cam2, cam3, cam4]
-    # 0-based Argus device indices. Was [1,2,3,4], which asked for a fifth camera on a
-    # four-camera rig and killed startup with "sensor 4 absent".
+    # PHYSICAL CARRIER PORTS, resolved to Argus sensor-ids at runtime from each /dev/video
+    # node's i2c name (4.7). This replaces the old `sensor_ids: [0,1,2,3]`, which assumed
+    # Argus bind order equals port order c,d,e,f - true on the boot task 1.1 checked, and
+    # exactly what must not be assumed, because a different boot shifted it. A shift does
+    # not fail loudly: it permutes the cameras against the extrinsics, and the frustum
+    # graph still scores ~0.94, so nothing downstream would catch it.
+    ports: [c, d, e, f]
+    # sensor_ids is now an OVERRIDE, left unset. Setting it bypasses the port table and the
+    # node says so at startup.
+    # sensor_ids: [0, 1, 2, 3]
     #
-    # HAZARD, and it is the same one task 1.1 flagged: this assumes Argus bind order equals
-    # port order c,d,e,f. That happened to hold on the boot 1.1 checked and it is exactly
-    # what must not be assumed - a different boot shifted it. argus_capture_node resolves
-    # ports at RUNTIME for this reason; this node does not yet, and a shift here would
-    # silently permute the cameras against the extrinsics. See 4.7.
-    sensor_ids: [0, 1, 2, 3]
+    # The measured trigger pulse width (1.10 / 3R.4a): 5000 us commanded, 4985740 ns real.
+    # The stamp is SOF - exposure/2, and under external trigger Argus does NOT own the
+    # exposure - it reported 0.521 ms for these frames, which would bias every stamp by
+    # 2.2 ms. Re-read the generator after any MCU reset; it boots at compiled-in defaults.
+    exposure_us: 4986
+    # AE cannot move its main actuator under the trigger and hunts on gain instead (1.4).
+    # "auto" locks it whenever trigger_mode is 1.
+    ae_lock: auto
     width: 1456                              # native; must equal the calibrated resolution
     height: 1088
     sensor_width: 1456

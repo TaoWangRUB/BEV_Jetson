@@ -21,6 +21,9 @@
   <depend>image_transport</depend>
   <depend>message_filters</depend>
   <depend>yaml-cpp</depend>
+  <!-- Header-only: the Argus port table and the frame-timing rule (bev_camera/argus_timing.hpp),
+       shared with argus_capture_node rather than copied into the fused node. -->
+  <depend>bev_camera</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

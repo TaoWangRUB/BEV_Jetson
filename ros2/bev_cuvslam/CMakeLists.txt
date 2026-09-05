@@ -18,6 +18,9 @@ find_package(image_transport REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(OpenCV REQUIRED)
+# Header-only, for the fused node: bev_camera/argus_timing.hpp carries the Argus port
+# table and the exposure-midpoint rule, shared with argus_capture_node (4.7).
+find_package(bev_camera REQUIRED)
 
 # --- locate the ported cuVSLAM (headers + the CUDA-10.2 build_tx2gpu .so) -------
 # Override with -DCUVSLAM_ROOT=/path/to/third_party/cuVSLAM
@@ -69,7 +72,11 @@ target_link_libraries(bev_cuvslam_fused_node
   nvargus_socketclient nveglstream_camconsumer nvbuf_utils EGL GLESv2
   cuda cudart pthread)
 ament_target_dependencies(bev_cuvslam_fused_node
-  rclcpp nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
+  rclcpp nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs
+  # bev_camera/argus_timing.hpp: the port table and the exposure-midpoint rule, shared with
+  # argus_capture_node so the capture path and the VO path cannot disagree about which
+  # image is cam1 or what instant it depicts (4.7).
+  bev_camera)
 
 # --- surround panorama: capture (NVMM->CUDA) + custom equirect stitch kernel -> /bev/panorama ---
 add_executable(bev_panorama_node src/bev_panorama_node.cpp src/stitch_kernel.cu)
