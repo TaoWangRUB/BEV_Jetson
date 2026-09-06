@@ -13,6 +13,15 @@ accept — is most of what this repo contains.
 `Multicamera` mode, ~11 Hz on 4-camera replay. Intrinsics and rig extrinsics are calibrated. Current
 work is diagnostic visualization (Rerun) and absolute scale.
 
+**Host offline VO** (x86_64, CUDA 12.x) — same Foxy bags, no TX2 needed for resim:
+
+```bash
+docker compose -f docker-compose.host.yml build
+docker compose -f docker-compose.host.yml run --rm build-cuvslam-host
+docker compose -f docker-compose.host.yml run --rm build-ws-host
+./scripts/vo/replay_host.sh /tmp/run1_motion.bag 0.5
+```
+
 ---
 
 ## 1. Hardware

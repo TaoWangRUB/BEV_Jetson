@@ -13,6 +13,7 @@ runbook.
 |---|---|---|
 | [setup_tx2_docker.sh](setup_tx2_docker.sh) | TX2 | one-time JetPack 4.6 / L4T R32.7 Docker prep for the BEV/cuVSLAM stack |
 | [build_cuvslam_tx2gpu.sh](build_cuvslam_tx2gpu.sh) | TX2 | build cuVSLAM's GPU path on CUDA 10.2 with gcc-8 + C++14 (applies the port patch) |
+| [build_cuvslam_host.sh](build_cuvslam_host.sh) | host | build cuVSLAM for x86_64 / CUDA 12.x (no TX2 port; `build_host/`) |
 | [run_vo_fused_tx2.sh](run_vo_fused_tx2.sh) | TX2 | wrapper: run the **fused** zero-copy Argus→cuVSLAM VO (`docker compose`) |
 | [run_vo_tx2.sh](run_vo_tx2.sh) | TX2 | wrapper: run the **modular** capture + cuVSLAM VO (`docker compose`) |
 | [capture_montage_tx2.sh](capture_montage_tx2.sh) | TX2 | capture the 4 fisheye views + stitched panorama, montage into one image |
@@ -81,6 +82,10 @@ See [docs/extrinsic_calibration.md](../docs/extrinsic_calibration.md) for the fu
 | [stream/preview_server.py](stream/preview_server.py) | dev | standalone MJPEG preview server |
 
 ## vo/ — visual odometry bring-up and motion tests
+
+| script | where | what |
+|---|---|---|
+| [vo/replay_host.sh](vo/replay_host.sh) | host | bag → modular cuVSLAM on x86 (`docker-compose.host.yml`); records `/cuvslam/odometry` |
 
 | script | runs on | purpose |
 |---|---|---|

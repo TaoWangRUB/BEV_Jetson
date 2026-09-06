@@ -1,8 +1,12 @@
 # Build / colcon artifacts
 build/
 install/
+install_host/
+build_host/
 log/
 third_party/cuVSLAM/build/
+third_party/cuVSLAM/build_host/
+third_party/cuVSLAM/build_tx2gpu/
 
 # Calibration outputs
 calib_port_*.npz
