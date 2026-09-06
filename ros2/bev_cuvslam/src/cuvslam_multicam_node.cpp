@@ -183,7 +183,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
       slam_pub_ = create_publisher<nav_msgs::msg::Odometry>("cuvslam/slam_odometry", 10);
       // Latched: a loop closure is a rare event, and a viewer or recorder attaching later
       // must still see the last one rather than wait for the next.
-      lc_pub_ = create_publisher<geometry_msgs::msg::PoseArray>(
+      lc_pub_ = create_publisher<nav_msgs::msg::Path>(
           "cuvslam/loop_closures", rclcpp::QoS(10).transient_local());
       slam_path_pub_ = create_publisher<nav_msgs::msg::Path>(
           "cuvslam/slam_path", rclcpp::QoS(2).transient_local());
@@ -435,7 +435,19 @@ class CuvslamMulticamNode : public rclcpp::Node {
     }
     check_pose_health(*est.world_from_rig, msgs[0]->header.stamp);
     publish(*est.world_from_rig, msgs[0]->header.stamp);
-    if (slam_) slam_track(msgs[0]->header.stamp);
+    if (slam_) {
+      slam_track(msgs[0]->header.stamp);
+      // The optimised trajectory has to go out on a CADENCE, not only when a loop closes.
+      // It was published from publish_loop_closures() alone, so /cuvslam/slam_path always
+      // ended at the LAST CLOSURE rather than at the end of the run - 41.6 s of a 54 s run
+      // on one replay, 37.4 s on another, each exactly its final closure. It read as SLAM
+      // giving up mid-run, and it made an optimised-vs-VO path comparison meaningless
+      // because the two covered different intervals.
+      if (++slam_path_countdown_ >= slam_path_every_) {
+        slam_path_countdown_ = 0;
+        publish_slam_path(msgs[0]->header.stamp);
+      }
+    }
     if (publish_landmarks_ && landmark_stride_ > 0 && (sets_ % landmark_stride_) == 0)
       publish_landmarks(msgs[0]->header.stamp);
     if (publish_observations_)
@@ -652,22 +664,27 @@ class CuvslamMulticamNode : public rclcpp::Node {
     }
     for (const auto& ps : poses) {
       if (!lc_seen_.insert(ps.timestamp_ns).second) continue;   // already reported
-      geometry_msgs::msg::Pose q;
-      q.position.x = ps.pose.translation[0];
-      q.position.y = ps.pose.translation[1];
-      q.position.z = ps.pose.translation[2];
-      q.orientation.x = ps.pose.rotation[0];
-      q.orientation.y = ps.pose.rotation[1];
-      q.orientation.z = ps.pose.rotation[2];
-      q.orientation.w = ps.pose.rotation[3];
+      // A Path, not a PoseArray: PoseArray carries ONE header stamp for the whole array, so
+      // a consumer cannot tell WHEN each closure happened and can only place the marker by
+      // nearest-point search. Path stamps every pose, so the viewer can put each marker on
+      // the optimised trajectory at its own instant.
+      geometry_msgs::msg::PoseStamped q;
+      q.header.frame_id = odom_frame_;
+      q.header.stamp = rclcpp::Time(ps.timestamp_ns);
+      q.pose.position.x = ps.pose.translation[0];
+      q.pose.position.y = ps.pose.translation[1];
+      q.pose.position.z = ps.pose.translation[2];
+      q.pose.orientation.x = ps.pose.rotation[0];
+      q.pose.orientation.y = ps.pose.rotation[1];
+      q.pose.orientation.z = ps.pose.rotation[2];
+      q.pose.orientation.w = ps.pose.rotation[3];
       lc_accum_.push_back(q);
     }
-    geometry_msgs::msg::PoseArray pa;
+    nav_msgs::msg::Path pa;
     pa.header.stamp = stamp;
     pa.header.frame_id = odom_frame_;
     pa.poses = lc_accum_;
     lc_pub_->publish(pa);
-    publish_slam_path(stamp);
     publish_loop_edges(stamp);
   }
 
@@ -798,14 +815,18 @@ class CuvslamMulticamNode : public rclcpp::Node {
   double max_speed_mps_ = 5.0;
   std::unique_ptr<cuvslam::Slam> slam_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr slam_pub_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr lc_pub_, lc_edge_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr lc_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr lc_edge_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr slam_path_pub_;
   std::set<int64_t> lc_seen_;
-  std::vector<geometry_msgs::msg::Pose> lc_accum_;
+  std::vector<geometry_msgs::msg::PoseStamped> lc_accum_;
   bool enable_slam_ = false, lc_prev_ = false;
   std::string slam_map_path_, debug_dump_dir_;
   int slam_throttling_ms_ = 0, slam_max_map_size_ = 300;
   int64_t lc_events_ = 0, pgo_events_ = 0;
+  // 20 sets = 1 s at the rig's 20 Hz, so the last published path is at most a second short
+  // of the end even when the node is SIGKILLed (which the replay wrapper does).
+  int slam_path_countdown_ = 0, slam_path_every_ = 20;
   int64_t track_us_ = 0, track_us_sum_ = 0, track_us_max_ = 0, track_n_ = 0;
   int sat_level_ = 227;
   double sat_warn_frac_ = 0.5, sat_worst_ = 0.0;

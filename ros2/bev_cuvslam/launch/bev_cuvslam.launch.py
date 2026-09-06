@@ -23,6 +23,12 @@ def generate_launch_description():
         # (Slam::Track consumes Odometry::State, and GetState throws without it) and adds a
         # pose graph, which the TX2 has no headroom for. See add-replay-visual-diagnostics 1.7.
         DeclareLaunchArgument('enable_slam', default_value='false'),
+        # 300 is the header's real-time figure and it CAPS the graph: on a 57 s replay it was
+        # reached at t=41.6 s, after which GetAllSlamPoses simply stops growing and the
+        # optimised trajectory silently ends mid-run. 0 = unlimited, which is what an offline
+        # resim wants. See add-replay-visual-diagnostics 1.7h.
+        DeclareLaunchArgument('slam_max_map_size', default_value='300'),
+        DeclareLaunchArgument('slam_throttling_ms', default_value='0'),
         DeclareLaunchArgument('image_qos', default_value='sensor_data'),
         DeclareLaunchArgument('image_qos_depth', default_value='10'),
         Node(
@@ -51,6 +57,10 @@ def generate_launch_description():
                 'max_skew_us': 1000,
                 'enable_slam': ParameterValue(LaunchConfiguration('enable_slam'),
                                               value_type=bool),
+                'slam_max_map_size': ParameterValue(
+                    LaunchConfiguration('slam_max_map_size'), value_type=int),
+                'slam_throttling_ms': ParameterValue(
+                    LaunchConfiguration('slam_throttling_ms'), value_type=int),
                 'image_qos': LaunchConfiguration('image_qos'),
                 'image_qos_depth': ParameterValue(LaunchConfiguration('image_qos_depth'),
                                                   value_type=int),

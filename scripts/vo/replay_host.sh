@@ -68,7 +68,9 @@ LAUNCH_ARGS="${LAUNCH_ARGS} image_qos:=${QOS} image_qos_depth:=${QOS_DEPTH}"
 # SLAM=1 adds the pose graph and loop closure, publishing /cuvslam/slam_odometry BESIDE the
 # pure-VO /cuvslam/odometry. Both are recorded so the two trajectories can be compared.
 if [[ "${SLAM:-0}" == "1" ]]; then
-  LAUNCH_ARGS="${LAUNCH_ARGS} enable_slam:=true"
+  # Unlimited pose graph by default offline: the 300-node cap ends the optimised
+  # trajectory mid-run (1.7h). SLAM_MAX_MAP_SIZE=300 restores the real-time figure.
+  LAUNCH_ARGS="${LAUNCH_ARGS} enable_slam:=true slam_max_map_size:=${SLAM_MAX_MAP_SIZE:-0}"
   REC_TOPICS="${REC_TOPICS} /cuvslam/slam_odometry /cuvslam/loop_closures"
   REC_TOPICS="${REC_TOPICS} /cuvslam/slam_path /cuvslam/loop_closure_edges"
 fi

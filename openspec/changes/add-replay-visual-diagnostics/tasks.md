@@ -103,11 +103,41 @@
         return-to-origin run: this log's end-to-start distance moved 5.55 m -> 5.03 m with SLAM,
         which is only a drift figure if the rig was physically returned to its start pose, and
         it was not.
-  - [x] 1.7e **Answered: the pose graph absorbs the teleport.** No isolation run was needed in
-        the end — the corrected `slam_path` and the pure VO come from the SAME run, the same
-        frame sequence and the same tracker, and differ only by the optimisation. VO peaks at a
-        44.76 m step; the optimised trajectory's worst is 1.37 m. That is the pose graph doing
-        the work, not a lucky frame sequence.
+  - [x] 1.7e **Answered, and the answer is NO: loop closure does not rescue the teleport.**
+        This was claimed twice in the opposite direction here and both claims were wrong. Both
+        rested on comparing a `slam_path` that ended at 41.6 s against a VO trajectory of 54 s —
+        the optimised path never covered the failure, so it neither absorbed it nor was reset by
+        it. See 1.7h for why the path was short.
+
+        On a run where the path DOES cover the failure:
+
+        ```
+        t=47.44s  [-0.05  3.37 -5.98]  step= 0.000 m   <-- VO teleports here
+        t=47.49s  [40.71 32.63 -4.86]  step=50.191 m   <-- so does the optimised path
+        ```
+
+        | | path | max step | steps > 0.5 m |
+        |---|---|---|---|
+        | optimised | 93.94 m | **50.191 m** | 9 |
+        | pure VO | 94.55 m | **50.191 m** | 8 |
+
+        Same jump, same instant, same destination — and the frozen poses before it are in the
+        optimised path too. **Why it cannot help:** pose-graph edges come from odometry, so a
+        50 m odometry delta becomes an edge, and no loop closure spans the jump to contradict
+        it. Loop closure corrects drift; it cannot invent evidence the images did not contain.
+        The fix for the teleport stays where 5.11/5.12 put it — the exposure.
+
+  - [x] 1.7h **`/cuvslam/slam_path` was published only on loop closures, so it always ended at
+        the last one.** 41.6 s of a 54 s run on one replay, 37.4 s on another — each exactly its
+        final closure, which read as SLAM giving up mid-run and made every optimised-vs-VO
+        comparison a comparison of different intervals. Now published every 20 sets (1 s at
+        20 Hz), so the last one is at most a second short of the end even though the replay
+        wrapper SIGKILLs the node.
+
+        `max_map_size` was investigated first and is NOT the cause — with it unlimited the path
+        stopped *earlier*. The 300-node cap is real (the graph reached 299 on one run) and would
+        bite on a longer session, so it is exposed as a launch argument with the header's
+        real-time default kept.
 
   - [x] 1.7f **The SLAM trajectory must be re-read, never accumulated.** The first version drew
         `/cuvslam/slam_odometry` — the CURRENT corrected pose — into a growing line. A loop
@@ -131,6 +161,24 @@
           edge is a loop link, and drawing it shows what each closure connects BACK TO — a marker
           alone says only that a loop closed. cuVSLAM leaves pose-graph visualisation as a
           commented-out "future extension" in the euroc example, so this reading is ours.
+
+  - [x] 1.7i **The rig follows the OPTIMISED pose, and the closure markers sit on the optimised
+        line.** Two display faults the operator caught:
+
+        The rig body, camera frusta and images hung off the pure-VO pose, so at every tracking
+        failure the rig flew away while the optimised line stayed — reading as though the two
+        were unrelated. It now takes its translation from `slam_path`, matched per timestamp
+        (median divergence 0.589 m, max 5.386 m, so it is not cosmetic). Rotation still comes
+        from odometry: `slam_path` carries positions worth more trust, but its orientation is
+        not separately validated.
+
+        The closure markers sat ~0.16-0.32 m off both trajectories, because the pose stored with
+        a closure is the one current when it FIRED and later optimisations move the trajectory
+        under it. `/cuvslam/loop_closures` is now a `nav_msgs/Path` rather than a `PoseArray` —
+        PoseArray carries one header stamp for the whole array, so a consumer cannot tell when
+        each closure happened and can only guess by nearest-point search. With per-pose stamps
+        the viewer places each marker on the optimised trajectory at its own instant: measured
+        0.000 m, exact.
 
   - [ ] 1.7g **The panorama auto-depth follows the map's outliers.** On the full-rate run the
         sphere radius ranged **2.18-23.93 m** (median 2.52). The spikes are

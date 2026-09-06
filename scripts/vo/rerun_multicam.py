@@ -52,6 +52,7 @@ def read_slam(bag):
     """
     path, lc, edges = np.zeros((0, 3), np.float32), np.zeros((0, 3), np.float32), \
         np.zeros((0, 2, 3), np.float32)
+    path_t, lc_t = np.zeros(0), np.zeros(0)
     with AnyReader([bag], default_typestore=TS) as r:
         def last(topic):
             out = None
@@ -63,16 +64,20 @@ def read_slam(bag):
         if m is not None:
             path = np.array([[q.pose.position.x, q.pose.position.y, q.pose.position.z]
                              for q in m.poses], np.float32).reshape(-1, 3)
+            path_t = np.array([q.header.stamp.sec + q.header.stamp.nanosec * 1e-9
+                               for q in m.poses])
         m = last("/cuvslam/loop_closures")
         if m is not None:
-            lc = np.array([[q.position.x, q.position.y, q.position.z]
+            lc = np.array([[q.pose.position.x, q.pose.position.y, q.pose.position.z]
                            for q in m.poses], np.float32).reshape(-1, 3)
+            lc_t = np.array([q.header.stamp.sec + q.header.stamp.nanosec * 1e-9
+                             for q in m.poses])
         m = last("/cuvslam/loop_closure_edges")
         if m is not None:
             e = np.array([[q.position.x, q.position.y, q.position.z]
                           for q in m.poses], np.float32).reshape(-1, 3)
             edges = e[:len(e) // 2 * 2].reshape(-1, 2, 3)   # consecutive pairs = one edge
-    return path, lc, edges
+    return path, path_t, lc, lc_t, edges
 
 
 def R_to_quat(R):
@@ -383,7 +388,7 @@ def main():
               % (keep.sum(), len(lm), a.map_radius,
                  np.linalg.norm(lm - np.asarray(P).mean(0), axis=1).max()))
         lm, lm_col = lm[keep], lm_col[keep]
-    slam_P, slam_lc, slam_edges = read_slam(odom_bag)
+    slam_P, slam_t, slam_lc, slam_lc_t, slam_edges = read_slam(odom_bag)
     if len(slam_P) or len(slam_lc):
         print("SLAM: %d optimised poses, %d loop closures, %d loop edges"
               % (len(slam_P), len(slam_lc), len(slam_edges)))
@@ -574,9 +579,18 @@ def main():
                rr.LineStrips3D([slam_P @ Rz180.T], colors=[0xFF44CCFF], radii=0.012),
                static=True)
     if len(slam_lc):
+        # Put each marker on the optimised trajectory AT ITS OWN INSTANT. The pose stored
+        # with a closure is the one current when it fired, and later optimisations move the
+        # trajectory under it - which is why the markers sat ~0.2 m off the final path and
+        # read as belonging to neither line. Matching on the closure's timestamp puts them
+        # exactly on it.
+        marks = slam_lc
+        if len(slam_P) and len(slam_t) and len(slam_lc_t) == len(slam_lc):
+            marks = np.array([slam_P[int(np.abs(slam_t - t).argmin())] for t in slam_lc_t],
+                             np.float32)
         rr.log("map/loop_closures",
-               rr.Points3D(slam_lc @ Rz180.T, colors=[255, 0, 0], radii=0.06,
-                           labels=["loop %d" % (i + 1) for i in range(len(slam_lc))]),
+               rr.Points3D(marks @ Rz180.T, colors=[255, 0, 0], radii=0.06,
+                           labels=["loop %d" % (i + 1) for i in range(len(marks))]),
                static=True)
     # The edges are the point of the whole display: each one joins a pose to the EARLIER
     # pose it was matched against, so a closure reads as "here is where the rig recognised
@@ -591,7 +605,17 @@ def main():
     for n, i in enumerate(idxs):
         rr.set_time("wall", timestamp=ts[i])
         R_wr, t_wr = quat_to_R(Q[i]), P[i]
-        R_d, t_d = Rz180 @ R_wr, Rz180 @ t_wr
+        # The rig body, the camera frusta and the images hang off this transform, so it must
+        # follow the trajectory the scene is ABOUT. On pure VO the rig flies away with every
+        # tracking failure while the optimised line stays put, which reads as the two being
+        # unrelated. Rotation still comes from the odometry: slam_path carries positions we
+        # trust more, but its orientation is not separately validated here.
+        if len(slam_P) and len(slam_t):
+            k = int(np.abs(slam_t - ts[i]).argmin())
+            if abs(slam_t[k] - ts[i]) < 0.05:
+                t_wr = slam_P[k]
+        t_d = Rz180 @ t_wr
+        R_d = Rz180 @ R_wr
         traj.append(t_d)
         rr.log("rig", rr.Transform3D(translation=t_d, quaternion=R_to_quat(R_d)))
         rr.log("rig/body", rr.Boxes3D(centers=[[0, 0.05, 0]], sizes=[[0.30, 0.16, 0.30]],
