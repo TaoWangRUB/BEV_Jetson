@@ -131,6 +131,32 @@ still binds 9090 for the UI, so two concurrent servers need `--port` *and*
 Without `--t-range`, `--frames` subsamples the whole run — on a 57 s log that is one pose in
 five, enough to miss a 0.75 s tracking freeze completely.
 
+**The full scene** adds the three prototype panes on top of the pinholes and trajectory:
+
+```bash
+.venv/bin/python scripts/vo/rerun_multicam.py \
+  datasets/replay_out/obs_run1_wall --images /tmp/run1_motion.bag \
+  --frames 1000 --map-radius 20 \
+  --bev-fit-plane --panorama --fisheye \
+  --save datasets/replay_out/run1_scene.rrd
+```
+
+- `--bev-fit-plane` — ground-plane BEV, with the plane **fitted per frame** from the landmarks
+  around the current pose. Use this rather than `--bev-height`: `config/rig/ground_plane.yaml`
+  is `status: unmeasured`, so any height passed by hand is provisional and assumes the floor is
+  level. The per-frame fit is also drift-immune, which matters on a head-carried rig.
+- `--panorama` — equirectangular 360 stitch, `--pano-depth auto` (the default) tracking the
+  landmark cloud per frame. `inf` is rotation-only and ghosts everything within a few metres,
+  because it collapses the four ~0.155 m baselines to one point.
+- `--fisheye` — the raw ~192° lenses as textured spherical caps, 11 180 triangles each, since
+  `rr.Pinhole` cannot express a field beyond 180°.
+
+Budget roughly **1.2 s and 0.45 MB per frame** with all three on: a 965-frame run is about
+20 minutes and 430 MB, against 4 minutes and 280 MB without them. Read the BEV pane with the
+saturation warning in mind — where the cameras are blown the landmarks are junk, so the fitted
+plane wanders (h 2.1–2.9 m across the t = 45–47 s window, against the 1.36 m measured
+elsewhere).
+
 ## bev/ — bird's-eye ground stitch
 
 | script | runs on | purpose |
