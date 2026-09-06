@@ -1208,9 +1208,44 @@ physically moved - the remaining items are not doable from here.
   | median local 16x16 std | 4.07 | **0.00** |
   | blocks with std < 2 (featureless) | 16 % | **88 %** |
 
-  Nothing is clipped — saturation above 250 is 0.0 % — the image is simply washed out to a
-  textureless field across all four cameras at once. There are no features to track, so this
-  is correct behaviour from cuVSLAM given the input, and a **data-collection** defect.
+  **It is NOT overexposure**, and the first test of that here was wrong: "saturation above 250
+  is 0.0 %" used the wrong threshold, because this pipeline never emits 250 at all. Every frame
+  of every camera in the whole run has a hard ceiling at **235** and a floor at 16 — ITU-R
+  limited range, so ~14 % of the code range is thrown away before anything else happens. The
+  right test is the fraction of pixels sitting AT that ceiling, and at t = 47 s it is **0.3 %**,
+  against 0.4-0.9 % in the good frames. Nothing is clipped.
+
+  What is actually there is worse than clipping: the centre 700x500 of the frame is **one
+  single value, 227**, across 350 000 pixels — min = max, std exactly 0.00, below the 235
+  ceiling. Stretching 227..227 to 0..255 recovers nothing, because a constant carries no
+  information; the same crop at t = 30 s spans 16..235 with a local std of 13.56. The rig was
+  about **0.30 m from a smooth white surface**, which at that distance fills the fisheye, and
+  the ISP's denoise flattens what little sensor noise remains. Turning the exposure down would
+  not have helped: there is no texture to expose correctly.
+
+  So this is correct behaviour from cuVSLAM given the input, and a **data-collection** defect —
+  standoff, not exposure. Two secondary capture findings fall out of it: the limited-range
+  16-235 output is free contrast being discarded, and **focus at 0.3 m is unverified** (3R.5 is
+  still open), so a close surface may be defocused on top of being blank.
+
+  **cuVSLAM itself never said a word, and could not have.** `Track()` returned a valid pose on
+  every one of those sets — `grep -c "tracking lost (no pose)"` over the replay log is **0** —
+  so the library's own tracking messages never applied: all three of them
+  ("images are not available", "Failed to track on the 2D tracking stage", "Failed to track on
+  the PnP stage", `libs/odometry/multi_visual_odometry_base.cpp`) sit on paths that `return
+  false`, which `cuvslam2.cpp` turns into an empty `world_from_rig`. Our freeze is the opposite
+  case: `solveNextFrame` SUCCEEDED and produced `delta = prev.inverse() * world_from_rig`
+  ~ identity, so `increment_pose` re-emitted the previous pose bit-for-bit. And `PoseEstimate`
+  carries no status field at all — only `timestamp_ns` and `optional<world_from_rig>` — so
+  there is no "degraded" flag to read. On top of that the library's logging is **off by
+  default** (`SetVerbosity(0)`) and this node never called it; a `cuvslam_verbosity` parameter
+  now exposes it, though for this failure it would have printed nothing.
+
+  The one signal the library does give is the covariance, and that is why the negative variance
+  matters: `static_pose_covariance_exp = static_info_exp.ldlt().solve(I)` inverts the
+  information matrix, and with no features that matrix is rank-deficient, so the solve returns
+  garbage rather than a large-but-valid uncertainty. A negative diagonal is the tracker saying
+  the pose was unconstrained, in the only language it has.
 
   **The node published all of it without comment**, because `track_and_publish` only checked
   that `world_from_rig` was present. Fixed: `check_pose_health()` now warns on a bit-identical

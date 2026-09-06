@@ -110,6 +110,21 @@ class CuvslamMulticamNode : public rclcpp::Node {
     publish_landmarks_ = declare_parameter<bool>("publish_landmarks", false);
     landmark_stride_ = declare_parameter<int>("landmark_stride", 3);
     publish_observations_ = declare_parameter<bool>("publish_observations", false);
+    // cuVSLAM's own logging is OFF unless we ask: SetVerbosity(0) is the library default and
+    // nothing in this node used to call it, so the library was silent by construction. Worth
+    // knowing what it will and will not say (libs/odometry/multi_visual_odometry_base.cpp):
+    // its three tracking messages — "images are not available", "Failed to track on the 2D
+    // tracking stage", "Failed to track on the PnP stage" — all sit on paths that return
+    // false, which reaches us as an EMPTY world_from_rig and the "tracking lost" warning
+    // below. So they cover the case we already see, and say nothing about the one that
+    // actually bit us in 5.0g: a solve that SUCCEEDS on a featureless view and returns a
+    // zero delta. 1=Error 2=Warning 3=Message (Release caps at 3).
+    const int verbosity = declare_parameter<int>("cuvslam_verbosity", 0);
+    if (verbosity > 0) {
+      cuvslam::SetVerbosity(verbosity);
+      RCLCPP_INFO(get_logger(), "cuVSLAM library verbosity %d (its own messages go to stdout)",
+                  verbosity);
+    }
 
     if (cams_.size() != 4 || topics_.size() != 4)
       throw std::runtime_error("this node is wired for exactly 4 cameras");
