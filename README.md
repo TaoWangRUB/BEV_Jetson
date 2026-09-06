@@ -318,11 +318,22 @@ A few percent of sets can show 50 ms skew during playback (bag topics delivered 
 that is a **replay** artifact, not missing frames in the raw log. Prefer `check_log_sets` for
 logging health.
 
-The cause is worth knowing, because it sets the rate you should replay at: the node subscribes with
-`SensorDataQoS()`, which is **best-effort**, so when it cannot keep up DDS discards images silently
-and the orphaned frames fail the 1 ms skew gate. Measured on `run1_motion`: at `0.5` the node ran
-7.9 Hz against a 10 Hz input and 218 of 1155 sets never reached the matcher; at `0.25` the drops
-fell 48 → 31 and the spurious pose jumps 8 → 2. **If the trajectory matters, replay at 0.25.**
+The cause is **transport, not compute, and slowing the replay does not fix it.** Measured on
+`run1_motion`, whose own header stamps are max 1 µs skew with zero sets over 1 ms — so the
+conversion is not at fault:
+
+| replay rate | sets reaching the matcher | skew-gate drops | poses |
+|---|---|---|---|
+| 0.25× | 961 / 1155 (83 %) | 31 | 933 |
+| 0.5× | 937 / 1155 (81 %) | 48 | 907 |
+| 1.0× | 967 / 1155 (84 %) | 36 | 961 |
+
+About a sixth of the sets never arrive at **any** rate. The node is nowhere near saturated on the
+host — `Track()` is 6.5–10 ms and the remap ~5 ms, so ~15 ms/set, about 65 Hz — and at 1.0× it
+sustained 16.7 Hz, i.e. every set that reached it. The loss is `SensorDataQoS()` being
+**best-effort** over four 1.5 MB image streams: DDS discards fragments silently, the orphaned
+frames pair across trigger edges, and the set fails the 1 ms gate at exactly one frame period
+(50 ms at 20 Hz). The fix is reliable QoS and larger DDS buffers, not a slower replay.
 
 TX2-side bag replay still works for short clips (`docker compose run --rm shell` + modular launch +
 `ros2 bag play -r 0.5`), but a full ~7 GB motion bag has been OOM-killed on the board.

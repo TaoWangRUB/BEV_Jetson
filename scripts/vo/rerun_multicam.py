@@ -421,9 +421,17 @@ def main():
     def v2d(idx, name):
         return rrb.Spatial2DView(origin=f"rig/cam{idx}", name=name)
     labels = [f"{c} {'+' if s > 0 else '-'}45" for c, s in VCAMS]
-    # Panes are grouped by physical camera, +45 then -45. VCAMS order is cuVSLAM's and is
-    # what the observations' vcam index refers to, so only the display order changes here.
-    order = [VCAMS.index((c, s)) for c in CAMS for s in (+1, -1)]
+    # Panes are grouped by physical camera, and the two rows run in OPPOSITE carve order so
+    # that reading row 1 left-to-right and then row 2 left-to-right walks the ring
+    # continuously, instead of jumping back across the rig at the row break:
+    #
+    #   row 1   cam1 +45  cam1 -45  cam2 +45  cam2 -45
+    #   row 2   cam3 -45  cam3 +45  cam4 -45  cam4 +45
+    #
+    # VCAMS order is cuVSLAM's own and is what each observation's vcam index refers to, so
+    # only the DISPLAY order changes here - never the array.
+    order = ([VCAMS.index((c, s)) for c in CAMS[:2] for s in (+1, -1)] +
+             [VCAMS.index((c, s)) for c in CAMS[2:] for s in (-1, +1)])
     # rig/camN is the virtual pinholes' namespace (N = 0..7); the raw cameras must not
     # share it or cam1..cam4 collide with vpin 1..4.
     hide3d = [f"- /rig/cam{i}/**" for i in range(8)] if a.fisheye else \

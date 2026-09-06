@@ -289,9 +289,11 @@ class CuvslamMulticamNode : public rclcpp::Node {
     const auto now = std::chrono::steady_clock::now();
     if (now - last_report_ < std::chrono::seconds(5)) return;
     RCLCPP_INFO(get_logger(), "sets %ld, worst skew %.0f us in the last window, %ld dropped total, "
-                "remap %ld us for %zu virtual cameras, worst saturation %.0f%%",
+                "remap %ld us for %zu virtual cameras, Track() mean %ld us / max %ld us, "
+                "worst saturation %.0f%%",
                 sets_, worst_skew_ns_ / 1e3, dropped_sets_, remap_us_, vpin_.size(),
-                100.0 * sat_worst_);
+                track_n_ ? track_us_sum_ / track_n_ : 0, track_us_max_, 100.0 * sat_worst_);
+    track_us_sum_ = 0; track_us_max_ = 0; track_n_ = 0;
     worst_skew_ns_ = 0;
     sat_worst_ = 0.0;
     last_report_ = now;
@@ -329,12 +331,23 @@ class CuvslamMulticamNode : public rclcpp::Node {
     check_exposure(holds);
 
     cuvslam::PoseEstimate est;
+    const auto t_track = std::chrono::steady_clock::now();
     try {
       est = tracker_->Track(images);
     } catch (const std::exception& e) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Track() failed: %s", e.what());
       return;
     }
+    // Track() is the cycle-time budget: the remap is a few ms, this is the rest. Reported so
+    // "can this board keep up with 20 Hz" is a measurement rather than an inference from the
+    // output rate, which is also capped by the replay rate and by sets lost in transport.
+    // Measured 2026-09-06: host 6.5-10 ms mean; TX2 50-90 ms (5.4). Only the TX2 is
+    // compute-bound.
+    track_us_ = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - t_track).count();
+    track_us_sum_ += track_us_;
+    track_us_max_ = std::max(track_us_max_, track_us_);
+    ++track_n_;
     if (!est.world_from_rig) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "tracking lost (no pose)");
       return;
@@ -546,6 +559,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
   bool have_last_pose_ = false;
   double max_speed_mps_ = 5.0;
   std::string debug_dump_dir_;
+  int64_t track_us_ = 0, track_us_sum_ = 0, track_us_max_ = 0, track_n_ = 0;
   int sat_level_ = 227;
   double sat_warn_frac_ = 0.5, sat_worst_ = 0.0;
   std::chrono::steady_clock::time_point last_report_ = std::chrono::steady_clock::now();

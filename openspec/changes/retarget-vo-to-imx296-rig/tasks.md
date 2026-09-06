@@ -1319,6 +1319,56 @@ physically moved - the remaining items are not doable from here.
   **drift and "does tracking survive motion that broke the old rig" still need a run with ground
   truth**, since this pre-recorded log carries none.
 
+- [ ] 5.10 **Replay loses ~1 set in 6 to DDS, at every rate. Fix the QoS, not the rate.**
+      Measured 2026-09-06 on `run1_motion`, and it corrects 5.0g, which blamed the node being
+      slower than the input:
+
+      | replay rate | sets reaching the matcher | skew-gate drops | poses |
+      |---|---|---|---|
+      | 0.25x | 961 / 1155 (83 %) | 31 | 933 |
+      | 0.5x | 937 / 1155 (81 %) | 48 | 907 |
+      | 1.0x | 967 / 1155 (84 %) | 36 | 961 |
+
+      **Not the conversion.** The bag's own header stamps are max **1 us** skew with zero sets
+      over 1 ms, so `raw_log_to_bag.py` preserves the trigger's sync exactly.
+
+      **Not compute either.** Instrumented `Track()` now reports per window: on the host it is
+      **6.5-10 ms mean, ~15 ms max**, with the remap ~5 ms - about 15 ms/set, so ~65 Hz. At 1.0x
+      the node sustained 16.7 Hz, i.e. every set that reached it. Compare the **TX2 at 50-90 ms**
+      per set (5.4), which genuinely is compute-bound at ~11 Hz. Two different limits, and only
+      the TX2's is the one 5.4 described.
+
+      What is left is transport: `SensorDataQoS()` is **best-effort** over four 1.5 MB streams,
+      DDS drops fragments silently, the orphans pair across trigger edges, and the set fails the
+      1 ms gate at exactly one frame period. To do:
+      - [ ] 5.10a Make the subscriber QoS a parameter and default replay to **RELIABLE** with a
+            deeper queue; measure sets-reaching-matcher again at 1.0x.
+      - [ ] 5.10b If reliable is not enough, raise the DDS buffers (Cyclone
+            `MaxMessageSize`/`FragmentSize`, socket rcvbuf) - 20 Hz x 4 x 1.5 MB is 127 MB/s.
+      - [ ] 5.10c Consider bypassing DDS for replay entirely: read the bag in-process and call
+            `Track()` directly. Removes the whole class of loss, at the cost of a second entry
+            point into the node.
+
+- [ ] 5.11 **Overexposure: the knob is GAIN, and it is pinned at 64x.** 5.0g said to shorten the
+      trigger pulse. That works but is the harder half. `argus_capture_node` clamps, under AE
+      lock, `setGainRange(16,16)` analog and `setIspDigitalGainRange(4,4)` digital - **64x total,
+      fixed** - because AE under external trigger cannot reach its exposure actuator and hunts on
+      gain (4.7). The clamp cured the hunt and nobody revisited the level.
+
+      So brightness = 4.986 ms x 64. Gain is the free knob: it needs no MCU command and, unlike
+      the pulse width, **does not move the exposure-midpoint stamp**, so nothing downstream has
+      to re-read `exposure_us`. To do:
+      - [ ] 5.11a Bracket `ae_gain` / `ae_dgain` over the sunlit room and find the pair that
+            keeps the bright end under the 227 white level while the dim room still has features.
+            Cheapest possible experiment: two parameters, one walk.
+      - [ ] 5.11b Only if gain alone cannot span the route, bracket the pulse width too - and
+            then handle the stamp: `exposure_us` is a static parameter today, so a changing pulse
+            width silently corrupts the exposure-midpoint timestamp.
+      - [ ] 5.11c **Closed-loop AE on the MCU pulse width** is the real answer for a route that
+            spans rooms, and the actuator exists (`j106-trigctl.py`). Design it only after
+            5.11a/b say how much range is actually needed. It must publish the commanded width
+            per frame, not assume it.
+
 ## 6. Wrap-up
 
 - [ ] 6.1 Tick `bring-up-end-to-end-vo` tasks 3.4/3.6 with the evidence from §5, or state precisely why they remain open.

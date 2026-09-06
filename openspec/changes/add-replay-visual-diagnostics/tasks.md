@@ -43,6 +43,33 @@
   `/cuvslam/observations` (naming the output `obs_*`), which is what the viewer needs and what
   the default rate-measuring runs must NOT carry.
 
+- [x] 1.6 **Pane order walks the ring.** The two rows now run in opposite carve order —
+  row 1 `cam1 +45, cam1 -45, cam2 +45, cam2 -45`, row 2 `cam3 -45, cam3 +45, cam4 -45, cam4 +45`
+  — so reading each row left-to-right continues around the rig instead of jumping back across it
+  at the row break. Display order only; `VCAMS` is cuVSLAM's own indexing and is what each
+  observation's vcam field refers to, so the array is untouched.
+
+- [ ] 1.7 **Loop closure: cuVSLAM has it, this node does not use it.** The viewer cannot show
+  loop closures because nothing produces any — `cuvslam_multicam_node` builds a
+  `cuvslam::Odometry`, which is pure VO with no pose graph. The library also ships
+  `cuvslam::Slam` (`cuvslam2.h:885`), constructed as `Slam(rig, primary_cameras, config)` — so it
+  takes a multicamera rig — with `throttling_time_ms` (minimum interval between loop-closure
+  events), `max_map_size` (pose-graph cap, 300 for real-time), `enable_reading_internals` for the
+  pose graph and loop closures, a `lc_status` field, a `LoopClosure` landmark layer, and
+  `GetAllSlamPoses()`.
+
+  This is the structural fix for the drift in 5.1/5.2, not just a visualisation: pure VO has
+  nothing to pin the trajectory. Order of work:
+  - [ ] 1.7a Stand up `cuvslam::Slam` alongside the existing `Odometry` in the node, behind a
+        parameter, and publish the SLAM pose separately from the odometry pose. Do not silently
+        replace `/cuvslam/odometry` — the §5 drift numbers are measured against pure VO.
+  - [ ] 1.7b Publish loop-closure events and the pose graph; add a viewer pane keyed on
+        `lc_status`, plus a corrected-trajectory line beside the raw VO one.
+  - [ ] 1.7c Measure the cost on the TX2 before believing any of it. `Track()` there is already
+        50-90 ms/set against a 20 Hz budget (`retarget-vo-to-imx296-rig` 5.10); SLAM runs its own
+        thread unless `sync_mode`, but the board has no headroom to give away.
+  - [ ] 1.7d Re-run 5.1/5.2 with loop closure on and state the drift both ways.
+
 ## 2. BEV prototype — satisfies `add-bev-ground-stitch` 2.6
 
 - [x] 2.1 **`bev_maps()`: the ground-plane projection the node will implement, in Python.** Output cell
@@ -211,6 +238,27 @@
         anchor available. Nothing else should be built before this is done.
   - [ ] 5.5b ToF lidar: regress measured range against landmark range over **several** distances —
         slope is the scale error, intercept is a bias. One distance cannot separate the two.
+
+        **Correction (2026-09-06): the channel is not useless, it is intermittently blocked.**
+        5.0g called the beam "pointed at the rig or the operator" from its 0.30 m median and
+        wrote it off. The operator's account is that a hand covers it part of the time, and
+        segmenting on that is what the data supports: readings that are **both** under 0.5 m
+        **and** near-constant (rolling std < 5 cm) are **68.6 %** of the run; the other
+        **31.4 %** is scene, in three stretches over 1 s — t = 2.7-5.1, **t = 12.6-22.0**
+        (9.4 s, 187 readings, 0.04-2.03 m) and t = 53.0-57.7. The middle one sits inside the
+        well-exposed room, which makes it the only usable window.
+
+        **But it still cannot anchor scale as recorded.** Inside that stretch |d(range)| per
+        50 ms sample is a median 2 cm but p90 24 cm and max 158 cm, implying beam speeds to
+        31.6 m/s: the beam is sweeping across objects, not tracking one surface. A regression
+        needs the range and the VO to be measuring the same thing.
+      - [ ] 5.5e **What a usable range run looks like.** Deliberately: keep the hand off the
+            sensor, aim it at one flat wall, and translate along the beam through several
+            distances (say 3 m to 0.5 m) with the wall filling the beam throughout. Then
+            d(range) is directly comparable to the VO translation projected on the beam, and
+            the regression slope is the scale error. Needs the rangefinder extrinsic, or at
+            least its axis, which is still unmeasured — with 3+ distances the axis can be
+            solved for alongside the scale.
   - [ ] 5.5c T265: the weaker reference. Compare **pairwise pose distances > 2 m apart** so the ~0.2 m
         lever arm between the devices is negligible, rather than aligning trajectories directly.
   - [ ] 5.5d Write the analysis scripts once a bag containing either sensor exists. Offered, not started.
