@@ -276,6 +276,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
     // Slam::Track takes Odometry::State, and GetState() THROWS unless export is on. So
     // enabling SLAM forces the export we otherwise keep off for rate measurements - that
     // cost is the reason enable_slam defaults to false, not an oversight.
+    state_readable_ = enable_slam_ || publish_observations_ || publish_landmarks_;
     if (enable_slam_) {
       cfg.enable_observations_export = true;
       cfg.enable_landmarks_export = true;
@@ -393,7 +394,25 @@ class CuvslamMulticamNode : public rclcpp::Node {
                 "worst saturation %.0f%%",
                 sets_, worst_skew_ns_ / 1e3, dropped_sets_, remap_us_, vpin_.size(),
                 track_n_ ? track_us_sum_ / track_n_ : 0, track_us_max_, 100.0 * sat_worst_);
+    if (kf_n_ || nkf_n_) {
+      const double kf_frac = 100.0 * kf_n_ / std::max<int64_t>(1, kf_n_ + nkf_n_);
+      RCLCPP_INFO(get_logger(), "  Track(): keyframe %ld us over %ld frames (%.0f%%), "
+                  "non-keyframe %ld us over %ld",
+                  kf_n_ ? kf_us_sum_ / kf_n_ : 0, kf_n_, kf_frac,
+                  nkf_n_ ? nkf_us_sum_ / nkf_n_ : 0, nkf_n_);
+      // A KEYFRAME FRACTION NEAR 100% IS TRACKING DISTRESS, not a busy map. The tracker
+      // declares a keyframe when it cannot carry on against the existing landmarks, so
+      // "every frame is a keyframe" means it is re-anchoring constantly. Measured on run1:
+      // 24-54% for the healthy stretch, then 100% at t=45 s - exactly the saturated window -
+      // and still 94-97% after. It also triples the cost, since a keyframe triangulates,
+      // adds to the map and triggers SBA while a normal frame only solves PnP.
+      if (kf_frac > 90.0)
+        RCLCPP_WARN(get_logger(), "  %.0f%% of frames are KEYFRAMES — the tracker is "
+                    "re-anchoring on nearly every frame, which is what tracking distress "
+                    "looks like from the inside. Check the saturation line above.", kf_frac);
+    }
     track_us_sum_ = 0; track_us_max_ = 0; track_n_ = 0;
+    kf_us_sum_ = 0; kf_n_ = 0; nkf_us_sum_ = 0; nkf_n_ = 0;
     if (slam_)
       RCLCPP_INFO(get_logger(), "  SLAM: %ld loop closures, %ld pose-graph optimisations",
                   lc_events_, pgo_events_);
@@ -451,6 +470,20 @@ class CuvslamMulticamNode : public rclcpp::Node {
     track_us_sum_ += track_us_;
     track_us_max_ = std::max(track_us_max_, track_us_);
     ++track_n_;
+    // Split the timing by KEYFRAME. Track() does not do the same work every frame: a
+    // non-key frame is a PnP solve against the recent landmarks, while a keyframe also
+    // triangulates, calls map_.add_keyframe(), and triggers SBA
+    // (pipelines/track_online_multi.cpp, the `if (frameState == FrameState::Key)` branch).
+    // Reporting one mean over both hides a bimodal distribution and makes the keyframe cost
+    // look like jitter.
+    if (state_readable_) {
+      try {
+        cuvslam::Odometry::State st;
+        tracker_->GetState(st);
+        if (st.keyframe) { kf_us_sum_ += track_us_; ++kf_n_; }
+        else             { nkf_us_sum_ += track_us_; ++nkf_n_; }
+      } catch (const std::exception&) { state_readable_ = false; }
+    }
     if (!est.world_from_rig) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "tracking lost (no pose)");
       return;
@@ -853,6 +886,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
   // of the end even when the node is SIGKILLed (which the replay wrapper does).
   int slam_path_countdown_ = 0, slam_path_every_ = 20;
   int64_t track_us_ = 0, track_us_sum_ = 0, track_us_max_ = 0, track_n_ = 0;
+  int64_t kf_us_sum_ = 0, kf_n_ = 0, nkf_us_sum_ = 0, nkf_n_ = 0;
+  bool state_readable_ = false;
   int sat_level_ = 227;
   double sat_warn_frac_ = 0.5, sat_worst_ = 0.0;
   std::chrono::steady_clock::time_point last_report_ = std::chrono::steady_clock::now();

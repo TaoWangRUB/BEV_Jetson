@@ -1368,16 +1368,45 @@ physically moved - the remaining items are not doable from here.
       | is loop closure better than pure VO? | 5.10c + `async_sba=false` | deterministic, every frame, fair A/B |
       | what will the rig actually do? | TX2, sensor rate, async on | the real answer, and worse |
 
-      **Why the host numbers are optimistic.** With `async_sba` on, a frame gets whatever
-      optimisation fits in the wall-clock gap before the next one. Replaying at 0.4x hands the
-      SBA thread 125 ms per frame; deployment gives it 50 ms at 20 Hz, minus what `Track()`
-      itself consumes. Measured directly: two lossless SLAM-off runs of the same bag, 1.0x vs
-      0.4x, differ by a median **1.67 m** — same frames, different optimisation time. And on the
-      TX2 `Track()` alone is 50-90 ms against that 50 ms budget, so SBA gets almost nothing and
-      sets drop on top of it.
+      **Corrected after reading the source — the wall-clock story here was wrong.** It said SBA
+      is a free-running optimiser that "gets more iterations" the more wall-clock time it has.
+      It is not. `pipelines/track_online_multi.cpp` triggers SBA **once per KEYFRAME**, inside
+      `if (frameState == FrameState::Key)`, and each trigger is one bounded pass. `map/service.cpp`
+      makes `inputs_ready_` a **flag, not a queue**: two keyframe triggers arriving while a pass
+      runs coalesce into one.
+
+      So the ceiling is **one SBA pass per keyframe**, and replay rate changes how many passes
+      COALESCE, never how many iterations each does. A slow replay lets each keyframe get its own
+      completed pass — approaching what the algorithm intends. A fast replay on a machine that
+      cannot keep up merges passes and delivers **less** than intended. 0.4x is therefore not
+      "over-optimised": it is at or near the design maximum, and 1.0x on this host may be below
+      it. On the TX2, with `Track()` at 50-90 ms against a 50 ms budget, coalescing is guaranteed.
+
+      The 1.67 m difference between the 1.0x and 0.4x lossless runs stands as a measurement; only
+      the explanation of it changes.
 
       So: quote host replay results as replay results. The board's number has to come from the
       board.
+
+- [ ] 5.14 **Keyframe fraction is a tracking-health signal, and it is free.** `Track()` is not the
+      same work every frame: a normal frame solves PnP against the recent landmarks, a keyframe
+      also triangulates, calls `map_.add_keyframe()` and triggers SBA. Measured on the host with
+      SLAM off: **keyframe 16.6-20.7 ms against non-keyframe 12.1-13.4 ms**, so one mean over both
+      hides a bimodal distribution and makes the keyframe cost read as jitter.
+
+      The fraction is the useful part. The tracker declares a keyframe when it cannot carry on
+      against the existing landmarks, so on run1:
+
+      | t | keyframe % |
+      |---|---|
+      | 5-35 s | 54 -> 24 %, declining, healthy |
+      | **45 s** | **100 %** |
+      | 50-55 s | 97 %, 94 % |
+
+      It hits 100 % in exactly the saturated window (5.0g). **"Every frame is a keyframe" is what
+      tracking distress looks like from the inside** — the tracker re-anchoring constantly because
+      nothing matches — and it costs triple, since SBA then fires every frame. The node reports the
+      split and warns above 90 %. `State::keyframe` makes it free wherever the export is already on.
 
 - [ ] 5.11 **Overexposure: the knob is GAIN, and it is pinned at 64x.** 5.0g said to shorten the
       trigger pulse. That works but is the harder half. `argus_capture_node` clamps, under AE
