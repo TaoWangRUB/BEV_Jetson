@@ -1369,6 +1369,32 @@ physically moved - the remaining items are not doable from here.
             5.11a/b say how much range is actually needed. It must publish the commanded width
             per frame, not assume it.
 
+- [ ] 5.12 **Auto-exposure for a route that spans rooms — the four levers, cheapest first.**
+      The bind: exposure IS the trigger pulse width, so Argus AE cannot reach its main actuator
+      and hunts on gain (4.7). "Turn AE back on" is not an option. What is:
+
+      1. **Lower the fixed gain.** 16x analog x 4x digital = 64x is most of why 4.986 ms clips a
+         sunlit room, and no dynamic control is needed to improve it. **Bias dark, not bright:**
+         cuVSLAM tracks gradients, so an underexposed frame with 20 levels of local contrast
+         still tracks while a clipped one has exactly zero — which is the t = 47 s failure. The
+         run agrees: the dim room (mean 102) gave the most features, 2500-3400, and t = 6 s at
+         68 % saturation still managed 1887. **Untested floor:** this log never went below mean
+         ~100, so how dark is too dark is not known. Establish it while doing 5.11a.
+      2. **Stop discarding range.** Output is limited-range 16-235, so ~14 % of the code space
+         is gone before anything else. The sensor is 10-bit and we emit mono8; capturing 10-bit
+         would give 4x the room to place the scene in.
+      3. **Slow closed-loop GAIN control.** Argus gain is settable per request at runtime, so a
+         custom controller — the saturated fraction `check_exposure()` already computes, with
+         rate limiting and hysteresis — avoids the 3.5 Hz hunt that Argus's own AE produced. No
+         MCU involvement, and it does **not** move the exposure-midpoint stamp. Must stay
+         rig-wide: one gain for all four cameras.
+      4. **Pulse-width AE** (5.11c) only if gain alone cannot span the route.
+
+      **Explicitly rejected:** per-camera exposure or gain — it steps the panorama seams and
+      mismatches the virtual-stereo pairs, which is the same reason exposure is rig-wide.
+      Alternating short/long HDR frames — it breaks the synchronised-set assumption the whole
+      rig is built on, and halves the rate.
+
 ## 6. Wrap-up
 
 - [ ] 6.1 Tick `bring-up-end-to-end-vo` tasks 3.4/3.6 with the evidence from §5, or state precisely why they remain open.

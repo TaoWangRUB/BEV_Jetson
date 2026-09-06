@@ -40,6 +40,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <tf2_ros/transform_broadcaster.h>
@@ -175,8 +176,13 @@ class CuvslamMulticamNode : public rclcpp::Node {
           [this, i](const Img::ConstSharedPtr msg) { on_frame(i, msg); });
 
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("cuvslam/odometry", 10);
-    if (enable_slam_)
+    if (enable_slam_) {
       slam_pub_ = create_publisher<nav_msgs::msg::Odometry>("cuvslam/slam_odometry", 10);
+      // Latched: a loop closure is a rare event, and a viewer or recorder attaching later
+      // must still see the last one rather than wait for the next.
+      lc_pub_ = create_publisher<geometry_msgs::msg::PoseArray>(
+          "cuvslam/loop_closures", rclcpp::QoS(10).transient_local());
+    }
     if (publish_landmarks_)
       cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("cuvslam/landmarks", 10);
     if (publish_observations_)
@@ -618,9 +624,40 @@ class CuvslamMulticamNode : public rclcpp::Node {
       RCLCPP_INFO(get_logger(), "LOOP CLOSURE %ld: %u landmarks tracked, %u in PnP, %u good",
                   lc_events_, m.lc_tracked_landmarks_count, m.lc_pnp_landmarks_count,
                   m.lc_good_landmarks_count);
+      publish_loop_closures(stamp);
     }
     lc_prev_ = m.lc_status;
     if (m.pgo_status) ++pgo_events_;
+  }
+
+  // Where the loop closed, so it can be drawn rather than only counted. GetLoopClosurePoses
+  // returns the last 10 events, so this is a snapshot of recent history on every rising
+  // edge, not an append-only log - the viewer should take the latest message, not accumulate.
+  void publish_loop_closures(const builtin_interfaces::msg::Time& stamp) {
+    std::vector<cuvslam::PoseStamped> poses;
+    try {
+      slam_->GetLoopClosurePoses(poses);
+    } catch (const std::exception& e) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "GetLoopClosurePoses failed: %s", e.what());
+      return;
+    }
+    geometry_msgs::msg::PoseArray pa;
+    pa.header.stamp = stamp;
+    pa.header.frame_id = odom_frame_;
+    pa.poses.reserve(poses.size());
+    for (const auto& ps : poses) {
+      geometry_msgs::msg::Pose q;
+      q.position.x = ps.pose.translation[0];
+      q.position.y = ps.pose.translation[1];
+      q.position.z = ps.pose.translation[2];
+      q.orientation.x = ps.pose.rotation[0];
+      q.orientation.y = ps.pose.rotation[1];
+      q.orientation.z = ps.pose.rotation[2];
+      q.orientation.w = ps.pose.rotation[3];
+      pa.poses.push_back(q);
+    }
+    lc_pub_->publish(pa);
   }
 
   void publish(const cuvslam::PoseWithCovariance& pwc, const builtin_interfaces::msg::Time& stamp) {
@@ -673,6 +710,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
   double max_speed_mps_ = 5.0;
   std::unique_ptr<cuvslam::Slam> slam_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr slam_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr lc_pub_;
   bool enable_slam_ = false, lc_prev_ = false;
   std::string slam_map_path_, debug_dump_dir_;
   int slam_throttling_ms_ = 0, slam_max_map_size_ = 300;

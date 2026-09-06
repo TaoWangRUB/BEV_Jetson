@@ -36,6 +36,29 @@ def read_observations(bag):
     return out
 
 
+def read_slam(bag):
+    """(stamps, Nx3 SLAM positions), and the loop-closure events keyed by stamp.
+
+    Empty when the bag was recorded without SLAM=1 — the viewer degrades to the pure-VO
+    trajectory rather than failing, because most bags in datasets/replay_out/ predate it.
+    """
+    ts, xyz, lc = [], [], []
+    with AnyReader([bag], default_typestore=TS) as r:
+        for con, _, raw in r.messages(
+                connections=[c for c in r.connections if c.topic == "/cuvslam/slam_odometry"]):
+            m = r.deserialize(raw, con.msgtype)
+            p = m.pose.pose.position
+            ts.append(m.header.stamp.sec + m.header.stamp.nanosec * 1e-9)
+            xyz.append([p.x, p.y, p.z])
+        for con, _, raw in r.messages(
+                connections=[c for c in r.connections if c.topic == "/cuvslam/loop_closures"]):
+            m = r.deserialize(raw, con.msgtype)
+            t = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+            lc.append((t, np.array([[q.position.x, q.position.y, q.position.z]
+                                    for q in m.poses], np.float32).reshape(-1, 3)))
+    return np.array(ts), np.array(xyz, np.float32).reshape(-1, 3), lc
+
+
 def R_to_quat(R):
     t = np.trace(R)
     if t > 0:
@@ -344,6 +367,9 @@ def main():
               % (keep.sum(), len(lm), a.map_radius,
                  np.linalg.norm(lm - np.asarray(P).mean(0), axis=1).max()))
         lm, lm_col = lm[keep], lm_col[keep]
+    slam_ts, slam_P, slam_lc = read_slam(odom_bag)
+    if len(slam_P):
+        print("SLAM: %d poses, %d loop-closure events" % (len(slam_P), len(slam_lc)))
     obs = read_observations(odom_bag)
     obs_ts = np.array(sorted(obs)) if obs else np.zeros(0)
     print("observations: %d frames, %.0f features/frame"
@@ -523,6 +549,18 @@ def main():
         rr.log("map/landmarks", rr.Points3D(lm @ Rz180.T, colors=lm_col, radii=0.01),
                static=True)
 
+    # Loop-closure sites are static: they mark WHERE the map closed, and putting them on the
+    # timeline would make them blink out between events. The last message wins because
+    # GetLoopClosurePoses returns a rolling last-10 snapshot, not an append-only log.
+    if slam_lc:
+        pts = slam_lc[-1][1]
+        if len(pts):
+            rr.log("map/loop_closures",
+                   rr.Points3D(pts @ Rz180.T, colors=[255, 40, 200], radii=0.12,
+                               labels=["loop %d" % (i + 1) for i in range(len(pts))]),
+                   static=True)
+            print("loop-closure markers: %d" % len(pts))
+    slam_traj = []
     traj = []
     heights, bev_cache = [], {}
     last_plane = None
@@ -536,6 +574,17 @@ def main():
                                       colors=[0x2288FFAA]))
         rr.log("map/trajectory", rr.LineStrips3D([traj], colors=[0x33AAFFFF], radii=0.01))
         rr.log("map/head", rr.Points3D([t_d], colors=[0xFF3030FF], radii=0.04))
+        # The loop-closure-corrected trajectory beside the raw one, in magenta. They sit on
+        # top of each other until the first loop closes, which is the point: the gap that
+        # opens afterwards IS the drift the pose graph removed.
+        if len(slam_P):
+            k = int(np.abs(slam_ts - ts[i]).argmin())
+            if abs(slam_ts[k] - ts[i]) < 0.05:
+                slam_traj.append(Rz180 @ slam_P[k])
+                rr.log("map/trajectory_slam",
+                       rr.LineStrips3D([slam_traj], colors=[0xFF44CCFF], radii=0.012))
+                rr.log("map/slam_vs_vo_m",
+                       rr.Scalars(float(np.linalg.norm(slam_P[k] - t_wr))))
 
         key = stamps[int(np.abs(stamps - ts[i]).argmin())]
         ob = obs.get(ts[i])

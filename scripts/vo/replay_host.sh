@@ -69,7 +69,7 @@ LAUNCH_ARGS="${LAUNCH_ARGS} image_qos:=${QOS} image_qos_depth:=${QOS_DEPTH}"
 # pure-VO /cuvslam/odometry. Both are recorded so the two trajectories can be compared.
 if [[ "${SLAM:-0}" == "1" ]]; then
   LAUNCH_ARGS="${LAUNCH_ARGS} enable_slam:=true"
-  REC_TOPICS="${REC_TOPICS} /cuvslam/slam_odometry"
+  REC_TOPICS="${REC_TOPICS} /cuvslam/slam_odometry /cuvslam/loop_closures"
 fi
 
 echo "replay BAG=$BAG_IN RATE=$RATE OUT=$OUT_IN OBS=$OBS QOS=$QOS/$QOS_DEPTH"
