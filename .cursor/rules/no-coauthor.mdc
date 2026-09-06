@@ -1,0 +1,19 @@
+---
+description: Never add Co-authored-by or similar AI/tool attribution trailers
+alwaysApply: true
+---
+
+# No coauthor / attribution trailers
+
+Never add any of the following to git commits, PRs, file headers, or docs:
+
+- `Co-authored-by:` / `Co-Authored-By:`
+- Cursor, Claude, Copilot, or other AI/tool identity as author or coauthor
+- `Generated-by:`, `Made-with: Cursor`, or similar attribution footers
+
+Commit messages are the user's voice only (name/email from their git config).
+
+If a tool injects `--trailer Co-authored-by:…` into `git commit` (Cursor does this),
+do not leave it. Rewrite the tip with `git commit-tree` / `git update-ref` so the
+published message has no coauthor trailer — never amend by re-running `git commit`
+without stripping, or the trailer comes back.
