@@ -436,13 +436,22 @@ def main():
     ]
     extras = []
     if bev_on:
-        extras.append(rrb.Spatial2DView(origin="bev", name="BEV ground plane (%s)"
+        extras.append(rrb.Spatial2DView(origin="/bev", name="BEV ground plane (%s)"
                       % ("fitted per frame" if fit_plane else "PROVISIONAL height")))
     if pano is not None:
-        extras.append(rrb.Spatial2DView(
-            origin="pano", name="equirectangular 360 (rotation only: close objects ghost)"))
-    scale = 1.0 - 0.18 * len(extras)
-    shares = [0.25 * scale, 0.5 * scale, 0.25 * scale] + [0.18] * len(extras)
+        # Name the pane for the depth mode actually in use. It used to say "rotation only"
+        # unconditionally, which is only true for --pano-depth inf and is the opposite of
+        # the default: auto puts the sphere on the landmark cloud precisely so close scene
+        # does NOT ghost.
+        how = ("sphere on the landmark cloud" if pano_auto else
+               "rotation only: close objects ghost" if pano_depth is None else
+               "sphere at %.1f m" % pano_depth)
+        extras.append(rrb.Spatial2DView(origin="/pano", name="equirectangular 360 (%s)" % how))
+    # The panorama is 1280x356 - a wide, short pane. 0.18 of the column made it a sliver
+    # that reads as "the panorama is missing"; give it a real share.
+    ex_share = 0.26
+    scale = 1.0 - ex_share * len(extras)
+    shares = [0.25 * scale, 0.5 * scale, 0.25 * scale] + [ex_share] * len(extras)
     rows += [rrb.Horizontal(contents=[e]) for e in extras]
     blueprint = rrb.Blueprint(rrb.Vertical(row_shares=shares, contents=rows),
                               rrb.TimePanel(state="collapsed"))
@@ -456,6 +465,12 @@ def main():
     if a.save is not None or (not a.spawn and not a.serve):
         out = pathlib.Path(a.save) if a.save else odom_bag / "multicam.rrd"
         rr.save(str(out), default_blueprint=blueprint)
+        # default_blueprint is only a FALLBACK: the viewer keeps a blueprint per
+        # application id, so a .rrd opened in a viewer that has already shown another
+        # cuvslam_multicam recording gets the OLD layout - and a pane added since (the
+        # panorama, the BEV) simply never appears. Sending it again over the file sink
+        # stores it as the ACTIVE blueprint, which wins.
+        rr.send_blueprint(blueprint)
 
     # cuVSLAM convention: right-handed, X-right, Y-down, Z-forward.
     rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
