@@ -4,23 +4,30 @@ OmniNxt-style omnidirectional visual perception on a **Jetson TX2 / Auvidea J106
 hardware-triggered fisheye cameras, an IMU and a rangefinder feeding **NVIDIA cuVSLAM**, plus a
 stitched 360° panorama and a ground-plane BEV.
 
-The board is the whole story. The TX2 is stuck on **JetPack 4.4 / CUDA 10.2 / driver r440**, which
-only initializes up to glibc 2.31, which means **Ubuntu 20.04 and ROS 2 Foxy**. cuVSLAM ships for
-CUDA 11+ and C++17. Getting it to run here — the port, the toolchain, and the camera models it will
-accept — is most of what this repo contains.
+The TX2 is stuck on **JetPack 4.4 / CUDA 10.2 / driver r440**, which only initializes up to
+glibc 2.31 — so **Ubuntu 20.04 and ROS 2 Foxy** on the board. cuVSLAM ships for CUDA 11+ and
+C++17; the TX2 path is a source port. Capture, live VO, and raw logging still run **on the
+board**. Offline bag → VO resim runs on the **host** (x86_64 / CUDA 12.x) so large bags do not
+OOM the TX2.
 
 **Status.** VO runs end to end: four cameras → eight virtual pinholes → `cuvslam::Odometry` in
-`Multicamera` mode, ~11 Hz on 4-camera replay. Intrinsics and rig extrinsics are calibrated. Current
+`Multicamera` mode (~11–16 Hz on replay). Intrinsics and rig extrinsics are calibrated. Current
 work is diagnostic visualization (Rerun) and absolute scale.
 
-**Host offline VO** (x86_64, CUDA 12.x) — same Foxy bags, no TX2 needed for resim:
+### Two Docker environments
 
-```bash
-docker compose -f docker-compose.host.yml build
-docker compose -f docker-compose.host.yml run --rm build-cuvslam-host
-docker compose -f docker-compose.host.yml run --rm build-ws-host
-./scripts/vo/replay_host.sh /tmp/run1_motion.bag 0.5
-```
+| | **TX2** (`docker-compose.yml`) | **Host** (`docker-compose.host.yml`) |
+|---|---|---|
+| Image | `cuvslam-foxy:tx2` | `bev-host-cuvslam:latest` |
+| Dockerfile | [docker/Dockerfile.cuvslam-foxy](docker/Dockerfile.cuvslam-foxy) | [docker/Dockerfile.host-cuvslam](docker/Dockerfile.host-cuvslam) |
+| Arch / CUDA | aarch64, host-mounted **CUDA 10.2**, sm_62 | x86_64, host-mounted **CUDA 12.x**, sm_86 |
+| `libcuvslam.so` | `third_party/cuVSLAM/build_tx2gpu/` (TX2 port patch) | `third_party/cuVSLAM/build_host/` (**no** TX2 port) |
+| ROS install | `install/` | `install_host/` |
+| What it runs | live capture, fused VO, `log_rig`, modular on-board | bag replay via modular VO only (`BEV_BUILD_ARGUS=OFF`) |
+| Also | — | [docker/Dockerfile.host-foxy](docker/Dockerfile.host-foxy) = DDS viewer only (no CUDA / no VO) |
+
+Do **not** mix the two trees: never apply the TX2 port patch on a host-build checkout of
+`third_party/cuVSLAM`, and do not point the host `LD_LIBRARY_PATH` at `build_tx2gpu`.
 
 ---
 
@@ -33,7 +40,8 @@ docker compose -f docker-compose.host.yml run --rm build-ws-host
 | Sync | STM32 on the M110 drives one trigger edge to all four; `t_frame = SOF − exposure/2` |
 | IMU | MPU-9250 over SPI, GPIO-edge timestamped (`bev_imu`) |
 | Range | single-point rangefinder (`bev_range`), for scale and floor height |
-| Software | JetPack 4.4, CUDA 10.2, sm_62, Ubuntu 20.04, ROS 2 Foxy — all inside one Docker image |
+| Board software | JetPack 4.4, CUDA 10.2, sm_62, Ubuntu 20.04, ROS 2 Foxy (`cuvslam-foxy:tx2`) |
+| Host software | x86_64, CUDA 12.x, Foxy in `bev-host-cuvslam` (offline resim) |
 
 Two frames, and they are not the same one:
 
@@ -58,8 +66,10 @@ ceiling and the frustum-overlap gate that otherwise rejects a surround rig — i
 
 ## 3. Procedures
 
-Everything below runs through [docker-compose.yml](docker-compose.yml) from the repo root **on the
-TX2** (`/media/nvidia/workspace/BEV_Jetson`). Edit on the host, push, pull on the board.
+**Live capture / logging / fused VO** run through [docker-compose.yml](docker-compose.yml) from
+the repo root **on the TX2** (`/media/nvidia/workspace/BEV_Jetson`). **Offline bag → VO** uses
+[docker-compose.host.yml](docker-compose.host.yml) on the laptop. Edit on the host, push, pull on
+the board.
 
 ```bash
 export TX2=tx2-eth                              # or tx2-wlan
@@ -77,17 +87,34 @@ Deep build / fused-vs-modular numbers: [docs/build_and_run.md](docs/build_and_ru
 
 ### 3.0 One-time build
 
+**On the TX2** (live VO + logging):
+
 ```bash
-# on the TX2, from $BEVDIR
+# from $BEVDIR
 sudo ./scripts/setup_tx2_docker.sh        # once: docker + nvidia runtime (log out/in for the group)
 docker compose build                      # cuvslam-foxy:tx2 image
-docker compose run --rm build-cuvslam     # libcuvslam.so (CUDA-10.2 port)
-docker compose run --rm build-ws          # ROS 2 workspace (bev_camera, bev_cuvslam, bev_imu, bev_range)
+docker compose run --rm build-cuvslam     # libcuvslam.so (CUDA-10.2 port → build_tx2gpu/)
+docker compose run --rm build-ws          # ROS 2 workspace → install/
 ```
 
 `./scripts/port/build_and_validate.sh` does image → `libcuvslam.so` → `WarmUpGPU` smoke test in one
 shot. Re-run `build-ws` after any C++ change; re-run `build-cuvslam` only after a cuVSLAM / patch
 change.
+
+**On the host** (offline bag → VO; needs NVIDIA Container Toolkit + a CUDA 12.x toolkit at
+`/usr/local/cuda`, or set `CUDA_HOST_MOUNT`):
+
+```bash
+# from the repo root on the laptop
+docker compose -f docker-compose.host.yml build
+docker compose -f docker-compose.host.yml run --rm build-cuvslam-host   # → build_host/
+docker compose -f docker-compose.host.yml run --rm build-ws-host        # → install_host/
+```
+
+Re-run `build-ws-host` after `bev_cuvslam` / `bev_camera` changes; re-run `build-cuvslam-host`
+only after a cuVSLAM submodule bump. The host build **refuses** if the TX2 port stamp is present
+under `third_party/cuVSLAM/`.
+
 
 ### 3.1 Run the whole pipeline (live VO)
 
@@ -99,12 +126,15 @@ bring-up and bag replay — the fused node cannot replay a bag, by construction.
 reset silently; a free-running or wrong-polarity rig still produces images and then wastes a run.
 
 ```bash
-# on the TX2 host
+# on the TX2 host — after every reboot / power cycle
 echo 1 | sudo tee /sys/module/imx296/parameters/trigger_mode
-python3 /home/nvidia/j106-trigctl.py --port /dev/ttyTHS1 status
-# expect: running=1, polarity=active_low, fps_milli=20000 (or whatever you set)
-# if polarity wrong:  python3 /home/nvidia/j106-trigctl.py --port /dev/ttyTHS1 raw 'pol 0'
-# set rate:           python3 /home/nvidia/j106-trigctl.py --port /dev/ttyTHS1 fps 20
+# Prefer USB CDC when the last run left the rangefinder streaming on ttyTHS1
+# (a leftover `range auto` stream makes trigctl on THS1 hang → log_rig REFUSING):
+python3 /home/nvidia/j106-trigctl.py --port /dev/ttyACM0 raw 'fps 20'
+python3 /home/nvidia/j106-trigctl.py --port /dev/ttyACM0 raw 'pol 0'
+python3 /home/nvidia/j106-trigctl.py --port /dev/ttyACM0 status
+# expect: running=1, polarity=active_low, fps_milli=20000, lidar_stream_div=0
+# if a previous log left the stream on:  ... raw 'range auto 0'
 sudo systemctl restart nvargus-daemon; sleep 2
 ```
 
@@ -122,6 +152,21 @@ docker compose run --rm shell             # interactive Foxy shell
 Params: [ros2/bev_cuvslam/config/fused_vo_params.yaml](ros2/bev_cuvslam/config/fused_vo_params.yaml)
 (`ports: [c,d,e,f]`, `exposure_us`, `ae_lock: auto`). Override with
 `... bev_cuvslam_fused.launch.py params:=/abs/path.yaml`.
+
+**Watch the log for these three.** cuVSLAM reports none of them — it has no image-quality input,
+no quality field in `PoseEstimate`, and its own tracking messages only fire when the solve *fails*,
+which is not what any of these are. The node checks instead:
+
+| line | what it means |
+|---|---|
+| `camN is NN% saturated at/above 227` | the scene is brighter than the trigger pulse width can hold. Features die and the pose will freeze, then jump. **Shorten the pulse** (`j106-trigctl.py`), not the AE — AE is locked because under external trigger it cannot reach its actuator and hunts on gain |
+| `pose has not moved at all for N sets` | cuVSLAM is repeating its last estimate, not measuring |
+| `pose JUMPED x m in y ms` | tracking was lost and re-initialised elsewhere; everything after is in a new frame |
+
+A negative covariance diagonal is reported too — that is a rank-deficient solve, not a large
+uncertainty, and it is the only quality signal cuVSLAM actually exposes. Tune the gate with
+`saturation_level` / `saturation_warn_fraction`; `cuvslam_verbosity` and `cuvslam_debug_dump_dir`
+turn on the library's own logging and its edex dump of every `Track()` call.
 
 **Measured motion test (tape + odometry)** — gates on trigger_mode / polarity / pulse width,
 restarts Argus, writes a run directory under `/media/nvidia/workspace/motion_<label>_…`:
@@ -246,35 +291,68 @@ python3 scripts/port/locate_frame_loss.py datasets/imglog_run1_<stamp>
 # optional: --period-us 50000   # 20 fps; default = median inter-frame gap
 ```
 
-**3. Convert raw → rosbag2 (Foxy v4), then replay VO**
+**3. Convert raw → rosbag2 (Foxy v4), then replay VO on the host**
 
 ```bash
-# convert only the moving part (recommended) — same motion_window() as check_log_sets
+# on the host — convert only the moving part (same motion_window() as check_log_sets)
 python3 scripts/port/raw_log_to_bag.py datasets/imglog_run1_<stamp> \
   -o /tmp/run1.bag --motion
 # optional: --pad-s 1.0   # keep ±1 s of stillness so VO can initialise
 # optional: --compress    # zstd the .db3
 # avoid --max-frames N alone: it takes the FIRST N frames (often the stationary lead-in)
 
-# replay into the modular VO on the board (fused cannot replay bags)
-scp -r /tmp/run1.bag $TX2:/media/nvidia/workspace/
-ssh -t $TX2 "cd $BEVDIR && docker compose run --rm shell"
-# inside the container:
-ros2 launch bev_cuvslam bev_cuvslam.launch.py &
-ros2 bag play /media/nvidia/workspace/run1.bag --clock
-# record odometry if you want a host-side verdict:
-#   ros2 bag record /cuvslam/odometry /tf /cuvslam/landmarks /cuvslam/observations -o /tmp/obs
+# preferred: modular VO on the laptop (avoids TX2 OOM on ~60 s / multi-GB bags)
+./scripts/vo/replay_host.sh /tmp/run1.bag 0.5
+# → datasets/replay_out/odom_<stamp>/   (/cuvslam/odometry + /tf)
+# RATE=0.25 for slower play / fewer set drops; default rate is 0.5
+
+# for the Rerun viewer below, which needs the tracked features:
+OBS=1 ./scripts/vo/replay_host.sh /tmp/run1.bag 0.25
+# → datasets/replay_out/obs_<stamp>/    (+ /cuvslam/landmarks + /cuvslam/observations)
+# the landmark export runs on the Track() thread, so keep OBS off for any run whose
+# RATE or trajectory is the measurement
 ```
 
-**4. Visual diagnostics (Rerun)** — eight virtual pinholes, trajectory, landmarks, optional
-panorama / BEV. Needs an odometry/observations bag **and** the camera bag:
+Foxy’s `ros2 bag play` on this stack has **no `--clock`**; VO matches on image header stamps.
+A few percent of sets can show 50 ms skew during playback (bag topics delivered out of lock-step) —
+that is a **replay** artifact, not missing frames in the raw log. Prefer `check_log_sets` for
+logging health.
+
+The cause is worth knowing, because it sets the rate you should replay at: the node subscribes with
+`SensorDataQoS()`, which is **best-effort**, so when it cannot keep up DDS discards images silently
+and the orphaned frames fail the 1 ms skew gate. Measured on `run1_motion`: at `0.5` the node ran
+7.9 Hz against a 10 Hz input and 218 of 1155 sets never reached the matcher; at `0.25` the drops
+fell 48 → 31 and the spurious pose jumps 8 → 2. **If the trajectory matters, replay at 0.25.**
+
+TX2-side bag replay still works for short clips (`docker compose run --rm shell` + modular launch +
+`ros2 bag play -r 0.5`), but a full ~7 GB motion bag has been OOM-killed on the board.
+
+**4. Visual diagnostics (Rerun)** — eight virtual pinholes with the tracked features, trajectory,
+landmarks, optional panorama / BEV. Needs an **`obs_*`** bag (step 3 with `OBS=1`) **and** the camera
+bag. `rerun-sdk` will not install into the system python here (PEP 668), so it lives in a venv:
 
 ```bash
-# on the host
-python3 scripts/vo/rerun_multicam.py /path/to/obs_or_odom_bag \
-  --images /path/to/run1.bag \
-  --panorama --bev-fit-plane --serve
-# --frames N limits how much is logged into the viewer; --save out.rrd writes an .rrd
+python3 -m venv --system-site-packages .venv     # once; needs python3.12-venv
+.venv/bin/pip install rerun-sdk
+
+.venv/bin/python scripts/vo/rerun_multicam.py datasets/replay_out/obs_<stamp> \
+  --images /tmp/run1.bag --t-range 40:52 --frames 300 \
+  --panorama --bev-fit-plane --save /tmp/run1.rrd
+```
+
+`--t-range START:END` picks a window and `--frames` then subsamples **that**; without it `--frames`
+subsamples the whole run, which on a 57 s log is one pose in five — enough to step straight over a
+0.75 s tracking freeze. `--save` writes an `.rrd` (`.venv/bin/rerun file.rrd`), `--spawn` opens the
+desktop viewer, `--serve` serves it. Budget ~0.3 MB/frame, or ~1.2 s and ~0.45 MB per frame with
+`--panorama --bev-fit-plane --fisheye` all on: render a long run **in `--t-range` chunks**, because
+the whole recording is buffered in memory before the file is written and a 965-frame full-featured
+render has been OOM-killed on a 31 GB laptop.
+
+For just the 360° stitch, skip Rerun entirely — [scripts/vo/make_panorama.py](scripts/vo/make_panorama.py)
+writes PNGs or an mp4 straight from a raw log or a camera bag:
+
+```bash
+.venv/bin/python scripts/vo/make_panorama.py datasets/imglog_run1_<stamp> --at 30 47 -o /tmp/pano
 ```
 
 **5. Scale / drift verdict** (from a `run_motion_test.sh` directory that has `tape_metres.txt`)
@@ -284,6 +362,12 @@ python3 scripts/vo/analyze_motion.py /path/to/motion_walk1_…
 # 5.1: tape > 0 → true-scale pass/fail (±5 %)
 # 5.2: tape = 0 → return-to-origin drift over path length
 ```
+
+`tape_metres.txt` is optional — without it you still get rate and continuity. **Continuity is
+checked first and a discontinuous run suppresses the verdict** rather than being averaged into it:
+a step implying more than `--max-speed` (5 m/s) is a tracking failure, not motion, and summing over
+one gives a number that means nothing. The first second is excluded and named as cuVSLAM's
+initialisation transient.
 
 **6. Live capture health** (while a node is publishing images — modular / capture, not fused)
 
@@ -297,8 +381,12 @@ python3 scripts/port/topic_rate.py /cam1/image_raw
 **Typical offline chain**
 
 ```text
-log_rig.sh  →  check_log_sets.py  →  raw_log_to_bag.py --motion
-         →  ros2 bag play + modular VO  →  analyze_motion.py / rerun_multicam.py
+log_rig.sh (TX2)
+  → scp/rsync to datasets/
+  → check_log_sets.py
+  → raw_log_to_bag.py --motion
+  → replay_host.sh          # host cuVSLAM
+  → analyze_motion.py / rerun_multicam.py
 ```
 
 ## 4. Calibration
@@ -329,8 +417,10 @@ exist. Porting them means teaching them the Mei projection; `mei_project()` in
 | [ros2/bev_range](ros2/bev_range) | rangefinder node |
 | [config/calib](config/calib) | camera intrinsics, with dated archives |
 | [config/rig](config/rig) | rig layout, extrinsics, virtual stereo, ground plane |
-| [docker](docker) | the Foxy / CUDA-10.2 images and entrypoint |
-| [patch](patch) | the cuVSLAM and cuNLS CUDA-10.2 port patches |
+| [docker](docker) | TX2 Foxy/CUDA-10.2 image, host cuVSLAM image, DDS-only `host-foxy` |
+| [docker-compose.yml](docker-compose.yml) | TX2 services (fused, log_rig, build-…) |
+| [docker-compose.host.yml](docker-compose.host.yml) | host build + bag-replay services |
+| [patch](patch) | the cuVSLAM and cuNLS CUDA-10.2 port patches (TX2 only) |
 | [scripts](scripts/README.md) | build, capture, calibration, replay and analysis tools — see the index |
 | [openspec](openspec) | change proposals, designs and task logs |
 | [third_party](third_party) | cuVSLAM, OKVIS2, OpenMAVIS submodules |
@@ -342,6 +432,7 @@ exist. Porting them means teaching them the Mei projection; `mei_project()` in
 | [README §3](README.md#3-procedures) | **how to run, log, and analyse** — start here for commands |
 | [docs/build_and_run.md](docs/build_and_run.md) | full build and run guide, recording modes, benchmarks |
 | [docs/cuvslam_tx2.md](docs/cuvslam_tx2.md) | the CUDA-10.2 port, and which camera models cuVSLAM can consume |
+| [docker-compose.host.yml](docker-compose.host.yml) | host offline VO build/replay (see §3.0 / §3.3) |
 | [docs/timestamps.md](docs/timestamps.md) | the camera/IMU timestamp contract — the four rules |
 | [docs/extrinsic_calibration.md](docs/extrinsic_calibration.md) | rig extrinsics procedure |
 | [scripts/README.md](scripts/README.md) | index of every script, and where it runs |
@@ -349,6 +440,7 @@ exist. Porting them means teaching them the Mei projection; `mei_project()` in
 ## 7. Roadmap
 
 - [x] Port cuVSLAM to CUDA 10.2 / C++14, running on the TX2 GPU
+- [x] Host offline VO (`bev-host-cuvslam` + `replay_host.sh`) for bag resim without TX2 OOM
 - [x] Argus capture with a hardware trigger and one clock for camera + IMU
 - [x] Calibrate the IMX296 rig: intrinsics, virtual stereo, extrinsics
 - [x] VO end to end — 8 virtual pinholes, `Multicamera` mode
