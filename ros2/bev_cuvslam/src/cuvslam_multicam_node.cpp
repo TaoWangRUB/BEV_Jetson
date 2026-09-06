@@ -504,7 +504,12 @@ class CuvslamMulticamNode : public rclcpp::Node {
         // closures left them describing a graph up to 18 s older than the path they were
         // drawn against, so they no longer lay on it.
         publish_slam_path(msgs[0]->header.stamp);
-        publish_loop_edges(msgs[0]->header.stamp);
+        // ReadPoseGraph() plus the edge scan is far more expensive than GetAllSlamPoses(),
+        // and doing both every 20 sets cost 124 frames (1031 against 1153 at the same rate).
+        // Dropped frames put GAPS in the optimised path, and a gap drawn as a chord looks
+        // exactly like a jump - which is what sent us looking for a bug that was not there.
+        // The graph changes only on a closure, so a fifth of the rate loses nothing.
+        if (++edge_countdown_ >= 5) { edge_countdown_ = 0; publish_loop_edges(msgs[0]->header.stamp); }
       }
     }
     if (publish_landmarks_ && landmark_stride_ > 0 && (sets_ % landmark_stride_) == 0)
@@ -884,7 +889,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
   int64_t lc_events_ = 0, pgo_events_ = 0;
   // 20 sets = 1 s at the rig's 20 Hz, so the last published path is at most a second short
   // of the end even when the node is SIGKILLed (which the replay wrapper does).
-  int slam_path_countdown_ = 0, slam_path_every_ = 20;
+  int slam_path_countdown_ = 0, slam_path_every_ = 20, edge_countdown_ = 0;
   int64_t track_us_ = 0, track_us_sum_ = 0, track_us_max_ = 0, track_n_ = 0;
   int64_t kf_us_sum_ = 0, kf_n_ = 0, nkf_us_sum_ = 0, nkf_n_ = 0;
   bool state_readable_ = false;

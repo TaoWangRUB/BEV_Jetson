@@ -36,6 +36,21 @@ def read_observations(bag):
     return out
 
 
+def split_on_gaps(P, T, factor=3.0):
+    """Break a trajectory into segments wherever time skips.
+
+    A LineStrips3D over poses with a gap in them draws a straight chord across the gap, and
+    that chord reads as a JUMP even when the rig simply walked while frames were missing.
+    On run1 the optimised path had 27 gaps up to 650 ms, and every "small jump" in it turned
+    out to be 0.6-1.0 m/s motion across one of them. Segmenting shows the gap as a gap.
+    """
+    if len(P) < 2:
+        return [P]
+    dt = np.diff(T)
+    cut = np.where(dt > factor * np.median(dt))[0] + 1
+    return [seg for seg in np.split(P, cut) if len(seg) >= 2]
+
+
 def read_slam(bag):
     """The OPTIMISED SLAM trajectory, the loop-closure sites, and the loop-closure edges.
 
@@ -589,14 +604,18 @@ def main():
     # is drawn once rather than grown along the timeline. Growing it was the bug that put
     # steps in the magenta line.
     if len(slam_P):
+        segs = split_on_gaps(slam_P, slam_t) if len(slam_t) == len(slam_P) else [slam_P]
         rr.log("map/trajectory_slam",
-               rr.LineStrips3D([slam_P @ Rz180.T], colors=[0xFF44CCFF], radii=0.012),
+               rr.LineStrips3D([g @ Rz180.T for g in segs], colors=[0xFF44CCFF], radii=0.012),
                static=True)
+        if len(segs) > 1:
+            print("  optimised path drawn as %d segments (time gaps, not jumps)" % len(segs))
     # Pure VO from the SLAM-OFF run, in green, drawn statically like the SLAM path so the two
     # are compared as finished trajectories rather than as two growing heads.
     if len(ref_P):
+        segs = split_on_gaps(ref_P, ref_t)
         rr.log("map/trajectory_vo_clean",
-               rr.LineStrips3D([ref_P @ Rz180.T], colors=[0x33DD66FF], radii=0.012),
+               rr.LineStrips3D([g @ Rz180.T for g in segs], colors=[0x33DD66FF], radii=0.012),
                static=True)
     if len(slam_lc):
         # Put each marker on the optimised trajectory AT ITS OWN INSTANT. The pose stored
