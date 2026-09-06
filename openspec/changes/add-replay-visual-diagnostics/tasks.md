@@ -60,15 +60,40 @@
 
   This is the structural fix for the drift in 5.1/5.2, not just a visualisation: pure VO has
   nothing to pin the trajectory. Order of work:
-  - [ ] 1.7a Stand up `cuvslam::Slam` alongside the existing `Odometry` in the node, behind a
-        parameter, and publish the SLAM pose separately from the odometry pose. Do not silently
-        replace `/cuvslam/odometry` — the §5 drift numbers are measured against pure VO.
+  - [x] 1.7a **Done, and it closes loops on run1.** `cuvslam::Slam` is built behind
+        `enable_slam` over all 8 virtual pinholes as primary cameras (matching
+        `MulticameraMode::Precision`), consuming `Odometry::State` — it augments the tracker,
+        it does not replace it. `/cuvslam/slam_odometry` carries the corrected pose;
+        `/cuvslam/odometry` stays pure VO so the §5 figures remain comparable.
+
+        First resim, 2026-09-06: **3 loop closures** (58 / 81 / 216 landmarks tracked, 57 / 51 /
+        156 good) and **22 pose-graph optimisations**. The correction behaves exactly as loop
+        closure should — *median 0.000 m*, i.e. SLAM tracks VO exactly until a loop closes, then
+        diverges: 0.00 m over t = 0-10 s, 0.06 m at 10-20, 0.56 at 20-30, 1.05 at 30-40, **1.28 m
+        at 40-53**, peaking at 1.68 m. On a ~28 m path that is ~6 % of path length recovered.
+
+        **Cost: 20.02 Hz -> 12.99 Hz on the host** (687 poses against 1149 without SLAM). Enabling
+        SLAM forces `enable_observations_export` and `enable_landmarks_export`, because
+        `Slam::Track` takes `Odometry::State` and `GetState()` throws without them — so the export
+        we keep off for rate runs is not optional here.
+
+        **Do NOT read this run as "loop closure fixed the teleport."** The 50 m jump at t = 47 s
+        is absent — the worst step is 1.49 m at t = 46.74 s, in the same saturation window — but
+        the set sequence differs (13 Hz vs 20 Hz), so it is not a controlled comparison. Whether
+        that is SLAM, the forced export, or simply a different frame sequence is untested.
   - [ ] 1.7b Publish loop-closure events and the pose graph; add a viewer pane keyed on
         `lc_status`, plus a corrected-trajectory line beside the raw VO one.
   - [ ] 1.7c Measure the cost on the TX2 before believing any of it. `Track()` there is already
         50-90 ms/set against a 20 Hz budget (`retarget-vo-to-imx296-rig` 5.10); SLAM runs its own
         thread unless `sync_mode`, but the board has no headroom to give away.
-  - [ ] 1.7d Re-run 5.1/5.2 with loop closure on and state the drift both ways.
+  - [ ] 1.7d Re-run 5.1/5.2 with loop closure on and state the drift both ways. Needs a
+        return-to-origin run: this log's end-to-start distance moved 5.55 m -> 5.03 m with SLAM,
+        which is only a drift figure if the rig was physically returned to its start pose, and
+        it was not.
+  - [ ] 1.7e **Isolate why the teleport did not reproduce.** Run SLAM off but with
+        `publish_landmarks`/`publish_observations` forced on, at reliable QoS, so the only
+        difference from the 20 Hz baseline is the export and the rate. If the jump returns, SLAM
+        is doing the work; if it does not, the export or the frame sequence is.
 
 ## 2. BEV prototype — satisfies `add-bev-ground-stitch` 2.6
 
