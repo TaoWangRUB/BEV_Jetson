@@ -243,6 +243,25 @@ class CuvslamMulticamNode : public rclcpp::Node {
     cfg.odometry_mode = cuvslam::Odometry::OdometryMode::Multicamera;
     cfg.multicam_mode = cuvslam::Odometry::MulticameraMode::Precision;
     cfg.use_gpu = true;
+    // REPRODUCIBILITY, and why this flag is NOT the fix.
+    //
+    // async_sba runs bundle adjustment on a background thread, so how many iterations land
+    // between two frames depends on wall-clock arrival. Replaying run1_motion at 0.4x and
+    // 0.2x - both essentially lossless, 1153 and 1155 of 1155 sets - gave trajectories a
+    // median 1.13 m apart. That is LARGER than the 0.70 m difference between pure VO and
+    // the loop-closed trajectory, so no offline A/B of the two means anything.
+    //
+    // Turning it off does not fix it and makes it worse: synchronous BA is slower, so the
+    // node drops MORE sets (1022 vs 1153 at 0.4x) and drops different ones, and the two
+    // rates then diverged by a median 3.28 m. The frame-drop difference is the dominant
+    // term, not the BA threading.
+    //
+    // The real fix is to stop dropping frames at all, which means taking the wall clock out
+    // of the loop: read the bag in-process and call Track() per set, with no DDS and no
+    // real-time coupling (retarget-vo-to-imx296-rig 5.10c). Until that exists, treat any
+    // offline difference smaller than ~1 m as noise. Default stays ON, matching the library
+    // and the live rig.
+    cfg.async_sba = declare_parameter<bool>("async_sba", true);
     // Leave rectified_stereo_camera FALSE. Setting it swaps in the horizontal-only
     // tracker, which cannot move vertically, and demands that paired cameras have
     // identical rotation matrices to 1e-6 - our facing pinholes sit 1.0-1.4 deg apart.
@@ -274,6 +293,9 @@ class CuvslamMulticamNode : public rclcpp::Node {
     if (enable_slam_) {
       cuvslam::Slam::Config sc = cuvslam::Slam::GetDefaultConfig();
       sc.use_gpu = true;
+      // Left at the library default for the same reason as async_sba: running SLAM inline
+      // slows Track() and costs frames, which moves the result more than the threading does.
+      sc.sync_mode = declare_parameter<bool>("slam_sync_mode", false);
       sc.enable_reading_internals = true;   // pose graph + loop-closure layers
       sc.map_cache_path = slam_map_path_;   // empty = in memory only
       sc.throttling_time_ms = static_cast<uint32_t>(slam_throttling_ms_);

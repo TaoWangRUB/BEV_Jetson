@@ -66,11 +66,15 @@
         it does not replace it. `/cuvslam/slam_odometry` carries the corrected pose;
         `/cuvslam/odometry` stays pure VO so the §5 figures remain comparable.
 
-        **Superseded numbers, kept because they were published:** the first resim reported "3
-        loop closures" and a correction growing to 1.68 m. Both came from accumulating
-        `/cuvslam/slam_odometry` per frame, which is wrong (see 1.7f) — the count was the
-        `lc_status` rising edges rather than the events, and the "correction" was partly the
-        splice between pre- and post-optimisation segments.
+        **Every number this entry has carried was wrong, in three different ways.** They are
+        listed rather than deleted because each was published here as fact:
+        1. "3 loop closures, correction to 1.68 m" — from accumulating `/cuvslam/slam_odometry`
+           per frame (1.7f). The count was `lc_status` rising edges, not events.
+        2. "42 closures, optimised 22.26 m vs VO 97.78 m, the pose graph absorbs the teleport" —
+           the two covered different intervals (1.7h), and the optimised path never reached the
+           teleport at all.
+        3. Everything measured with SLAM on at 1.0x — SLAM starves the tracker (1.7j), so those
+           trajectories were degraded before loop closure entered into it.
 
         **Corrected, from the optimised trajectory:**
 
@@ -79,11 +83,59 @@
         | optimised `slam_path` | 720 | **22.26 m** | **1.37 m** | 2 |
         | pure VO | 933 | 97.78 m | **44.76 m** | 11 |
 
-        **42 loop closures** (distinct timestamps from `GetLoopClosurePoses`) and a pose graph
-        reaching **299 nodes / 351 edges, 53 of them non-sequential**. Note the count mismatch:
-        the node saw **8 rising edges of `lc_status`** against 42 distinct closure timestamps, so
-        one `lc_status` pulse covers several events — the flag is coarser than the events, and
-        the timestamp count is the honest one.
+        **The honest verdict: this log cannot answer whether loop closure helps.** From the
+        one matched-rate run (`obs_slam_v6`, 0.4x, 1153 of 1155 sets, both trajectories from the
+        SAME run):
+
+        | | t < 43 s | whole run |
+        |---|---|---|
+        | pure VO | 859 poses, 22.21 m, max step 0.39 m | 35.52 m, max 50.22 m |
+        | optimised SLAM | 859 poses, 22.95 m, max step 0.39 m | 36.12 m, max 50.22 m |
+
+        Three independent reasons the question stays open:
+        - **No real loops.** A ground-truth-free test — each loop edge joins two poses cuVSLAM
+          matched as the same place, so measure their separation in each trajectory — gives
+          **0.579 m in SLAM against 0.647 m in VO, a 1.12x improvement**. And those 63 revisits
+          are a median **2.45 s** apart: the tracker rematching somewhere it saw seconds ago,
+          with no drift accumulated. Nothing to correct.
+        - **Correlated by construction**, as the operator pointed out: the graph's edges ARE the
+          odometry deltas, so SLAM can only redistribute VO's error. Before the first closure
+          the two are identical by definition.
+        - **The effect is under the noise floor.** SLAM-vs-VO is 0.70 m median; the same
+          pipeline at a different replay rate differs from ITSELF by 1.13 m (1.7k).
+
+        Answering it needs a run built for the question: a closed circuit, returned to the
+        start, with `tape_metres.txt`. That is 5.1/5.2 and 1.7d — this log cannot stand in.
+
+  - [x] 1.7j **SLAM starves the tracker it is built on.** Enabling SLAM turns the observation
+        and landmark exports on INSIDE the Odometry config, so the cost lands in `Track()`:
+        9-12 ms without, **16-33 ms with, spiking to 133 ms**. At 1.0x the budget is 50 ms/set,
+        so it overran, dropped sets, and the widened gaps made the TRACKER fail — a 3.42 m step
+        appeared that is simply absent from a clean run, and the operator spotted it in the
+        scene. Every SLAM figure recorded before this was measured at 13-16 Hz against the
+        20 Hz the data supports.
+
+        At 0.4x (125 ms/set) the VO returns to the baseline exactly: 859 vs 861 poses,
+        22.21 vs 22.24 m, worst step 0.39 vs 0.47 m. `replay_host.sh` now defaults `SLAM=1` to
+        0.4x and warns above 0.6x. **Note this is offline-only**: the TX2 cannot slow time, and
+        its 50-90 ms `Track()` against a 50 ms budget means the degraded trajectory IS the
+        real-time result there.
+
+  - [ ] 1.7k **Offline replay is not reproducible, and the flags do not fix it.** Two lossless
+        replays of the same bag at 0.4x and 0.2x (1153 and 1155 of 1155 sets) gave trajectories
+        a median **1.13 m** apart — larger than the effect anyone would be trying to measure.
+
+        `Odometry::async_sba` and `Slam::sync_mode` put bundle adjustment and SLAM on background
+        threads, so iterations-per-frame depend on wall-clock arrival. **Turning them off made it
+        worse**: synchronous BA is slower, so the node dropped MORE sets (1022 vs 1153 at 0.4x)
+        and different ones, and the two rates then diverged by a median **3.28 m**. The
+        frame-drop difference dominates the threading. Both are parameters now, left at the
+        library defaults.
+
+        The fix is to take the wall clock out of the loop entirely — read the bag in-process and
+        call `Track()` per set, no DDS, no real-time coupling
+        (`retarget-vo-to-imx296-rig` 5.10c). **Until that exists, treat any offline difference
+        below ~1 m as noise**, including every VO-vs-SLAM comparison in this file.
 
         **Cost: 20.02 Hz -> 12.99 Hz on the host** (687 poses against 1149 without SLAM). Enabling
         SLAM forces `enable_observations_export` and `enable_landmarks_export`, because

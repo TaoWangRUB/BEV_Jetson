@@ -20,8 +20,16 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${REPO_ROOT}"
 
 BAG="${1:?usage: $0 <camera_bag_dir> [rate]}"
-RATE="${2:-${RATE:-0.5}}"
 OBS="${OBS:-0}"
+# SLAM triples Track(): 9-12 ms without it, 16-33 ms with it and spikes to 133 ms, because
+# enabling SLAM turns on the observation/landmark exports INSIDE the Odometry config, so the
+# cost lands in Track() itself. At 1.0x the budget is 50 ms/set, so it overruns, sets are
+# dropped, and the gaps make the TRACKER fail - a 3.42 m step appears that is simply not
+# there in a clean run. Slowing the replay is the fix, and it is a real fix rather than a
+# workaround: 0.4x gives 125 ms/set and the VO comes back identical to the no-SLAM baseline
+# (859 vs 861 poses, 22.21 vs 22.24 m, worst step 0.39 vs 0.47 m).
+if [[ "${SLAM:-0}" == "1" ]]; then _default_rate=0.4; else _default_rate=1.0; fi
+RATE="${2:-${RATE:-$_default_rate}}"
 _pfx=odom; [[ "$OBS" == "1" ]] && _pfx=obs
 OUT="${OUT:-${REPO_ROOT}/datasets/replay_out/${_pfx}_$(date +%Y%m%d_%H%M%S)}"
 COMPOSE=(docker compose -f docker-compose.host.yml)
@@ -75,7 +83,11 @@ if [[ "${SLAM:-0}" == "1" ]]; then
   REC_TOPICS="${REC_TOPICS} /cuvslam/slam_path /cuvslam/loop_closure_edges"
 fi
 
-echo "replay BAG=$BAG_IN RATE=$RATE OUT=$OUT_IN OBS=$OBS QOS=$QOS/$QOS_DEPTH"
+echo "replay BAG=$BAG_IN RATE=$RATE OUT=$OUT_IN OBS=$OBS QOS=$QOS/$QOS_DEPTH SLAM=${SLAM:-0}"
+if [[ "${SLAM:-0}" == "1" ]] && awk "BEGIN{exit !($RATE > 0.6)}"; then
+  echo "WARNING: SLAM at ${RATE}x will overrun the per-set budget and DROP frames, which"
+  echo "  makes the odometry itself worse - not just the SLAM layer. Use 0.4 or slower."
+fi
 "${COMPOSE[@]}" run --rm shell bash -lc "
 set -eo pipefail
 source /opt/ros/foxy/setup.bash
