@@ -1345,9 +1345,39 @@ physically moved - the remaining items are not doable from here.
             deeper queue; measure sets-reaching-matcher again at 1.0x.
       - [ ] 5.10b If reliable is not enough, raise the DDS buffers (Cyclone
             `MaxMessageSize`/`FragmentSize`, socket rcvbuf) - 20 Hz x 4 x 1.5 MB is 127 MB/s.
-      - [ ] 5.10c Consider bypassing DDS for replay entirely: read the bag in-process and call
-            `Track()` directly. Removes the whole class of loss, at the cost of a second entry
-            point into the node.
+      - [ ] 5.10c **Bypass DDS for replay: read the bag in-process and call `Track()` directly.**
+            Promoted from "consider" — it is now the blocker for every offline comparison, not a
+            tidy-up. **It must be paired with `async_sba=false`**, and neither half works alone:
+
+            - the reader alone removes frame drops but leaves BA on a background thread, whose
+              iterations-per-frame follow the WALL CLOCK. Calling `Track()` in a tight loop just
+              gives it a different wrong budget rather than a right one.
+            - `async_sba=false` alone was tried on 2026-09-06 and made things worse: synchronous
+              BA is slower, so with DDS still in the loop it dropped MORE sets (1022 vs 1153)
+              and the two-rate divergence went from 1.13 m to 3.28 m.
+
+            Together they give a fixed amount of optimisation per FRAME instead of per second,
+            and two runs of the same bag become identical.
+
+- [ ] 5.13 **Every host-side figure in this change answers "is A better than B on this data",
+      never "what will the rig do".** The two need different setups and the distinction has been
+      blurred throughout:
+
+      | question | setup | property |
+      |---|---|---|
+      | is loop closure better than pure VO? | 5.10c + `async_sba=false` | deterministic, every frame, fair A/B |
+      | what will the rig actually do? | TX2, sensor rate, async on | the real answer, and worse |
+
+      **Why the host numbers are optimistic.** With `async_sba` on, a frame gets whatever
+      optimisation fits in the wall-clock gap before the next one. Replaying at 0.4x hands the
+      SBA thread 125 ms per frame; deployment gives it 50 ms at 20 Hz, minus what `Track()`
+      itself consumes. Measured directly: two lossless SLAM-off runs of the same bag, 1.0x vs
+      0.4x, differ by a median **1.67 m** — same frames, different optimisation time. And on the
+      TX2 `Track()` alone is 50-90 ms against that 50 ms budget, so SBA gets almost nothing and
+      sets drop on top of it.
+
+      So: quote host replay results as replay results. The board's number has to come from the
+      board.
 
 - [ ] 5.11 **Overexposure: the knob is GAIN, and it is pinned at 64x.** 5.0g said to shorten the
       trigger pulse. That works but is the harder half. `argus_capture_node` clamps, under AE

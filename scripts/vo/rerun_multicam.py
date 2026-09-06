@@ -293,6 +293,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("bag", help="bag with /cuvslam/odometry (+ /cuvslam/landmarks)")
     ap.add_argument("--images", required=True, help="source camera bag")
+    ap.add_argument("--vo-bag", default=None, metavar="DIR",
+                    help="a SECOND run, recorded with SLAM OFF, whose /cuvslam/odometry is "
+                         "drawn as the pure-VO reference. Use this rather than the odometry "
+                         "topic of a SLAM run: enabling SLAM turns on the exports inside the "
+                         "Odometry config, which slows Track() enough to drop sets and degrade "
+                         "the tracker itself, so a SLAM run's own VO is NOT a clean baseline "
+                         "(add-replay-visual-diagnostics 1.7j). Replay both at the same rate.")
     ap.add_argument("--calib", default="config/calib/imx296_1456x1088")
     ap.add_argument("--vstereo", default="config/rig/virtual_stereo_imx296.yaml")
     ap.add_argument("--rig", default="config/rig/rig_extrinsics_imx296.yaml")
@@ -389,6 +396,13 @@ def main():
                  np.linalg.norm(lm - np.asarray(P).mean(0), axis=1).max()))
         lm, lm_col = lm[keep], lm_col[keep]
     slam_P, slam_t, slam_lc, slam_lc_t, slam_edges = read_slam(odom_bag)
+    # The pure-VO reference from a separate SLAM-off run, matched on sensor stamps.
+    ref_t, ref_P = np.zeros(0), np.zeros((0, 3), np.float32)
+    if a.vo_bag:
+        rb = find_bag(pathlib.Path(a.vo_bag))
+        rts, rP, _, _, _ = read_bag(rb)
+        ref_t, ref_P = np.asarray(rts), np.asarray(rP, np.float32).reshape(-1, 3)
+        print("pure-VO reference (%s): %d poses" % (a.vo_bag, len(ref_P)))
     if len(slam_P) or len(slam_lc):
         print("SLAM: %d optimised poses, %d loop closures, %d loop edges"
               % (len(slam_P), len(slam_lc), len(slam_edges)))
@@ -578,6 +592,12 @@ def main():
         rr.log("map/trajectory_slam",
                rr.LineStrips3D([slam_P @ Rz180.T], colors=[0xFF44CCFF], radii=0.012),
                static=True)
+    # Pure VO from the SLAM-OFF run, in green, drawn statically like the SLAM path so the two
+    # are compared as finished trajectories rather than as two growing heads.
+    if len(ref_P):
+        rr.log("map/trajectory_vo_clean",
+               rr.LineStrips3D([ref_P @ Rz180.T], colors=[0x33DD66FF], radii=0.012),
+               static=True)
     if len(slam_lc):
         # Put each marker on the optimised trajectory AT ITS OWN INSTANT. The pose stored
         # with a closure is the one current when it fired, and later optimisations move the
@@ -596,9 +616,26 @@ def main():
     # pose it was matched against, so a closure reads as "here is where the rig recognised
     # it had been before" rather than as an unexplained marker.
     if len(slam_edges):
+        # Snap both endpoints onto the optimised path, and label each edge with the time it
+        # bridges. Two things worth knowing when reading these:
+        #   - a well-closed loop pulls the two matched poses ONTO each other, so the edge is
+        #     a short stub by construction - 22 of 79 were under 0.2 m on run1. A stub is
+        #     the loop working, not the drawing failing.
+        #   - what is actually informative is therefore the TIME each edge bridges, not its
+        #     length, so that goes on the label.
+        ends, labels = [], []
+        for e in slam_edges:
+            if len(slam_P):
+                ia = int(np.linalg.norm(slam_P - e[0], axis=1).argmin())
+                ib = int(np.linalg.norm(slam_P - e[1], axis=1).argmin())
+                ends.append(np.stack([slam_P[ia], slam_P[ib]]))
+                labels.append("%.1f s apart" % abs(slam_t[ia] - slam_t[ib])
+                              if len(slam_t) else "")
+            else:
+                ends.append(e); labels.append("")
         rr.log("map/loop_edges",
-               rr.LineStrips3D([e @ Rz180.T for e in slam_edges],
-                               colors=[0xFFDD00FF], radii=0.02), static=True)
+               rr.LineStrips3D([e @ Rz180.T for e in ends], colors=[0xFFDD00FF],
+                               radii=0.02, labels=labels), static=True)
     traj = []
     heights, bev_cache = [], {}
     last_plane = None
@@ -620,7 +657,11 @@ def main():
         rr.log("rig", rr.Transform3D(translation=t_d, quaternion=R_to_quat(R_d)))
         rr.log("rig/body", rr.Boxes3D(centers=[[0, 0.05, 0]], sizes=[[0.30, 0.16, 0.30]],
                                       colors=[0x2288FFAA]))
-        rr.log("map/trajectory", rr.LineStrips3D([traj], colors=[0x33AAFFFF], radii=0.01))
+        # With --vo-bag the green line already IS the clean VO, so drawing this run's own
+        # (SLAM-degraded) odometry as well is a third line that answers a question nobody is
+        # asking. Keep it only when there is no separate reference.
+        if not len(ref_P):
+            rr.log("map/trajectory", rr.LineStrips3D([traj], colors=[0x33AAFFFF], radii=0.01))
         rr.log("map/head", rr.Points3D([t_d], colors=[0xFF3030FF], radii=0.04))
 
         key = stamps[int(np.abs(stamps - ts[i]).argmin())]

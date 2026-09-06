@@ -467,7 +467,11 @@ class CuvslamMulticamNode : public rclcpp::Node {
       // because the two covered different intervals.
       if (++slam_path_countdown_ >= slam_path_every_) {
         slam_path_countdown_ = 0;
+        // Path AND edges together, from the same graph state. Publishing the edges only on
+        // closures left them describing a graph up to 18 s older than the path they were
+        // drawn against, so they no longer lay on it.
         publish_slam_path(msgs[0]->header.stamp);
+        publish_loop_edges(msgs[0]->header.stamp);
       }
     }
     if (publish_landmarks_ && landmark_stride_ > 0 && (sets_ % landmark_stride_) == 0)
@@ -707,7 +711,6 @@ class CuvslamMulticamNode : public rclcpp::Node {
     pa.header.frame_id = odom_frame_;
     pa.poses = lc_accum_;
     lc_pub_->publish(pa);
-    publish_loop_edges(stamp);
   }
 
   // THE OPTIMISED TRAJECTORY, not the stream of GetPose() values.
