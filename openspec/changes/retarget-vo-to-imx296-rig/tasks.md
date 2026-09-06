@@ -1152,7 +1152,8 @@ physically moved - the remaining items are not doable from here.
   whose free space caps a 20 fps run at ~90 s (5.0e).
 
 - [x] 5.0g **The whole log now replays, on the host, at 15.8 Hz — and it shows the rig walking
-  into a blank white wall, which the VO reported as a 50 m teleport. 2026-09-06.**
+  into a sunlit room that saturates all four cameras, which the VO reported as a 50 m teleport.
+  2026-09-06.**
 
   Every §5 number so far came off a *subset*: the TX2 OOMs on a full 20 fps bag, and its
   `Track()` at 50-90 ms/set drops ~45 % of what survives. So an x86_64 offline path now replays
@@ -1208,25 +1209,38 @@ physically moved - the remaining items are not doable from here.
   | median local 16x16 std | 4.07 | **0.00** |
   | blocks with std < 2 (featureless) | 16 % | **88 %** |
 
-  **It is NOT overexposure**, and the first test of that here was wrong: "saturation above 250
-  is 0.0 %" used the wrong threshold, because this pipeline never emits 250 at all. Every frame
-  of every camera in the whole run has a hard ceiling at **235** and a floor at 16 — ITU-R
-  limited range, so ~14 % of the code range is thrown away before anything else happens. The
-  right test is the fraction of pixels sitting AT that ceiling, and at t = 47 s it is **0.3 %**,
-  against 0.4-0.9 % in the good frames. Nothing is clipped.
+  **It IS overexposure — the operator was right and two of my tests were wrong.** I first
+  tested saturation at >= 250, which this pipeline never emits; then at 235, the extreme tail,
+  and concluded "only 0.3 % at the ceiling, nothing is clipped". Both missed the actual white
+  level. The histogram settles it: at t = 47 s, **88.8 % of cam1's pixels sit at exactly 227**,
+  a single spike, with only 3.9 % above it — and every camera has the same mode 227, at
+  **88.8 / 90.8 / 94.4 / 97.4 %**. Four independent sensors piling ~90 % of their pixels on one
+  code is saturation, not a surface: a real scene at that level still carries shot noise.
 
-  What is actually there is worse than clipping: the centre 700x500 of the frame is **one
-  single value, 227**, across 350 000 pixels — min = max, std exactly 0.00, below the 235
-  ceiling. Stretching 227..227 to 0..255 recovers nothing, because a constant carries no
-  information; the same crop at t = 30 s spans 16..235 with a local std of 13.56. The rig was
-  about **0.30 m from a smooth white surface**, which at that distance fills the fisheye, and
-  the ISP's denoise flattens what little sensor noise remains. Turning the exposure down would
-  not have helped: there is no texture to expose correctly.
+  **And it is not a wall.** All four cameras blow at once, in all four directions, which no
+  piece of geometry does. The saturated fraction tracks the route:
 
-  So this is correct behaviour from cuVSLAM given the input, and a **data-collection** defect —
-  standoff, not exposure. Two secondary capture findings fall out of it: the limited-range
-  16-235 output is free contrast being discarded, and **focus at 0.3 m is unverified** (3R.5 is
-  still open), so a close surface may be defocused on top of being blank.
+  | t (s) | frame mean | % pinned at 227 | features/frame |
+  |---|---|---|---|
+  | 0-9 | 165-209 | 30-68 % | 1887-3222 |
+  | **12-42** | **102-152** | **0.6-12 %** | 2000-3400 |
+  | **45-48** | **213-216** | **75-83 %** | collapses to 210 |
+  | 51-57 | 198-209 | 32-65 % | recovering |
+
+  The run starts bright, crosses a dim room, and re-enters a sunlit one at t ~ 43 s. Fixed
+  exposure cannot hold both ends of that range, so the bright end clips to a constant and the
+  features die with it. Note t = 6 s survived 68 % saturation with 1887 features — the collapse
+  is a threshold effect somewhere above that, not a linear degradation.
+
+  **The actuator is the STM32, not Argus.** AE is locked deliberately (4.7): under external
+  trigger AE cannot reach its main actuator and hunts on gain instead. Exposure here IS the
+  trigger pulse width — `ch_exposure_us=5000`, `pulse_ns=4985740` — so the fix is
+  `j106-trigctl.py`, and "turn AE back on" is not available. What is still open is which pulse
+  width covers the route; that needs a bracket, not a guess, because the clipped frames do not
+  say how much brighter than 227 the bright room actually was.
+
+  Secondary: the pipeline emits limited range (floor 16, tail 235), so some contrast is being
+  discarded before any of this; and focus at close range is unverified (3R.5 still open).
 
   **cuVSLAM itself never said a word, and could not have.** `Track()` returned a valid pose on
   every one of those sets — `grep -c "tracking lost (no pose)"` over the replay log is **0** —
@@ -1269,11 +1283,12 @@ physically moved - the remaining items are not doable from here.
   written for it anyway, so 5.1 still has no measured run. Usable window: **t = 1-43 s**.
 
   **What the next recording has to do differently**, all three cheap:
-  1. Keep 2-5 m of textured scene in view — do not walk the rig into a wall. The 0.28-0.35 m
-     the rangefinder reports for the last 15 s of this run is the rig against something.
-  2. Either raise the exposure headroom for the bright part of the route or re-enable AE for
-     logging runs. Fixed 4.986 ms is right for the room at t = 30 s and three stops too hot
-     at t = 47 s, and there is no AE to catch it.
+  1. **Bracket the trigger pulse width over the actual route.** 4986 us is right for the dim
+     room (mean 102, 3 % saturated) and far too long for the sunlit one (mean 216, 89 %
+     saturated). Record the same walk at a few widths via `j106-trigctl.py` and take the one
+     where neither end clips nor starves. Re-enabling AE is NOT an option here (4.7).
+  2. Watch the new saturation warning while recording — it names the condition live, which is
+     the whole point of adding it.
   3. Write `tape_metres.txt`. Without it the run cannot answer 5.1 no matter how clean it is.
 
   **Caveat on the range channel:** `range_cm` reads a flat 0.28-0.35 m right through the

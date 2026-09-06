@@ -119,6 +119,11 @@ class CuvslamMulticamNode : public rclcpp::Node {
     // below. So they cover the case we already see, and say nothing about the one that
     // actually bit us in 5.0g: a solve that SUCCEEDS on a featureless view and returns a
     // zero delta. 1=Error 2=Warning 3=Message (Release caps at 3).
+    debug_dump_dir_ = declare_parameter<std::string>("cuvslam_debug_dump_dir", "");
+    // Saturation gate. See check_exposure(): cuVSLAM has no image-quality input at all, so
+    // a blown frame reaches the solver looking like a valid one.
+    sat_level_ = declare_parameter<int>("saturation_level", 227);
+    sat_warn_frac_ = declare_parameter<double>("saturation_warn_fraction", 0.5);
     const int verbosity = declare_parameter<int>("cuvslam_verbosity", 0);
     if (verbosity > 0) {
       cuvslam::SetVerbosity(verbosity);
@@ -201,6 +206,14 @@ class CuvslamMulticamNode : public rclcpp::Node {
     cfg.enable_final_landmarks_export = publish_landmarks_;
     // Per the API header, the final-landmarks flag already implies observations export.
     cfg.enable_observations_export = publish_observations_;
+    // cuVSLAM's own debug facility: every Track() call's images plus the rig config are
+    // written here in edex format, which its offline tools read. Off unless asked — it
+    // writes a PNG per virtual camera per frame, so it fills a disk at 8 cameras x 20 Hz.
+    if (!debug_dump_dir_.empty()) {
+      cfg.debug_dump_directory = debug_dump_dir_;
+      RCLCPP_WARN(get_logger(), "cuVSLAM edex debug dump ENABLED -> %s (8 images per set, "
+                  "this will fill the disk)", debug_dump_dir_.c_str());
+    }
     tracker_ = std::make_unique<cuvslam::Odometry>(rig, cfg);
   }
 
@@ -276,9 +289,11 @@ class CuvslamMulticamNode : public rclcpp::Node {
     const auto now = std::chrono::steady_clock::now();
     if (now - last_report_ < std::chrono::seconds(5)) return;
     RCLCPP_INFO(get_logger(), "sets %ld, worst skew %.0f us in the last window, %ld dropped total, "
-                "remap %ld us for %zu virtual cameras",
-                sets_, worst_skew_ns_ / 1e3, dropped_sets_, remap_us_, vpin_.size());
+                "remap %ld us for %zu virtual cameras, worst saturation %.0f%%",
+                sets_, worst_skew_ns_ / 1e3, dropped_sets_, remap_us_, vpin_.size(),
+                100.0 * sat_worst_);
     worst_skew_ns_ = 0;
+    sat_worst_ = 0.0;
     last_report_ = now;
   }
 
@@ -310,6 +325,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
     }
     remap_us_ = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - t_remap).count();
+
+    check_exposure(holds);
 
     cuvslam::PoseEstimate est;
     try {
@@ -378,6 +395,48 @@ class CuvslamMulticamNode : public rclcpp::Node {
       ++ix; ++iy; ++iz;
     }
     cloud_pub_->publish(pc);
+  }
+
+  // THE FAULT cuVSLAM DOES NOT HAVE A NAME FOR: a correctly exposed frame and a blown one
+  // are the same thing to it.
+  //
+  // Its Track() contract says "if after several calls visual odometry is not able to recover,
+  // then invalid pose will be returned" — but that path is only reached when the solve FAILS
+  // (multi_visual_odometry_base.cpp returns false and cuvslam2.cpp hands back an empty
+  // world_from_rig). On the 2026-09-06 run1 the solve kept succeeding on a saturated view and
+  // returned a zero delta, so nothing in the library ever considered it a fault. There is no
+  // image-quality field in Config, no quality output in PoseEstimate, and the only quality
+  // signal at all is the covariance — which by then is already garbage.
+  //
+  // So the rig has to notice for itself. Exposure here is the STM32 trigger pulse width, not
+  // Argus AE (AE is locked on purpose: under external trigger it cannot reach its actuator and
+  // hunts on gain, 4.7). That makes this a fault the OPERATOR can act on and the software
+  // cannot: the fix is the pulse width, or the route.
+  //
+  // Cost: one sample every 8th pixel each way, so 1/64 of the frame, ~25k reads per camera.
+  void check_exposure(const std::vector<cv_bridge::CvImageConstPtr>& holds) {
+    double worst = 0.0;
+    size_t worst_cam = 0;
+    for (size_t i = 0; i < holds.size(); ++i) {
+      const cv::Mat& im = holds[i]->image;
+      size_t hot = 0, n = 0;
+      for (int y = 0; y < im.rows; y += 8) {
+        const uint8_t* row = im.ptr<uint8_t>(y);
+        for (int x = 0; x < im.cols; x += 8, ++n)
+          if (row[x] >= sat_level_) ++hot;
+      }
+      const double frac = n ? static_cast<double>(hot) / n : 0.0;
+      if (frac > worst) { worst = frac; worst_cam = i; }
+    }
+    if (worst >= sat_warn_frac_) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+          "%s is %.0f%% saturated at/above %d — the scene is brighter than the trigger pulse "
+          "width can hold. Features die here and the pose will freeze, then jump. Shorten the "
+          "pulse (j106-trigctl.py), not the AE: AE is locked under external trigger and "
+          "cannot fix this.",
+          cams_[worst_cam].c_str(), 100.0 * worst, sat_level_);
+    }
+    sat_worst_ = std::max(sat_worst_, worst);
   }
 
   // A pose cuVSLAM returns is not the same thing as a pose it MEASURED.
@@ -486,6 +545,9 @@ class CuvslamMulticamNode : public rclcpp::Node {
   int64_t last_pose_ns_ = 0, frozen_ = 0, frozen_warn_sets_ = 3;
   bool have_last_pose_ = false;
   double max_speed_mps_ = 5.0;
+  std::string debug_dump_dir_;
+  int sat_level_ = 227;
+  double sat_warn_frac_ = 0.5, sat_worst_ = 0.0;
   std::chrono::steady_clock::time_point last_report_ = std::chrono::steady_clock::now();
   std::mutex mtx_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
