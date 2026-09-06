@@ -307,6 +307,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "tracking lost (no pose)");
       return;
     }
+    check_pose_health(*est.world_from_rig, msgs[0]->header.stamp);
     publish(*est.world_from_rig, msgs[0]->header.stamp);
     if (publish_landmarks_ && landmark_stride_ > 0 && (sets_ % landmark_stride_) == 0)
       publish_landmarks(msgs[0]->header.stamp);
@@ -364,6 +365,64 @@ class CuvslamMulticamNode : public rclcpp::Node {
     cloud_pub_->publish(pc);
   }
 
+  // A pose cuVSLAM returns is not the same thing as a pose it MEASURED.
+  //
+  // On the 2026-09-06 run1 replay (5.0g) the rig walked into a blank white wall: fixed
+  // 4.986 ms exposure, frame mean luma 102 -> 224, and 88 % of the image left with zero
+  // local 16x16 contrast. cuVSLAM then returned the SAME pose twelve sets running — the
+  // last one it was sure of — with the covariance climbing, and then one pose 50 m away
+  // (with a NEGATIVE variance on one run) from which it carried on as if nothing had
+  // happened. Every one of those passed the `world_from_rig` check above, so the node
+  // published a frozen pose and then a teleport as measurements, and nothing said a word.
+  //
+  // This does not drop or repair anything — a pose the tracker stands behind is still the
+  // best estimate available, and silently withholding it would be the same class of bug.
+  // It makes the failure audible on the live rig, where nobody is running the offline
+  // continuity check in scripts/vo/analyze_motion.py.
+  void check_pose_health(const cuvslam::PoseWithCovariance& pwc,
+                         const builtin_interfaces::msg::Time& stamp) {
+    const auto& t = pwc.pose.translation;
+    const int64_t now_ns = rclcpp::Time(stamp).nanoseconds();
+    // A negative variance on the diagonal is not a large uncertainty, it is a broken
+    // solve: report it whatever the pose looks like.
+    for (int i = 0; i < 6; ++i) {
+      if (pwc.covariance_xyz_rpy[i * 6 + i] < 0.0) {
+        RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
+            "pose covariance diagonal %d is NEGATIVE (%.3g) — the solve broke, this pose "
+            "and the ones after it are not trustworthy", i, pwc.covariance_xyz_rpy[i * 6 + i]);
+        break;
+      }
+    }
+    if (have_last_pose_) {
+      const double d = std::sqrt(std::pow(t[0] - last_t_[0], 2) +
+                                 std::pow(t[1] - last_t_[1], 2) +
+                                 std::pow(t[2] - last_t_[2], 2));
+      const double dt = (now_ns - last_pose_ns_) * 1e-9;
+      if (d == 0.0) {
+        // Bit-identical translation is the tracker repeating itself, not a rig at rest:
+        // a stationary rig still jitters in the last decimal.
+        ++frozen_;
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+            "pose has not moved at all for %ld sets — cuVSLAM is repeating its last "
+            "estimate, not measuring. Featureless view (blank wall, blown highlights)?",
+            frozen_);
+      } else {
+        if (frozen_ >= frozen_warn_sets_)
+          RCLCPP_WARN(get_logger(), "pose moving again after %ld frozen sets", frozen_);
+        frozen_ = 0;
+      }
+      if (dt > 0.0 && d / dt > max_speed_mps_) {
+        RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000,
+            "pose JUMPED %.2f m in %.0f ms (%.0f m/s, limit %.1f) — tracking was lost and "
+            "re-initialised somewhere else. Everything downstream of here is in a new frame.",
+            d, dt * 1e3, d / dt, max_speed_mps_);
+      }
+    }
+    last_t_ = {t[0], t[1], t[2]};
+    last_pose_ns_ = now_ns;
+    have_last_pose_ = true;
+  }
+
   void publish(const cuvslam::PoseWithCovariance& pwc, const builtin_interfaces::msg::Time& stamp) {
     const cuvslam::Pose& p = pwc.pose;
     nav_msgs::msg::Odometry od;
@@ -406,6 +465,12 @@ class CuvslamMulticamNode : public rclcpp::Node {
   std::string vstereo_path_;
   size_t history_ = 8;
   int64_t max_skew_ns_ = 1000000, worst_skew_ns_ = 0, sets_ = 0, dropped_sets_ = 0;
+  // Pose-health state (check_pose_health). max_speed_mps_ is deliberately far above
+  // anything the rig does — 5 m/s is a sprint — so it fires on failures, not on fast motion.
+  std::array<double, 3> last_t_{};
+  int64_t last_pose_ns_ = 0, frozen_ = 0, frozen_warn_sets_ = 3;
+  bool have_last_pose_ = false;
+  double max_speed_mps_ = 5.0;
   std::chrono::steady_clock::time_point last_report_ = std::chrono::steady_clock::now();
   std::mutex mtx_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;

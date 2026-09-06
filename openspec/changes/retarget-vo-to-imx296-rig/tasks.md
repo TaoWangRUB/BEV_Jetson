@@ -1151,8 +1151,8 @@ physically moved - the remaining items are not doable from here.
   and stopped when the motion stops.** 37.5 s of stationary frames cost 3.7 GB of eMMC on a board
   whose free space caps a 20 fps run at ~90 s (5.0e).
 
-- [x] 5.0g **The whole log now replays, on the host, at 15.8 Hz — and it exposes a late tracking
-  blow-up the TX2 subset never reached. 2026-09-06.**
+- [x] 5.0g **The whole log now replays, on the host, at 15.8 Hz — and it shows the rig walking
+  into a blank white wall, which the VO reported as a 50 m teleport. 2026-09-06.**
 
   Every §5 number so far came off a *subset*: the TX2 OOMs on a full 20 fps bag, and its
   `Track()` at 50-90 ms/set drops ~45 % of what survives. So an x86_64 offline path now replays
@@ -1171,19 +1171,80 @@ physically moved - the remaining items are not doable from here.
   For the first 43 s the trajectory is plausible: median step 27 mm, median speed 0.49 m/s,
   p95 0.98 m/s — a walk.
 
-  **Then it breaks.** Between t = 45.7 s and t = 47.6 s the pose jumps, including a single
-  **50.2 m step across one 50 ms interval** (1004 m/s) and a 5.8 m step just after. 14 of 906
-  intervals exceed 0.2 m and carry 60.4 m of the 89.2 m total path; strip them and the run is
-  **28.8 m**, which is a believable indoor walk. So the headline "89 m path, 44.9 m
-  displacement, ±37 m extent" is a tracking failure, not a trajectory.
+  **Then it breaks — and the cause is the scene, not the software.** Re-run at 0.25x to test
+  the delivery-timing hypothesis, and the answer split cleanly in two:
 
-  This is the first thing to explain, and it was invisible before: the TX2 subset ended before
-  t = 43 s. It also **blocks 5.1 and 5.2** — a scale or drift number computed across that jump
-  is meaningless, so either the cause is fixed or the comparison window stops before t = 43 s.
+  | | 0.5x replay | 0.25x replay |
+  |---|---|---|
+  | wall throughput vs input | 7.88 Hz vs 10 Hz — **overrunning** | 4.07 Hz vs 5 Hz — keeping up |
+  | sets never reaching the matcher | 218 of 1155 | 194 of 1155 |
+  | skew-gate drops | 48 | 31 |
+  | **jump intervals (> 5 m/s)** | **8** | **2** |
+  | path excluding jumps | 30.52 m | 30.71 m |
 
-  **Caveat on the range channel:** `range_cm` reads min 4 / median 30 / max 203 across the run.
-  A median of 0.30 m is not a landmark distance — the beam is seeing the operator or the rig
-  itself. 5.5b needs the sensor aimed at something before it can regress anything.
+  So the SMALL discontinuities (0.25-0.73 m) were delivery: `SensorDataQoS()` is best-effort,
+  the node was slower than the input, and DDS discarded images silently. Slowing the replay
+  removed them, and the surviving trajectory reproduces to 0.2 m.
+
+  **The 50 m jump is not delivery.** It survives at the *identical* sensor stamp in both runs
+  (583.784941 -> 583.834926) with the same magnitude (50.18 m / 50.33 m) — but lands somewhere
+  different each time, and one run reported a **negative variance**. What actually happens:
+
+  1. From t = 46.4 s cuVSLAM returns the **same pose twelve sets running**, translation
+     bit-identical (step exactly 0.000 m), covariance climbing 0.03 -> 2.6. It is not
+     measuring; it is repeating the last estimate it was sure of.
+  2. Then one pose ~50 m away, `cov[0]` = 381 in one run and **-33.8** in the other — a
+     negative variance is a broken solve, not a large uncertainty.
+  3. Then normal small steps resume, from a re-initialised origin.
+
+  **Why:** the rig walked up to a blank white wall, at a FIXED 4.986 ms exposure (AE locked
+  by design, 4.7 — `exposure [ns]` is the same constant on every row of `cam1.csv`). Between
+  the good stretch and the freeze, cam1 goes:
+
+  | | t = 30 s | t = 47 s |
+  |---|---|---|
+  | frame mean luma | 101.8 | 224.2 |
+  | global std | 52.1 | 15.1 |
+  | median local 16x16 std | 4.07 | **0.00** |
+  | blocks with std < 2 (featureless) | 16 % | **88 %** |
+
+  Nothing is clipped — saturation above 250 is 0.0 % — the image is simply washed out to a
+  textureless field across all four cameras at once. There are no features to track, so this
+  is correct behaviour from cuVSLAM given the input, and a **data-collection** defect.
+
+  **The node published all of it without comment**, because `track_and_publish` only checked
+  that `world_from_rig` was present. Fixed: `check_pose_health()` now warns on a bit-identical
+  repeated pose, errors on a step over 5 m/s, and errors on a negative covariance diagonal.
+  `scripts/vo/analyze_motion.py` gained the matching offline gate and now **suppresses** the
+  5.1/5.2 verdict on a discontinuous run instead of averaging across a teleport — it was
+  previously happy to report "89 m path, 45 m displacement" for this run. It also timed on the
+  bag RECEIVE clock, which on a 0.5x replay halved every speed; it uses header stamps now.
+
+  **The texture collapse is gradual and starts at t = 43 s**, and the run never recovers:
+  featureless blocks go 7-16 % over t = 20-42 s, then 37 % at t = 43 s, 74 % at t = 45 s,
+  88 % at t = 47 s, 45 % at t = 50 s, 53 % at t = 55 s.
+
+  **Inside t = 1-43 s the result IS reproducible.** Three replays (0.5x, 0.25x, 0.25x with the
+  health check) give a clean path length of **21.10 / 20.29 / 20.39 m** — about 4 % spread —
+  with zero jumps in two of them. The third's nine "jumps" all sit between t = 0.50 and 0.95 s
+  and are cuVSLAM's initialisation transient, so `analyze_motion.py --skip-s` (default 1.0 s)
+  now excludes and names that window rather than suppressing the verdict over it.
+
+  **What this costs §5:** run1 is unusable past t = 43 s, and `tape_metres.txt` was never
+  written for it anyway, so 5.1 still has no measured run. Usable window: **t = 1-43 s**.
+
+  **What the next recording has to do differently**, all three cheap:
+  1. Keep 2-5 m of textured scene in view — do not walk the rig into a wall. The 0.28-0.35 m
+     the rangefinder reports for the last 15 s of this run is the rig against something.
+  2. Either raise the exposure headroom for the bright part of the route or re-enable AE for
+     logging runs. Fixed 4.986 ms is right for the room at t = 30 s and three stops too hot
+     at t = 47 s, and there is no AE to catch it.
+  3. Write `tape_metres.txt`. Without it the run cannot answer 5.1 no matter how clean it is.
+
+  **Caveat on the range channel:** `range_cm` reads a flat 0.28-0.35 m right through the
+  freeze while the rig is walking, and 46 % of the run is under 0.2 m. It is not seeing the
+  scene — it is pointed at the rig or the operator. 5.5b needs it re-aimed before it can
+  regress anything, and it is NOT independent confirmation of the wall.
 
 - [ ] 5.1 Move the rig a measured straight-line distance; record `/cuvslam/odometry` + `/tf` and compare reported translation against the tape measure (spec: *Translation is recovered at true scale*, 5 %).
       **Now the highest-value open item in this change.** `add-replay-visual-diagnostics` 3.5 finds the
@@ -1198,8 +1259,9 @@ physically moved - the remaining items are not doable from here.
       reference. A return-to-origin run is still required for the horizontal figure.
 - [~] 5.3 **Answered offline, pending live confirmation.** cuVSLAM does not take declared stereo pairs: it samples a grid per camera, back-projects to 2 m and 4 m, and connects pairs exceeding 0.5 (`frustum_intersection_graph.cpp:33`). Re-running that on our ring-closed rig gives **0.939 / 0.951 / 0.926 / 0.949** against a 0.961 ceiling, all 8 virtual cameras paired, no spurious edges. The links form with room to spare and the `CUVSLAM_FRUSTUM_THRESHOLD` patch is not needed for the pinholes. Still to confirm on the live pipeline.
 - [~] 5.4 **Rate confirmed on the 4-camera replay, tracking/drift pending live ground truth.**
-  *(Rate superseded by 5.0g: 15.76 Hz on the host against the 11.18 Hz below, and the host replay
-  shows tracking does NOT hold for a whole run — it blows up at t = 47 s.)* The
+  *(Rate superseded by 5.0g: 15.76 Hz on the host against the 11.18 Hz below. And tracking does
+  NOT hold for the whole run — it freezes at t = 46.4 s on a featureless white wall and
+  re-initialises 50 m away. That is a data-collection failure, not a tracking one.)* The
   2026-09-03 replay (5.0c) produced **11.18 Hz** odometry from a 20 Hz input — above the old bundled
   rig's ~8.5 Hz — with cuVSLAM tracking held for the whole 29 s run. It stays compute-limited on the
   TX2: `Track()` at ~50–90 ms/set means ~45 % of the 20 Hz sets never reach the tracker, and the

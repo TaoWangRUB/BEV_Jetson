@@ -99,7 +99,7 @@ See [docs/extrinsic_calibration.md](../docs/extrinsic_calibration.md) for the fu
 | [vo/verify_rig_build.sh](vo/verify_rig_build.sh) | dev | re-run cuVSLAM's frustum test on the poses the C++ actually emits — run it **before** a board session, or a bad rig file reads as a wiring bug |
 | [vo/check_rig_poses.py](vo/check_rig_poses.py) | dev | sanity-check the rig poses fed to cuVSLAM |
 | [vo/run_motion_test.sh](vo/run_motion_test.sh) | TX2 | record a motion test (§5). Preflight **gates, not warns**: refuses unless `trigger_mode=1`, the generator is running and `active_low`, and it reads the real pulse width back so `exposure_us` is never a stale guess. `--record-images` also bags the four camera streams, making the run replayable — move the rig once, re-run the VO against it as often as needed. Do two passes: one with images for replay, one without for the live numbers, because the recorder's own load is indistinguishable from the rig misbehaving |
-| [vo/analyze_motion.py](vo/analyze_motion.py) | dev | compare recorded odometry against the tape measure: scale, drift, return-to-origin |
+| [vo/analyze_motion.py](vo/analyze_motion.py) | dev | odometry health then verdict: **continuity first** (frozen poses, teleports, gaps), then scale/drift/return-to-origin. `tape_metres.txt` optional; a discontinuous run suppresses the verdict rather than averaging over it |
 
 ## bev/ — bird's-eye ground stitch
 
