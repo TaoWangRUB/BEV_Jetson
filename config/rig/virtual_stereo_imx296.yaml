@@ -1,0 +1,116 @@
+# Virtual pinhole stereo pairs for the 4x IMX296 rig, generated 2026-09-01 (ROUND 2).
+#
+# WHY THIS EXISTS. The lenses are ~192 deg diagonal. cuVSLAM's only fisheye model is the
+# equidistant one, which cannot represent rays past 90 deg incidence, so it cannot
+# consume these cameras at all. Each fisheye is carved into two virtual pinholes aimed
+# +-45 deg; the one facing the neighbour forms a stereo pair with it. cuVSLAM then sees
+# plain Pinhole images with zero distortion - and the pair's frusta overlap almost
+# completely, clearing the hard-coded 0.5 frustum-overlap gate that rejected the raw rig.
+#
+# Method follows OmniNxt/quarterKalibr's fisheye_undist.py: focal = W/2/tan(fov_pin/2)
+# and a BACKWARD remap - for each virtual pixel, form its ray, project it through the
+# calibrated omni model, record the source fisheye pixel.
+#
+# THE SPLIT USES THE HORIZONTAL FIELD, NOT THE DIAGONAL. The lens is D190 / H160 and the
+# pinholes are carved by YAW, so the horizontal 160 deg governs. Generated at fov=190,
+# each pinhole reaches 95 deg off-axis where the lens delivers 80, and every rectified
+# view came back with a large black wedge - 90% non-black at fov=190 against 100% here.
+#
+# RESOLUTION IS NOT FREE. focal 548.4 px is 1.03x the fisheye's near-axis scale of
+# 534 px/rad. At 480x360 the virtual focal is 201 px (0.38x) and AprilTag detection
+# collapsed from ~10 tags/frame to 0.1, which produced a NaN in Kalibr's second camera
+# before the cause was understood.
+#
+# WHICH pinhole faces which is derived from the extrinsic (smallest angle between virtual
+# optical axes), not assumed - see axes_apart_deg.
+#
+# BUILT ON THE RING-CLOSED RIG. These pairs come from the closed extrinsics, not the raw
+# pairwise solves - see rig_extrinsics_imx296.yaml. Closure moved each pair by 0.57-1.31
+# deg and the epipolar residuals below are measured after that, so left and rear improved
+# (0.81 -> 0.45, 0.83 -> 0.66) while front and right got worse (1.42 -> 1.79, 0.62 -> 2.55).
+# The mean cost is ~4% in rms, paid to make the four pairs describe one rigid body.
+
+# REGENERATED 2026-09-01 from the round-2 ring-closed extrinsics (3R.15/3R.16). The
+# carve combination is CHOSEN here by minimising the angle between the two virtual
+# optical axes, and the pair is ordered so the LEFT camera is the one with the negative
+# baseline component - both were previously re-derived or assumed by the checker tools,
+# which is why round 2 first read as a total failure. See scripts/calib/vstereo_*.py.
+#
+# quality: is the round-2 measurement. p90 and signed-median are NOT carried over from
+# round 1 - they were not re-measured, and a stale number here would be worse than none.
+virtual_pinhole:
+  width: 768
+  height: 576
+  fov_deg: 70
+  focal_px: 548.409
+  principal_point: [384.0, 288.0]
+  distortion: [0.0, 0.0, 0.0, 0.0]     # zero by construction
+calib_session: 20260901
+
+left:
+  from: cam1
+  to: cam3
+  carve_yaw_deg: [-45, +45]
+  axes_apart_deg: 1.6
+  baseline_m: 0.1552
+  R_virtual:
+    - [0.991753, -0.127898, 0.008234]
+    - [0.128077, 0.991387, -0.027314]
+    - [-0.004670, 0.028144, 0.999593]
+  t_virtual: [-0.154746, -0.011946, -0.003604]
+  quality:                            # AprilTag IDENTITY, round 2, after ring closure
+    epipolar_dy_median_px: 2.06
+    epipolar_dy_rms_px: 3.11
+    dense_valid_fraction: 0.14
+    dense_depth_median_m: 0.45
+
+front:
+  from: cam2
+  to: cam1
+  carve_yaw_deg: [-45, +45]
+  axes_apart_deg: 2.4
+  baseline_m: 0.1527
+  R_virtual:
+    - [0.993148, -0.115163, 0.019874]
+    - [0.115842, 0.992568, -0.037270]
+    - [-0.015434, 0.039316, 0.999108]
+  t_virtual: [-0.152545, -0.007617, 0.000575]
+  quality:                            # AprilTag IDENTITY, round 2, after ring closure
+    epipolar_dy_median_px: 1.32
+    epipolar_dy_rms_px: 2.86
+    dense_valid_fraction: 0.17
+    dense_depth_median_m: 0.35
+
+right:
+  from: cam4
+  to: cam2
+  carve_yaw_deg: [-45, +45]
+  axes_apart_deg: 1.2
+  baseline_m: 0.1533
+  R_virtual:
+    - [0.988764, -0.149284, -0.007762]
+    - [0.149414, 0.988566, 0.020352]
+    - [0.004636, -0.021283, 0.999763]
+  t_virtual: [-0.152335, -0.017191, 0.002614]
+  quality:                            # AprilTag IDENTITY, round 2, after ring closure
+    epipolar_dy_median_px: 2.86
+    epipolar_dy_rms_px: 4.07
+    dense_valid_fraction: 0.11
+    dense_depth_median_m: 0.55
+
+rear:
+  from: cam3
+  to: cam4
+  carve_yaw_deg: [-45, +45]
+  axes_apart_deg: 1.0
+  baseline_m: 0.1612
+  R_virtual:
+    - [0.997648, -0.068400, -0.004409]
+    - [0.068313, 0.997509, -0.017609]
+    - [0.005603, 0.017267, 0.999835]
+  t_virtual: [-0.161116, -0.003742, 0.001783]
+  quality:                            # AprilTag IDENTITY, round 2, after ring closure
+    epipolar_dy_median_px: 3.67
+    epipolar_dy_rms_px: 4.52
+    dense_valid_fraction: 0.10
+    dense_depth_median_m: 0.82

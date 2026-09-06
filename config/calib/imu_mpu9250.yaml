@@ -1,0 +1,69 @@
+# MPU-9250 (onboard the J106) for Kalibr / quarterKalibr camera-IMU calibration.
+#
+# PROVENANCE: these are DATASHEET figures, not an Allan-variance measurement of this
+# part. Recorded that way deliberately — a made-up number that looks measured is worse
+# than a stated approximation.
+#
+#   gyroscope_noise_density    datasheet rate noise spectral density 0.01 deg/s/sqrt(Hz)
+#                              = 0.01 * pi/180 = 1.75e-4 rad/s/sqrt(Hz)
+#   accelerometer_noise_density  datasheet 300 ug/sqrt(Hz) = 300e-6 * 9.80665
+#                              = 2.94e-3 m/s^2/sqrt(Hz)
+#   *_random_walk              NOT in the datasheet. These are typical consumer-MEMS
+#                              values and are the least trustworthy numbers here.
+#
+# Kalibr converges more reliably with slightly pessimistic noise, so these are not
+# scaled down. If Delta or the VIO turns out sensitive to them, measure properly: a
+# multi-hour static recording and an Allan deviation. That is a real experiment, not a
+# config change, which is why it is not done pre-emptively.
+#
+# The reader is `bev_imu/imu_node`: samples are stamped at the DATA-READY EDGE on
+# CLOCK_MONOTONIC, the same clock as the cameras (docs/timestamps.md). Group delays from the
+# DLPF are reported by the node and NOT applied — at the configured bandwidths the gyro
+# lags the accel by ~1.02 ms, which no single correction can fix.
+
+#Accelerometer
+accelerometer_noise_density: 0.0029      # m/s^2/sqrt(Hz)
+accelerometer_random_walk:   0.00086     # m/s^3/sqrt(Hz)  (typical, unmeasured)
+
+#Gyroscope
+gyroscope_noise_density:     0.000175    # rad/s/sqrt(Hz)
+gyroscope_random_walk:       0.000022    # rad/s^2/sqrt(Hz)  (typical, unmeasured)
+
+rostopic:    '/imu0'
+update_rate: 200.0                       # matches imu_node's default rate parameter
+
+# ---------------------------------------------------------------------------------------
+# CAMERA <-> IMU TIME OFFSET (Delta)   MEASURED 2026-09-01, cam1, IMX296 triggered rig
+# ---------------------------------------------------------------------------------------
+# Kalibr's convention, as written in its own result file:  t_imu = t_cam + shift
+timeshift_cam_imu: 0.003731525498702239        # +3.7315 ms
+calib_session: 20260901
+delta_source: "kalibr_calibrate_imu_camera, cam1 at 4986 us exposure, 1101 images and
+  14693 IMU samples at 200.11 Hz, reprojection residual 0.45 px"
+
+# REPEATABILITY, from independent recordings rather than from the solver (which reports no
+# uncertainty at all - it prints 18 digits for a quantity this variable):
+#   +3.7315 ms   4986 us exposure
+#   +3.7556 ms   independent repeat, same settings      -> 24 us apart
+#   +3.8612 ms   9986 us exposure                       -> 130 us, and see below
+#
+# VALID AT ANY EXPOSURE. Doubling the exposure moved Delta by 0.13 ms where a mis-modelled
+# exposure/2 term would have moved it by 2.5 ms, so the exposure-midpoint stamping is
+# correct and this constant does not have to be re-measured when the exposure changes.
+#
+# WHAT IT IS MADE OF (measured, not assumed):
+#   +2.90 ms   gyro DLPF group delay at 184 Hz - REPORTED BY THIS DRIVER AND NOT APPLIED.
+#              Confirmed by varying it: 184 Hz -> 41 Hz adds 3.00 ms of datasheet group
+#              delay and moved Delta by +2.79 ms (93% of the prediction).
+#   -0.26 ms   the camera side, = w - e with w ~50 us of wake latency and e measured
+#              directly against the hardware trigger echo (hw-trigger/WIRING.md 4.4):
+#              e = +0.31 ms, constant to 1.5 us across a 4x exposure change.
+#   ~+1.1 ms   unattributed. The accelerometer path is the open suspect - see below.
+#
+# ⚠ RE-MEASURE DELTA IF EITHER DLPF SETTING CHANGES. The delays below land inside it.
+#
+# GYRO/ACCEL MISMATCH — worth fixing. The two paths currently disagree by 1.02 ms
+# (gyro 2.90 ms at 184 Hz, accel 1.88 ms at 218 Hz) and Kalibr fits ONE Delta for both, so
+# no single offset can correct two different lags. Setting accel_dlpf=2 (99 Hz, 2.88 ms)
+# aligns them to 0.02 ms, and puts the accel corner near the 100 Hz Nyquist of the 200 Hz
+# sample rate, which 218 Hz is well past. Delta must be re-measured afterwards.

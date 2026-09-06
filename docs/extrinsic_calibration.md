@@ -1,5 +1,17 @@
 # Surround-rig extrinsic calibration
 
+> **⚠ IMX219 lineage — this procedure does not run on the current rig (2026-09-04).**
+> It drives `scripts/calib/extrinsic_calib.py` and `pano_tuner.py`, which read equidistant
+> (KANNALA_BRANDT) intrinsics and the `board_center` rig format. The IMX219 intrinsics have been
+> deleted and those rig files moved to `config/rig/archive/imx219/`, so both scripts now exit
+> rather than produce a wrong answer.
+>
+> The IMX296 rig is calibrated in omni/Mei: `scripts/calib/pair_extrinsics.py` +
+> `close_rig_ring.py` produce `config/rig/rig_extrinsics_imx296.yaml`. Porting these tools means
+> teaching them the Mei projection — `mei_project()` in `ros2/bev_cuvslam/src/bev_panorama_node.cpp`
+> is the reference implementation. The method below is still the right method; only the camera
+> model is wrong.
+
 How to recalibrate the 4-camera fisheye rig's relative orientations so the 360° panorama seams line
 up. This refines the **rotations** in `config/rig/rig_extrinsics.yaml` (the idealized 90°/level values
 are off by real mounting error — last run found **cam4/port-f ~19°** off).

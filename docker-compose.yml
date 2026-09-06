@@ -34,6 +34,13 @@ x-bev: &bev
     - /tmp/argus_socket:/tmp/argus_socket
     - /dev:/dev
     - ./:/workspace
+    - /home/nvidia/logs:/logs      # eMMC (rootfs): 136 MB/s measured, vs 62.6 MB/s on the SD
+    # The HOST's /dev/shm. A container gets its own 64 MB tmpfs at /dev/shm by default,
+    # which is nowhere near enough to stage 190 MB/s; bind the host's 3.9 GB instead.
+    - /dev/shm:/ramlog
+    # SD card, outside the repo on purpose - a log directory inside it would end up in
+    # git and in the build context. 62.6 MB/s measured, so ~1 camera at 30 fps.
+    - /media/nvidia/workspace/logs:/sdlog
 
 services:
   shell:
@@ -48,7 +55,7 @@ services:
 
   build-ws:
     <<: *bev
-    command: bash -lc "colcon build --packages-select bev_camera bev_cuvslam --cmake-args -DCMAKE_BUILD_TYPE=Release"
+    command: bash -lc "colcon build --packages-select bev_camera bev_cuvslam bev_imu bev_range --cmake-args -DCMAKE_BUILD_TYPE=Release"
 
   # Recommended runtime: fused zero-copy Argus -> cuVSLAM (params in bev_cuvslam/config/fused_vo_params.yaml)
   fused:
@@ -57,8 +64,47 @@ services:
       - bash
       - -lc
       - |
-        if [ "${RECORD:-0}" = 1 ]; then mkdir -p bags; ros2 bag record -o bags/fused_$(date +%Y%m%d_%H%M%S) /cuvslam/odometry /tf & fi
-        exec ros2 launch bev_cuvslam bev_cuvslam_fused.launch.py
+        REC=""
+        if [ "${RECORD:-0}" = 1 ]; then
+          mkdir -p bags
+          ros2 bag record -o bags/fused_$(date +%Y%m%d_%H%M%S) /cuvslam/odometry /tf &
+          REC=$$!
+        fi
+        # NO `exec` HERE, deliberately. This used to background the recorder and then exec
+        # the launch, which replaced the shell - so nothing could trap the shutdown, and on
+        # SIGINT the container tore down while rosbag2 was still holding an uncommitted WAL.
+        # The result was a bag directory with no metadata.yaml, unreadable, reporting 0
+        # messages. It sometimes survived by luck, which is worse than failing.
+        #
+        # Keep the shell as PID 1, and on shutdown stop the RECORDER FIRST and wait for it:
+        # rosbag2 checkpoints and writes metadata.yaml only on a clean SIGINT.
+        ros2 launch bev_cuvslam bev_cuvslam_fused.launch.py &
+        VO=$$!
+        # ORDER MATTERS, and only the recorder's exit is worth waiting for. rosbag2 must
+        # checkpoint and write metadata.yaml or the bag is unreadable; the VO has nothing to
+        # flush and `ros2 launch` is slow to leave (it escalates INT -> TERM -> KILL on its
+        # own child), so waiting on it just hangs the container with the bag already safe.
+        stop() {
+          if [ -n "$$REC" ]; then kill -INT $$REC 2>/dev/null; wait $$REC 2>/dev/null; fi
+          kill -INT $$VO 2>/dev/null
+          for i in 1 2 3 4 5 6; do kill -0 $$VO 2>/dev/null || break; sleep 1; done
+          kill -KILL $$VO 2>/dev/null
+          exit 0
+        }
+        trap stop INT TERM
+        # MOTION_SECONDS makes a run a DEFINED EXPERIMENT rather than an open-ended one that
+        # depends on a signal arriving intact. Ctrl-C still works; this just does not need it.
+        # Worth having because the signal path is fragile in every non-interactive case:
+        # background jobs inherit SIGINT ignored, and `docker compose run` only forwards it
+        # when it has a TTY - and a stop that half-works leaves an unreadable bag.
+        if [ -n "${MOTION_SECONDS:-}" ]; then
+          sleep "${MOTION_SECONDS}"
+          echo "MOTION_SECONDS=${MOTION_SECONDS} elapsed - stopping cleanly"
+          stop
+        else
+          wait $$VO
+        fi
+        [ -n "$$REC" ] && { kill -INT $$REC 2>/dev/null; wait $$REC 2>/dev/null; } || true
 
   # Modular pipeline (capture + VO) in ONE container (cross-container DDS discovery fails)
   modular:
@@ -67,14 +113,220 @@ services:
       - bash
       - -lc
       - |
-        ros2 run bev_camera argus_capture_node --ros-args -p sensor_ids:=[1,2,3,4] -p width:=1640 -p height:=1232 -p fps:=60 &
+        ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p publish_every_n:=${PUBLISH_EVERY_N:-1} -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us (j106-trigctl.py --port /dev/ttyACM0 status)} &
         trap "kill %1 2>/dev/null" EXIT
         sleep 8
         exec ros2 launch bev_cuvslam bev_cuvslam.launch.py
 
+  # PURE IMAGE LOG: the capture node writing RAW FRAMES STRAIGHT TO DISK. No VO, no rosbag2,
+  # NO DDS - the frames never enter a network stack, because they never leave this board.
+  #
+  # Measured 2026-09-02, going through ROS topics to a recorder on the SAME machine: capture
+  # held a clean 30 Hz (150 sets per 5 s window, 66 us skew) and rosbag2 wrote 6.1 Hz per
+  # camera. Four fifths of the frames were lost to serialisation and loopback UDP while the
+  # disk sat a quarter busy. Tuning DDS buffers treats the symptom.
+  #
+  # Output per camera: camN.raw (concatenated mono8, no header), camN_index.csv (stamp_ns,
+  # byte offset), plus geometry.txt. An offline reader needs nothing from this repo:
+  #   numpy.memmap('cam1.raw', dtype='u1').reshape(-1, 1088, 1456)
+  #
+  # STILL BOUNDED BY THE DISK: 4 x 1456x1088 at 30 fps is ~190 MB/s, and measured sustained
+  # write is 136 MB/s on eMMC (/logs) and 62.6 MB/s on the SD. So expect ~21 fps to eMMC.
+  # LOG_DIR=/dev/shm gives the full 30 fps for ~20 s of RAM, then copy off.
+  #
+  # THE BANDWIDTH DOES NOT FIT, and it is worth stating plainly. Four 1456x1088 mono8 frames
+  # at 30 fps is 1.585 MB x 4 x 30 = ~190 MB/s. Measured sustained write on this board:
+  # eMMC 136 MB/s, SD 62.6 MB/s. So 30 fps to eMMC WILL drop frames; it is a ~21 fps pipe.
+  # Options, in the order they cost you something:
+  #   LOG_DIRS=/logs,/logs,/sdlog,/ramlog   30 fps for a full minute, split 2/1/1 by target
+  #   TRIGGER_FPS=20 + `trigctl fps 20`     20 fps, ALL FOUR on eMMC, unlimited length
+  #   LOG_DIR=/ramlog                       the HOST's /dev/shm (3.9 GB): 30 fps, ~20 s, then copy off
+  #   PUBLISH_EVERY_N=2                     15 fps, fits eMMC with headroom, runs indefinitely
+  # The recorder reports what it actually wrote; compare it against the trigger rate rather
+  # than assuming.
+  #
+  # MEASURED 2026-09-03, 60 s each, on set completeness (the metric that matters for a
+  # triggered rig - see scripts/port/check_log_sets.py):
+  #   30 fps split across 3 targets    1704/1753 sets  97.2%   28.74 Hz
+  #   20 fps all four to eMMC          1176/1177 sets  99.9%   19.93 Hz
+  # Neither drops a frame in the writer queues (max depth 1 of 64). At 20 fps what remains is
+  # one brief global stall per ~80 s plus a 250 ms startup transient; it scales with write
+  # bandwidth (decimating images 10x gave zero stalls in 118 s). O_DIRECT makes it WORSE at
+  # this rate - see the note in scripts/log_raw.sh before reaching for IMAGE_LOG_DIRECT.
+  # At 30 fps the losses start ~30 s in and continue to the end, spread uniformly rather than
+  # periodically: that is the split saturating over the length of the run, not a stall.
+  # PREFER THE 20 fps FORM unless 30 fps is itself the requirement.
+  #
+  #   LOG_DIR=/logs LOG_LABEL=run1 EXPOSURE_US=$(...) docker compose run --rm logonly
+  logonly:
+    <<: *bev
+    # A service-level `environment` REPLACES the anchor's rather than merging, so the NVIDIA
+    # vars are repeated here. Without this the script sees none of these and dies on the
+    # EXPOSURE_US guard - the old inline command interpolated them at compose level instead.
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      EXPOSURE_US: ${EXPOSURE_US:?set EXPOSURE_US to the measured trigger pulse width in us}
+      LOG_DIR: ${LOG_DIR:-}
+      LOG_DIRS: ${LOG_DIRS:-}
+      LOG_LABEL: ${LOG_LABEL:-run}
+      # log_rig.sh pins this so the images land in the SAME directory as the IMU CSV, which
+      # is written by a different container. Without it each side stamps its own name - and
+      # they do not even agree on the hour, because the container is UTC and the host is
+      # local time. Note this block REPLACES the anchor's environment rather than merging,
+      # so a variable missing from here simply never reaches the script.
+      LOG_STAMP: ${LOG_STAMP:-}
+      MOTION_SECONDS: ${MOTION_SECONDS:-}
+      PUBLISH_EVERY_N: ${PUBLISH_EVERY_N:-1}
+      TRIGGER_FPS: ${TRIGGER_FPS:-30}
+      WRITE_QUEUE_DEPTH: ${WRITE_QUEUE_DEPTH:-64}
+      DRAIN_MAX: ${DRAIN_MAX:-120}
+      IMAGE_LOG_DIRECT: ${IMAGE_LOG_DIRECT:-false}
+    command: bash -lc "scripts/log_raw.sh"
+
+  # Section 5 motion test: capture + VO + recorder in ONE container, on purpose.
+  #
+  # Cross-container DDS would drop images - 4x1456x1088 mono8 is ~6.3 MB per set, ~95 MB/s
+  # at 15 Hz - and a lossy recording is worse than none, because the loss looks like rig
+  # behaviour when it is replayed.
+  #
+  # RECORD_IMAGES=1 also bags the four camera streams, which is what makes the run
+  # REPLAYABLE: move the rig once, then re-run the VO against it as often as needed. Cost is
+  # bandwidth, so decimate (PUBLISH_EVERY_N=2 -> ~47 MB/s) and keep runs short. The SD is
+  # known not to absorb 30 Hz of four cameras.
+  #
+  # TWO PASSES, and do not merge them. The recorder competes for CPU and I/O and can itself
+  # induce drops; a live tape-measure number taken with the recorder running cannot be told
+  # apart from the rig misbehaving. So: one pass with RECORD_IMAGES=1 for replay, one pass
+  # without it for the live 5.1/5.2 numbers.
+  #
+  #   MOTION_LABEL=line1 RECORD_IMAGES=1 PUBLISH_EVERY_N=2 EXPOSURE_US=$(...) \
+  #     docker compose run --rm motion
+  motion:
+    <<: *bev
+    command:
+      - bash
+      - -lc
+      - |
+        set -e
+        ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p publish_every_n:=${PUBLISH_EVERY_N:-1} -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us (j106-trigctl.py --port /dev/ttyACM0 status)} &
+        CAP=$$!
+        trap "kill $$CAP $$VO 2>/dev/null" EXIT
+        # Let Argus actually come up before anything else starts. Opening four sessions too
+        # soon after an nvargus-daemon restart fails with "no session for 0", the capture
+        # node dies, and the VO then sits there logging nothing while the bag fills with
+        # nothing - which is exactly what happened on the first verification run.
+        sleep 12
+        kill -0 $$CAP 2>/dev/null || { echo "CAPTURE NODE DIED - see above; not recording"; exit 1; }
+        ros2 launch bev_cuvslam bev_cuvslam.launch.py &
+        VO=$$!
+        sleep 10                      # cuVSLAM warms the GPU and builds 8 remap tables first
+        TOPICS="/cuvslam/odometry /tf /cam1/frame_meta"
+        if [ "${RECORD_IMAGES:-0}" = 1 ]; then
+          TOPICS="$$TOPICS /cam1/image_raw /cam2/image_raw /cam3/image_raw /cam4/image_raw"
+        fi
+        OUT=bags/motion_${MOTION_LABEL:-run}_$(date +%Y%m%d_%H%M%S)
+        mkdir -p bags
+        echo "recording $$TOPICS -> $$OUT"
+        echo "MOVE THE RIG NOW. Ctrl-C when the move is complete."
+        # --qos-profile-overrides-path is NOT optional: the image topics are best_effort and
+        # the recorder defaults to reliable, so without it the bag records 0 messages while
+        # still printing "Subscribed to topic ...". See config/record_qos.yaml.
+        ros2 bag record --qos-profile-overrides-path ros2/bev_cuvslam/config/record_qos.yaml -o "$$OUT" $$TOPICS
+
+  # Ports (not sensor-ids) are resolved at runtime; exposure_us is the trigger generator's
+  # MEASURED pulse width, which in Fast Trigger mode IS the exposure. Read it back with
+  #   j106-trigctl.py --port /dev/ttyACM0 status      -> chN_exposure_us / pulse_ns
+  # (F401 since 2026-08-31. It answers on BOTH /dev/ttyACM0 (USB CDC) and /dev/ttyTHS1
+  # (UART) - verified 2026-09-01, identical status from each. Earlier comments here implied
+  # ttyTHS1 belonged only to the superseded H7; it does not.)
+  #
+  # There is deliberately NO default. The stamp is SOF - exposure/2, so a stale value does
+  # not fail, it silently biases every timestamp by half its error - and the two generators
+  # this rig has run differ by 25 ms, i.e. 12.5 ms of stamp. Re-read after ANY reset: the
+  # firmware boots at its compiled-in defaults and says nothing about it.
+  #   EXPOSURE_US=$(...) docker compose up capture
+  #
+  # PUBLISH_EVERY_N decimates ON THE TRIGGER EDGE (every camera skips the same edges, so
+  # whole synchronised sets survive; timing metadata is still published for every frame).
+  # Default 1. Raise it when the consumer cannot keep up: the modular VO spends ~31 ms per
+  # set on the CPU remap against a 33 ms budget at 30 Hz, and PUBLISH_EVERY_N=2 doubles the
+  # budget to 66 ms at no cost in image quality. Measured alternatives are worse - see
+  # scripts/vo/bench_remap.cpp and task 4.5b.
+  #   PUBLISH_EVERY_N=2 EXPOSURE_US=$(...) docker compose run --rm modular
   capture:
     <<: *bev
-    command: ros2 run bev_camera argus_capture_node --ros-args -p sensor_ids:=[1,2,3,4] -p width:=1640 -p height:=1232 -p fps:=20
+    command: ros2 run bev_camera argus_capture_node --ros-args -p width:=1456 -p height:=1088 -p fps:=30 -p publish_every_n:=${PUBLISH_EVERY_N:-1} -p exposure_us:=${EXPOSURE_US:?set EXPOSURE_US to the generator's measured pulse width in us (j106-trigctl.py --port /dev/ttyACM0 status)}
+
+  # IMU STRAIGHT TO CSV, no DDS - the same discipline as `logonly`, for the same reason.
+  #
+  # It runs in its OWN container because the IMU needs root and privileged for
+  # /dev/spidev1.0, /dev/gpiochip* and SCHED_FIFO, and the image logger has no business
+  # holding those. That would normally raise the cross-container DDS problem this file warns
+  # about elsewhere - except NOTHING passes between the two containers. Each writes its own
+  # file, and both stamp CLOCK_MONOTONIC, so they are joined offline on the timestamp.
+  #
+  # Driven by scripts/log_rig.sh, which puts the CSV in the same directory as the images.
+  # No `:?` guard on IMU_CSV: compose interpolates EVERY service on EVERY command, so a
+  # required variable here would break `docker compose run logonly` too.
+  imulog:
+    <<: *bev
+    user: root
+    privileged: true
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+    command:
+      - bash
+      - -lc
+      - |
+        # FORCE A DECIMAL POINT. imu_node declares `rate` as a double, and ros2 parses a
+        # bare 200 as an integer - which is an InvalidParameterTypeException at startup, not
+        # a coercion. Same trap as image_log_direct in log_raw.sh, so normalise here rather
+        # than rely on every caller remembering to write 200.0.
+        RATE="${IMU_RATE:-200}"
+        case "$$RATE" in *.*) ;; *) RATE="$$RATE.0" ;; esac
+        ros2 run bev_imu imu_node --ros-args \
+          -p csv:=${IMU_CSV:-/logs/imu0.csv} \
+          -p rate:="$$RATE"
+
+  # Garmin LIDAR-Lite -> range0.csv, alongside imu0.csv. Mirrors `imulog`.
+  #
+  # NEEDS SOLE OWNERSHIP OF /dev/ttyTHS1 for the whole run. That port is the camtrig
+  # console as well as the range stream - it is full duplex and carries both - so nothing
+  # else may open it while this is up, or the two readers steal each other's bytes.
+  # log_rig.sh therefore finishes its trigger preflight BEFORE starting this.
+  #
+  # root + privileged for /dev/ttyTHS1 (crw-rw---- root:dialout); /dev is already bound by
+  # the shared anchor. NOT a device passthrough list, because the port name is a parameter.
+  rangelog:
+    <<: *bev
+    user: root
+    privileged: true
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+    command:
+      - bash
+      - -lc
+      # `exec` MATTERS HERE. stop_signal is SIGINT (line 24) so the node can close its CSV,
+      # but bash -lc does not forward signals to a child it is waiting on: the SIGINT killed
+      # the shell, the node ran on until the 20 s grace expired, and SIGKILL then skipped the
+      # destructor that writes the trailer and flushes. imulog has no wrapper and never had
+      # this problem. exec replaces the shell so the node IS pid 1 and gets the signal.
+      - |
+        exec ros2 run bev_range range_node --ros-args \
+          -p csv:=${RANGE_CSV:-/logs/range0.csv} \
+          -p port:=${TRIG_PORT:-/dev/ttyTHS1} \
+          -p divisor:=${RANGE_DIV:-1}
+
+  # MPU-9250 IMU -> /imu0, stamped at the data-ready edge on CLOCK_MONOTONIC (docs/timestamps.md).
+  # Needs root for /dev/spidev1.0 + /dev/gpiochip* and for SCHED_FIFO.
+  imu:
+    <<: *bev
+    user: root
+    privileged: true          # device cgroup for /dev/spidev1.0 + /dev/gpiochip*, CAP_SYS_NICE
+    command: ros2 run bev_imu imu_node
 
   # GPU equirectangular surround stitch of the 4 fisheye -> /bev/panorama (view in rviz)
   panorama:

@@ -1,0 +1,106 @@
+# The rig's pose relative to the ground, and the rig frame the BEV output is expressed in.
+#
+# Every ground-plane projection depends on the two blocks below, and an error in either is
+# indistinguishable in the output from a camera calibration error. Consumer:
+# ros2/bev_ground/src/bev_ground_stitch_node.cpp.
+#
+# STATUS: the plane is UNMEASURED. Nothing in the rig files states the rig's height above
+# the ground or its tilt, and this file does not invent one. The node refuses to start
+# against status: unmeasured unless the operator explicitly passes a provisional height,
+# and everything it then publishes is stamped PROVISIONAL. See ground-plane-calibration
+# spec, "a plane that has not been measured is marked unmeasured, never assumed level at
+# a guessed height".
+
+# ---------------------------------------------------------------------------------------
+# 1. THE RIG FRAME
+# ---------------------------------------------------------------------------------------
+# openspec retarget-vo-to-imx296-rig task 3R.16b left this open: cuvslam_multicam_node
+# publishes cam1's RAW OPTICAL frame as base_link, which is an optical frame (x right,
+# y down, z forward) additionally rolled 180 deg by the inverted mount. That is not a
+# frame anyone can put a bird's-eye view in, so this file states the missing rotation.
+# 3R.16b should adopt it rather than derive a second one.
+#
+# rig frame is FLU, per config/rig/rig_layout.yaml: x forward, y left, z up.
+# Its ORIGIN is cam1's optical centre, because that is where rig_in_cam1 puts the origin.
+# It is NOT under the rig's geometric centre; the four cameras sit at
+#   cam1 (0, 0)   cam2 (0.001, -0.152)   cam3 (-0.155, 0.005)   cam4 (-0.152, -0.156)  m.
+#
+# DERIVATION, and then the check that it is right.
+#  - The modules are mounted inverted (rig_layout camera_roll_deg: 180), re-confirmed
+#    2026-08-31 from printed text in a live frame. For an inverted camera, optical +y
+#    (image DOWN) points physically UP, and optical +x (image RIGHT) points physically
+#    LEFT. So rig up = +y_cam1 and rig left = +x_cam1 when cam1 is taken to face forward.
+#  - cam1 is front_LEFT, so it does not face forward: it faces 45 deg left of forward.
+#    Rotating the frame 45 deg to the right about up gives forward and left below.
+#
+# VERIFIED against config/rig/rig_extrinsics_imx296.yaml (rig_in_cam1), not assumed. In
+# this frame the four optical centres form a 152 x 155 mm square with each camera in its
+# labelled quadrant, and the four optical axes point at
+#     cam1 +45.00   cam2 -43.81   cam3 +134.40   cam4 -134.77   deg azimuth (+ = left),
+# i.e. the ring order c -> d -> f -> e at 90 deg spacing. The node re-runs this check at
+# startup and refuses to run if a camera is more than a stated tolerance off its quadrant.
+#
+# Also measured, and load-bearing for BEV coverage: the optical axes are tilted DOWN by
+# 6.22 / 4.04 / 8.39 deg (cam2 / cam3 / cam4 relative to cam1). cam1 reads 0 by
+# construction because it defines the frame, not because it is level — which is exactly
+# the ambiguity the plane block below exists to resolve.
+rig_frame:
+  name: rig
+  convention: FLU              # x forward, y left, z up
+  origin: cam1_optical_centre
+  reference_camera: cam1
+  # R_rig_cam1: maps a vector in cam1's RAW optical frame into rig FLU coordinates.
+  # Columns of its transpose are (forward, left, up) expressed in cam1 optical coords.
+  R_rig_cam1:
+    - [-0.7071067812, 0.0, 0.7071067812]
+    - [ 0.7071067812, 0.0, 0.7071067812]
+    - [ 0.0,          1.0, 0.0         ]
+  check:
+    expected_azimuth_deg: {cam1: 45.0, cam2: -45.0, cam3: 135.0, cam4: -135.0}
+    azimuth_tolerance_deg: 15.0     # generous: it is a gross-error trap, not a measurement
+    provenance: "derived from rig_layout.yaml ring order + 180 deg roll; verified against
+                 rig_in_cam1 2026-09-01"
+
+# ---------------------------------------------------------------------------------------
+# 2. THE GROUND PLANE
+# ---------------------------------------------------------------------------------------
+# The plane is n . P = -height_m for P in the rig frame, with n the unit normal pointing
+# UP. n = [0, 0, 1] means the rig frame is level and the plane is height_m below the
+# origin (= below cam1's optical centre, NOT below the chassis).
+plane:
+  status: unmeasured            # unmeasured | measured | superseded
+  height_m: null                # metres from cam1's optical centre down to the ground
+  normal: null                  # unit vector in rig FLU coords, pointing up
+  method: null                  # how it was obtained
+  date: null
+  uncertainty:
+    height_m: null
+    tilt_deg: null
+  # Filled in by the validation required by the ground-plane-calibration spec: a known
+  # length laid flat, measured in the output BOTH near the rig and near the edge of the
+  # extent, because tilt error is smallest underneath and largest far away.
+  validation:
+    known_length_m: null
+    measured_near_rig_m: null
+    measured_at_edge_m: null
+    date: null
+
+# How to measure it, so the next person does not have to re-derive the method:
+#  - Height is from cam1's OPTICAL CENTRE, not from the chassis or the mounting plate.
+#    A tape to the lens front element is wrong by the entrance-pupil offset; prefer
+#    solving it from the imagery (below), which measures the quantity actually used.
+#  - The honest method is to lay the AprilGrid flat on the ground inside the overlap of
+#    two cameras, solve its pose per camera with the same GridDetector used by
+#    scripts/calib/pair_extrinsics.py, and fit the plane through the tag corners in the
+#    rig frame. That yields height and normal together, with a residual that IS the
+#    uncertainty, and it is measured through the same optics the stitch will use.
+#  - A tape measure plus "assume level" gives height but not tilt, and tilt is the term
+#    that grows with distance. If that is all that is available, record method: tape and
+#    state normal: [0,0,1] as an ASSUMPTION with tilt_deg uncertainty left null.
+#
+# WHEN THIS FILE STOPS BEING TRUE. Anything that moves the cameras relative to the
+# ground: remounting the rig, changing its height, or a new extrinsic calibration. On any
+# of those, set status: superseded, keep the old block, and add a new one. The observable
+# symptom of a stale plane is the parallax residual on ground features rising above
+# tolerance — which is checkable without re-measuring anything.
+superseded: []

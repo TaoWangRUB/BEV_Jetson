@@ -1,0 +1,17 @@
+# QoS overrides for `ros2 bag record`.
+#
+# WITHOUT THIS THE BAG IS EMPTY AND NOTHING SAYS SO. argus_capture_node publishes images
+# and frame_meta with rclcpp::SensorDataQoS() - BEST_EFFORT - and ros2 bag record defaults
+# to RELIABLE. The QoS never matches, the recorder still reports "Subscribed to topic
+# /cam1/image_raw", the run looks healthy, and the bag comes back with 0 messages on every
+# image topic. Verified on 2026-09-01: a full run recorded 92 KB of nothing.
+#
+# This is the third time the same best_effort-vs-reliable mismatch has bitten this project
+# (it also made `ros2 topic hz` print nothing, which read as a dead link).
+#
+# /cuvslam/odometry and /tf are RELIABLE publishers and are deliberately not overridden.
+/cam1/image_raw:  {reliability: best_effort, history: keep_last, depth: 10}
+/cam2/image_raw:  {reliability: best_effort, history: keep_last, depth: 10}
+/cam3/image_raw:  {reliability: best_effort, history: keep_last, depth: 10}
+/cam4/image_raw:  {reliability: best_effort, history: keep_last, depth: 10}
+/cam1/frame_meta: {reliability: best_effort, history: keep_last, depth: 10}

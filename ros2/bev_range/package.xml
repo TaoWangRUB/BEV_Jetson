@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>bev_range</name>
+  <version>0.1.0</version>
+  <description>Garmin LIDAR-Lite ranger for the J106 rig. The sensor hangs off the camtrig
+  MCU's I2C, not the Tegra's, so every reading arrives stamped with the trigger's own pulse
+  counter — the same counter the cameras' seq advances on, making range-to-frame an exact
+  integer join rather than a clock comparison. Published as sensor_msgs/Range and logged to
+  CSV the same way bev_imu logs imu0.csv.</description>
+  <maintainer email="archerwang.gyaw@gmail.com">User</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

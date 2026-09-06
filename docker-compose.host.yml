@@ -1,0 +1,52 @@
+# Host (x86_64) cuVSLAM build + bag replay. Separate from docker-compose.yml so a
+# laptop never tries to mount Jetson MMAPI / Argus / tegra paths.
+#
+#   docker compose -f docker-compose.host.yml build
+#   docker compose -f docker-compose.host.yml run --rm build-cuvslam-host
+#   docker compose -f docker-compose.host.yml run --rm build-ws-host
+#   docker compose -f docker-compose.host.yml run --rm shell
+#
+# CUDA toolkit is the host's (validated: 12.8 on this machine). Override mount with
+# CUDA_HOST_MOUNT=/usr/local/cuda-12.8 if the default symlink is wrong.
+
+x-host: &host
+  image: bev-host-cuvslam:latest
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.host-cuvslam
+  runtime: nvidia
+  network_mode: host
+  working_dir: /workspace
+  stop_signal: SIGINT
+  environment:
+    NVIDIA_VISIBLE_DEVICES: all
+    NVIDIA_DRIVER_CAPABILITIES: all
+    BEV_BUILD_ARGUS: "OFF"
+    # Prefer the host-built .so; fall back paths are in CMake.
+    LD_LIBRARY_PATH: /workspace/third_party/cuVSLAM/build_host/bin:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib
+  volumes:
+    - ${CUDA_HOST_MOUNT:-/usr/local/cuda}:/usr/local/cuda:ro
+    - ./:/workspace
+    - /tmp:/tmp
+    - ${HOME}/logs:/logs
+
+services:
+  shell:
+    <<: *host
+    stdin_open: true
+    tty: true
+    command: bash
+
+  build-cuvslam-host:
+    <<: *host
+    command: bash scripts/build_cuvslam_host.sh
+
+  build-ws-host:
+    <<: *host
+    command:
+      - bash
+      - -lc
+      - |
+        colcon build --packages-select bev_camera bev_cuvslam \
+          --build-base build_host --install-base install_host \
+          --cmake-args -DCMAKE_BUILD_TYPE=Release -DBEV_BUILD_ARGUS=OFF

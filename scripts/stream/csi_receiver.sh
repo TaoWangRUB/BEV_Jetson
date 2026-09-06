@@ -4,20 +4,51 @@
 #
 #   ./csi_receiver.sh
 #
-# Layout (J106 ports):   [a][b][c]      a=5000  c=5001
-#                        [d][e][f]      d=5002  e=5003  f=5004
-# Port b has no sensor (always an empty placeholder). Any camera that isn't streaming shows its
+# Layout (J106 ports):   [a][b][c]      a=5000  b=5001  c=5002
+#                        [d][e][f]      d=5003  e=5004  f=5005
+# Every port has its own UDP port. Any camera that isn't streaming shows its
 # "port X (no signal)" placeholder instead of stalling the grid (compositor ignore-inactive-pads).
 # Ctrl-C to stop. Needs gstreamer1.0 + gst-libav (avdec_h264).
 
-CW=480; CH=360                                 # per-cell size -> 1440x720 canvas
-CANVAS_W=$((CW*3)); CANVAS_H=$((CH*2))
+# Per-cell size, overridable. For a FOCUS check use one camera at native size, so nothing is
+# downscaled between the sensor and your eye:
+#   PORTS="c" CW=1456 CH=1088 JITTER=20 ./csi_receiver.sh
+CW=${CW:-480}; CH=${CH:-360}
+
+# rtpjitterbuffer trades latency for tolerance of reordering. 100 ms is comfortable on a direct
+# cable; drop it for a livelier preview while turning a focus ring, raise it on wifi.
+JITTER=${JITTER:-100}
+# Kernel socket receive buffer per stream: four simultaneous I-frames arrive faster than the
+# decoders drain them, and anything past the buffer is dropped by the kernel silently.
+RCVBUF=${RCVBUF:-8388608}
 CAPS="application/x-rtp,media=video,encoding-name=H264,payload=96"
-PORTS_ALL=(a b c d e f)                         # all 6 grid cells
-CAMS=(a c d e f)                                # ports that actually have a sensor
-declare -A UDP=( [a]=5000 [c]=5001 [d]=5002 [e]=5003 [f]=5004 )
-declare -A X=( [a]=0 [b]=$CW [c]=$((CW*2)) [d]=0 [e]=$CW [f]=$((CW*2)) )
-declare -A Y=( [a]=0 [b]=0 [c]=0 [d]=$CH [e]=$CH [f]=$CH )
+declare -A UDP=( [a]=5000 [b]=5001 [c]=5002 [d]=5003 [e]=5004 [f]=5005 )
+
+# Which cells to show. Default is all six (3x2, the original layout). Set PORTS
+# to just the populated ports to drop the empty cells, e.g. on the 4x IMX296 rig:
+#   PORTS="c d e f" ./csi_receiver.sh      -> 2x2, no wasted space
+PORTS_ALL=( ${PORTS:-a b c d e f} )
+CAMS=( "${PORTS_ALL[@]}" )
+N=${#PORTS_ALL[@]}
+if   [ "$N" -le 2 ]; then COLS=$N
+elif [ "$N" -le 4 ]; then COLS=2
+else                     COLS=3
+fi
+ROWS=$(( (N + COLS - 1) / COLS ))
+CANVAS_W=$((CW*COLS)); CANVAS_H=$((CH*ROWS))
+
+declare -A X Y
+_i=0
+for p in "${PORTS_ALL[@]}"; do
+  X[$p]=$(( (_i % COLS) * CW ))
+  Y[$p]=$(( (_i / COLS) * CH ))
+  _i=$((_i+1))
+done
+
+# csi_sender.sh already rotates 180 in HARDWARE on the board's ISP (its FLIP=2),
+# so rotating again here would put the image back upside down - and cost host CPU
+# per camera doing it. Override only if the sender runs with FLIP=0.
+RXFLIP="${RXFLIP:-none}"
 
 PROPS=""; BRANCHES=""; i=0
 # bottom layer: a labelled placeholder tile per cell (so empty/dead cells are clearly marked)
@@ -30,8 +61,8 @@ done
 # top layer: the live cameras, overlaid on their cell (covers the placeholder when streaming)
 for p in "${CAMS[@]}"; do
   PROPS="$PROPS sink_${i}::xpos=${X[$p]} sink_${i}::ypos=${Y[$p]} sink_${i}::width=$CW sink_${i}::height=$CH"
-  BRANCHES="$BRANCHES udpsrc port=${UDP[$p]} caps=$CAPS ! rtpjitterbuffer latency=100 ! rtph264depay ! avdec_h264 !"
-  BRANCHES="$BRANCHES videoflip method=rotate-180 ! videoconvert ! videoscale ! video/x-raw,width=$CW,height=$CH !"
+  BRANCHES="$BRANCHES udpsrc port=${UDP[$p]} caps=$CAPS buffer-size=$RCVBUF ! rtpjitterbuffer latency=$JITTER ! rtph264depay ! avdec_h264 !"
+  BRANCHES="$BRANCHES videoflip method=$RXFLIP ! videoconvert ! videoscale ! video/x-raw,width=$CW,height=$CH !"
   BRANCHES="$BRANCHES textoverlay text=\"port $p\" valignment=top halignment=left font-desc=\"Sans Bold 16\" shaded-background=true ! comp.sink_${i}"
   i=$((i+1))
 done
@@ -41,5 +72,5 @@ CMD="gst-launch-1.0 -e compositor name=comp ignore-inactive-pads=true $PROPS ! \
   video/x-raw,width=$CANVAS_W,height=$CANVAS_H ! videoconvert ! $SINK \
   $BRANCHES"
 
-echo "2x3 port grid (a..f); port b + any dead camera show 'no signal'. Ctrl-C to stop."
+echo "${COLS}x${ROWS} port grid (${PORTS_ALL[*]}); any dead camera shows 'no signal'. Ctrl-C to stop."
 eval exec "$CMD"

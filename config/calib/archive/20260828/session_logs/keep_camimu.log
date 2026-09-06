@@ -1,0 +1,9 @@
+[INFO] [1787956302.132158406] [rosbag2_storage]: Opened database 'CAM_IMU/CAM_IMU_0.db3' for READ_WRITE.
+[INFO] [1787956302.184232974] [rosbag2_transport]: Listening for topics...
+[INFO] [1787956302.185719069] [rosbag2_transport]: Overriding subscription profile for /cam1/image_raw
+[INFO] [1787956302.188072789] [rosbag2_transport]: Subscribed to topic '/cam1/image_raw'
+[INFO] [1787956302.190576270] [rosbag2_transport]: Subscribed to topic '/imu0'
+[INFO] [1787956302.191447350] [rosbag2_transport]: Overriding subscription profile for /cam1/frame_meta
+[INFO] [1787956302.193877455] [rosbag2_transport]: Subscribed to topic '/cam1/frame_meta'
+[INFO] [1787956302.221233664] [rosbag2_transport]: All requested topics are subscribed. Stopping discovery...
+[INFO] [1787956399.101342031] [rclcpp]: signal_handler(signal_value=2)

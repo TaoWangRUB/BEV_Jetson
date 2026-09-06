@@ -1,21 +1,51 @@
 # Parameters for the fused zero-copy Argus -> cuVSLAM VO node (bev_cuvslam_fused_node).
 #
-# Default = the best full-FOV config from the fused-zerocopy resolution sweep
-# (see docs/build_and_run.md): capture the full-FOV 1640x1232 sensor mode and let the
-# Argus ISP downscale to 832x624 output (stays in NVMM -> zero-copy). Gives ~22 Hz (the
-# sensor's fps ceiling), full surround FOV, and the lowest CPU.
+# RETARGETED 2026-09-01 to the IMX296 rig (4.2). Everything here previously described the
+# IMX219 rig: 832x624 output downscaled by the ISP from a 1640x1232 sensor mode, and
+# rig_extrinsics_vo.yaml. All of it is wrong for this rig, and the node could not even parse
+# the calibration.
+#
+# NO ISP DOWNSCALE ANY MORE, and this is the important change. The old config leaned on the
+# Argus ISP to shrink 1640x1232 -> 832x624 inside NVMM, which was free and sensible when
+# cuVSLAM consumed the fisheyes directly. It cannot work now: the intrinsics in camN.yaml are
+# solved at 1456x1088, and the virtual-pinhole carve projects through them. Downscaling the
+# source would silently invalidate every intrinsic and the carve would still "work" - it
+# would just be wrong, which is this project's recurring failure mode. Capture native.
 #
 # Paths are relative to the run directory (the repo root / container -w /workspace).
 /**:
   ros__parameters:
-    calib_dir: scripts/config/832x624        # intrinsics for the OUTPUT resolution
-    rig_extrinsics: config/rig/rig_extrinsics_vo.yaml   # calibrated rotations + 180-deg roll folded in (scripts/calib/fold_roll_for_vo.py)
+    calib_dir: config/calib/imx296_1456x1088   # Mei intrinsics, calib_session 20260901
+    # rig_extrinsics_imx296.yaml, NOT rig_extrinsics_vo.yaml: the latter is the panorama
+    # lineage with the 180 deg mount roll folded in. These are solved directly from the
+    # frames the sensor delivers and already carry it (3R.16).
+    rig_extrinsics: config/rig/rig_extrinsics_imx296.yaml
+    virtual_stereo: config/rig/virtual_stereo_imx296.yaml
     cameras: [cam1, cam2, cam3, cam4]
-    sensor_ids: [1, 2, 3, 4]
-    width: 832                               # output (-> cuVSLAM + calib)
-    height: 624
-    sensor_width: 1640                       # capture full-FOV mode; ISP downscales in NVMM
-    sensor_height: 1232
-    fps: 60                                  # request high; sensor mode caps it (1640x1232 -> 22 fps)
+    # PHYSICAL CARRIER PORTS, resolved to Argus sensor-ids at runtime from each /dev/video
+    # node's i2c name (4.7). This replaces the old `sensor_ids: [0,1,2,3]`, which assumed
+    # Argus bind order equals port order c,d,e,f - true on the boot task 1.1 checked, and
+    # exactly what must not be assumed, because a different boot shifted it. A shift does
+    # not fail loudly: it permutes the cameras against the extrinsics, and the frustum
+    # graph still scores ~0.94, so nothing downstream would catch it.
+    ports: [c, d, e, f]
+    # sensor_ids is now an OVERRIDE, left unset. Setting it bypasses the port table and the
+    # node says so at startup.
+    # sensor_ids: [0, 1, 2, 3]
+    #
+    # The measured trigger pulse width (1.10 / 3R.4a): 5000 us commanded, 4985740 ns real.
+    # The stamp is SOF - exposure/2, and under external trigger Argus does NOT own the
+    # exposure - it reported 0.521 ms for these frames, which would bias every stamp by
+    # 2.2 ms. Re-read the generator after any MCU reset; it boots at compiled-in defaults.
+    exposure_us: 4986
+    # AE cannot move its main actuator under the trigger and hunts on gain instead (1.4).
+    # "auto" locks it whenever trigger_mode is 1.
+    ae_lock: auto
+    width: 1456                              # native; must equal the calibrated resolution
+    height: 1088
+    sensor_width: 1456
+    sensor_height: 1088
+    fps: 30                                  # the STM32 trigger sets the real rate
+    max_skew_us: 1000                        # cuVSLAM's own Multicamera gate; sets over it are dropped and counted
     odom_frame: odom
-    base_frame: base_link
+    base_frame: cam1_optical_frame   # NOT base_link: cam1 optical, 180-rolled. See 3R.16b.
