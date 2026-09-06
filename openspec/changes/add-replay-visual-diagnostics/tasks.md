@@ -66,11 +66,24 @@
         it does not replace it. `/cuvslam/slam_odometry` carries the corrected pose;
         `/cuvslam/odometry` stays pure VO so the §5 figures remain comparable.
 
-        First resim, 2026-09-06: **3 loop closures** (58 / 81 / 216 landmarks tracked, 57 / 51 /
-        156 good) and **22 pose-graph optimisations**. The correction behaves exactly as loop
-        closure should — *median 0.000 m*, i.e. SLAM tracks VO exactly until a loop closes, then
-        diverges: 0.00 m over t = 0-10 s, 0.06 m at 10-20, 0.56 at 20-30, 1.05 at 30-40, **1.28 m
-        at 40-53**, peaking at 1.68 m. On a ~28 m path that is ~6 % of path length recovered.
+        **Superseded numbers, kept because they were published:** the first resim reported "3
+        loop closures" and a correction growing to 1.68 m. Both came from accumulating
+        `/cuvslam/slam_odometry` per frame, which is wrong (see 1.7f) — the count was the
+        `lc_status` rising edges rather than the events, and the "correction" was partly the
+        splice between pre- and post-optimisation segments.
+
+        **Corrected, from the optimised trajectory:**
+
+        | | poses | path | max step | steps > 0.5 m |
+        |---|---|---|---|---|
+        | optimised `slam_path` | 720 | **22.26 m** | **1.37 m** | 2 |
+        | pure VO | 933 | 97.78 m | **44.76 m** | 11 |
+
+        **42 loop closures** (distinct timestamps from `GetLoopClosurePoses`) and a pose graph
+        reaching **299 nodes / 351 edges, 53 of them non-sequential**. Note the count mismatch:
+        the node saw **8 rising edges of `lc_status`** against 42 distinct closure timestamps, so
+        one `lc_status` pulse covers several events — the flag is coarser than the events, and
+        the timestamp count is the honest one.
 
         **Cost: 20.02 Hz -> 12.99 Hz on the host** (687 poses against 1149 without SLAM). Enabling
         SLAM forces `enable_observations_export` and `enable_landmarks_export`, because
@@ -90,10 +103,41 @@
         return-to-origin run: this log's end-to-start distance moved 5.55 m -> 5.03 m with SLAM,
         which is only a drift figure if the rig was physically returned to its start pose, and
         it was not.
-  - [ ] 1.7e **Isolate why the teleport did not reproduce.** Run SLAM off but with
-        `publish_landmarks`/`publish_observations` forced on, at reliable QoS, so the only
-        difference from the 20 Hz baseline is the export and the rate. If the jump returns, SLAM
-        is doing the work; if it does not, the export or the frame sequence is.
+  - [x] 1.7e **Answered: the pose graph absorbs the teleport.** No isolation run was needed in
+        the end — the corrected `slam_path` and the pure VO come from the SAME run, the same
+        frame sequence and the same tracker, and differ only by the optimisation. VO peaks at a
+        44.76 m step; the optimised trajectory's worst is 1.37 m. That is the pose graph doing
+        the work, not a lucky frame sequence.
+
+  - [x] 1.7f **The SLAM trajectory must be re-read, never accumulated.** The first version drew
+        `/cuvslam/slam_odometry` — the CURRENT corrected pose — into a growing line. A loop
+        closure re-optimises the whole graph, so such a line is stale everywhere behind the head
+        and splices pre- and post-optimisation segments at each event: it stepped visibly and
+        came out **worse than the raw VO**, which is how the operator spotted it.
+
+        cuVSLAM's own app states the rule — *"if slam is enabled, overwrite all slam poses in the
+        end after LCs and PGOs"*, re-reading `get_all_slam_poses()`
+        (`tools/cuvslam_app/cuvslam_app.py`). Its euroc C++ example appends `GetPose()` and has
+        the same artifact, so the python app is the reference, not the C++ one.
+
+        Now: the node publishes `/cuvslam/slam_path` from `GetAllSlamPoses()` on each closure and
+        the viewer draws the last one statically. Two further fixes came with it:
+        - loop closures are **accumulated and de-duplicated on timestamp** (the euroc example's
+          `reported_loop_closures` set). `GetLoopClosurePoses` returns a rolling last-10 window,
+          so taking the latest message loses old closures and re-counts live ones — 7 events had
+          been drawing 10 markers.
+        - `/cuvslam/loop_closure_edges` publishes every pose-graph edge whose node ids are
+          **non-adjacent**. A sequential odometry link joins consecutive ids, so a non-adjacent
+          edge is a loop link, and drawing it shows what each closure connects BACK TO — a marker
+          alone says only that a loop closed. cuVSLAM leaves pose-graph visualisation as a
+          commented-out "future extension" in the euroc example, so this reading is ours.
+
+  - [ ] 1.7g **The panorama auto-depth follows the map's outliers.** On the full-rate run the
+        sphere radius ranged **2.18-23.93 m** (median 2.52). The spikes are
+        `scene_radius_near_pose` tracking a landmark cloud that reaches far past the room (5.4:
+        310 m in a 14 m log), and where the radius spikes the stitch is effectively at infinity,
+        so close scene ghosts. Clamp the radius to the same `--map-radius` the display already
+        applies, or use a robust percentile rather than the raw cloud.
 
 ## 2. BEV prototype — satisfies `add-bev-ground-stitch` 2.6
 
