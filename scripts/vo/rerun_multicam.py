@@ -37,26 +37,42 @@ def read_observations(bag):
 
 
 def read_slam(bag):
-    """(stamps, Nx3 SLAM positions), and the loop-closure events keyed by stamp.
+    """The OPTIMISED SLAM trajectory, the loop-closure sites, and the loop-closure edges.
 
-    Empty when the bag was recorded without SLAM=1 — the viewer degrades to the pure-VO
-    trajectory rather than failing, because most bags in datasets/replay_out/ predate it.
+    The trajectory comes from /cuvslam/slam_path (the node's GetAllSlamPoses), NOT from
+    accumulating /cuvslam/slam_odometry. A loop closure re-optimises the whole pose graph,
+    so a line built by appending the per-frame corrected pose is stale everywhere behind
+    the head and steps at every closure — which is exactly how it looked. cuVSLAM's own app
+    re-reads the full pose list for the same reason ("overwrite all slam poses in the end
+    after LCs and PGOs", tools/cuvslam_app/cuvslam_app.py). The LAST slam_path message is
+    the most optimised one, so that is the one to draw.
+
+    All three come back empty for a bag recorded without SLAM=1, and the viewer then just
+    shows the pure-VO trajectory instead of failing.
     """
-    ts, xyz, lc = [], [], []
+    path, lc, edges = np.zeros((0, 3), np.float32), np.zeros((0, 3), np.float32), \
+        np.zeros((0, 2, 3), np.float32)
     with AnyReader([bag], default_typestore=TS) as r:
-        for con, _, raw in r.messages(
-                connections=[c for c in r.connections if c.topic == "/cuvslam/slam_odometry"]):
-            m = r.deserialize(raw, con.msgtype)
-            p = m.pose.pose.position
-            ts.append(m.header.stamp.sec + m.header.stamp.nanosec * 1e-9)
-            xyz.append([p.x, p.y, p.z])
-        for con, _, raw in r.messages(
-                connections=[c for c in r.connections if c.topic == "/cuvslam/loop_closures"]):
-            m = r.deserialize(raw, con.msgtype)
-            t = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
-            lc.append((t, np.array([[q.position.x, q.position.y, q.position.z]
-                                    for q in m.poses], np.float32).reshape(-1, 3)))
-    return np.array(ts), np.array(xyz, np.float32).reshape(-1, 3), lc
+        def last(topic):
+            out = None
+            for con, _, raw in r.messages(
+                    connections=[c for c in r.connections if c.topic == topic]):
+                out = r.deserialize(raw, con.msgtype)
+            return out
+        m = last("/cuvslam/slam_path")
+        if m is not None:
+            path = np.array([[q.pose.position.x, q.pose.position.y, q.pose.position.z]
+                             for q in m.poses], np.float32).reshape(-1, 3)
+        m = last("/cuvslam/loop_closures")
+        if m is not None:
+            lc = np.array([[q.position.x, q.position.y, q.position.z]
+                           for q in m.poses], np.float32).reshape(-1, 3)
+        m = last("/cuvslam/loop_closure_edges")
+        if m is not None:
+            e = np.array([[q.position.x, q.position.y, q.position.z]
+                          for q in m.poses], np.float32).reshape(-1, 3)
+            edges = e[:len(e) // 2 * 2].reshape(-1, 2, 3)   # consecutive pairs = one edge
+    return path, lc, edges
 
 
 def R_to_quat(R):
@@ -367,9 +383,10 @@ def main():
               % (keep.sum(), len(lm), a.map_radius,
                  np.linalg.norm(lm - np.asarray(P).mean(0), axis=1).max()))
         lm, lm_col = lm[keep], lm_col[keep]
-    slam_ts, slam_P, slam_lc = read_slam(odom_bag)
-    if len(slam_P):
-        print("SLAM: %d poses, %d loop-closure events" % (len(slam_P), len(slam_lc)))
+    slam_P, slam_lc, slam_edges = read_slam(odom_bag)
+    if len(slam_P) or len(slam_lc):
+        print("SLAM: %d optimised poses, %d loop closures, %d loop edges"
+              % (len(slam_P), len(slam_lc), len(slam_edges)))
     obs = read_observations(odom_bag)
     obs_ts = np.array(sorted(obs)) if obs else np.zeros(0)
     print("observations: %d frames, %.0f features/frame"
@@ -549,18 +566,25 @@ def main():
         rr.log("map/landmarks", rr.Points3D(lm @ Rz180.T, colors=lm_col, radii=0.01),
                static=True)
 
-    # Loop-closure sites are static: they mark WHERE the map closed, and putting them on the
-    # timeline would make them blink out between events. The last message wins because
-    # GetLoopClosurePoses returns a rolling last-10 snapshot, not an append-only log.
-    if slam_lc:
-        pts = slam_lc[-1][1]
-        if len(pts):
-            rr.log("map/loop_closures",
-                   rr.Points3D(pts @ Rz180.T, colors=[255, 40, 200], radii=0.12,
-                               labels=["loop %d" % (i + 1) for i in range(len(pts))]),
-                   static=True)
-            print("loop-closure markers: %d" % len(pts))
-    slam_traj = []
+    # SLAM output is STATIC, not per-frame: it is the final globally optimised state, so it
+    # is drawn once rather than grown along the timeline. Growing it was the bug that put
+    # steps in the magenta line.
+    if len(slam_P):
+        rr.log("map/trajectory_slam",
+               rr.LineStrips3D([slam_P @ Rz180.T], colors=[0xFF44CCFF], radii=0.012),
+               static=True)
+    if len(slam_lc):
+        rr.log("map/loop_closures",
+               rr.Points3D(slam_lc @ Rz180.T, colors=[255, 0, 0], radii=0.06,
+                           labels=["loop %d" % (i + 1) for i in range(len(slam_lc))]),
+               static=True)
+    # The edges are the point of the whole display: each one joins a pose to the EARLIER
+    # pose it was matched against, so a closure reads as "here is where the rig recognised
+    # it had been before" rather than as an unexplained marker.
+    if len(slam_edges):
+        rr.log("map/loop_edges",
+               rr.LineStrips3D([e @ Rz180.T for e in slam_edges],
+                               colors=[0xFFDD00FF], radii=0.02), static=True)
     traj = []
     heights, bev_cache = [], {}
     last_plane = None
@@ -574,17 +598,6 @@ def main():
                                       colors=[0x2288FFAA]))
         rr.log("map/trajectory", rr.LineStrips3D([traj], colors=[0x33AAFFFF], radii=0.01))
         rr.log("map/head", rr.Points3D([t_d], colors=[0xFF3030FF], radii=0.04))
-        # The loop-closure-corrected trajectory beside the raw one, in magenta. They sit on
-        # top of each other until the first loop closes, which is the point: the gap that
-        # opens afterwards IS the drift the pose graph removed.
-        if len(slam_P):
-            k = int(np.abs(slam_ts - ts[i]).argmin())
-            if abs(slam_ts[k] - ts[i]) < 0.05:
-                slam_traj.append(Rz180 @ slam_P[k])
-                rr.log("map/trajectory_slam",
-                       rr.LineStrips3D([slam_traj], colors=[0xFF44CCFF], radii=0.012))
-                rr.log("map/slam_vs_vo_m",
-                       rr.Scalars(float(np.linalg.norm(slam_P[k] - t_wr))))
 
         key = stamps[int(np.abs(stamps - ts[i]).argmin())]
         ob = obs.get(ts[i])

@@ -30,6 +30,8 @@
 #include <deque>
 #include <fstream>
 #include <memory>
+#include <set>
+#include <unordered_map>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -41,6 +43,7 @@
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <tf2_ros/transform_broadcaster.h>
@@ -182,6 +185,10 @@ class CuvslamMulticamNode : public rclcpp::Node {
       // must still see the last one rather than wait for the next.
       lc_pub_ = create_publisher<geometry_msgs::msg::PoseArray>(
           "cuvslam/loop_closures", rclcpp::QoS(10).transient_local());
+      slam_path_pub_ = create_publisher<nav_msgs::msg::Path>(
+          "cuvslam/slam_path", rclcpp::QoS(2).transient_local());
+      lc_edge_pub_ = create_publisher<geometry_msgs::msg::PoseArray>(
+          "cuvslam/loop_closure_edges", rclcpp::QoS(10).transient_local());
     }
     if (publish_landmarks_)
       cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("cuvslam/landmarks", 10);
@@ -630,9 +637,10 @@ class CuvslamMulticamNode : public rclcpp::Node {
     if (m.pgo_status) ++pgo_events_;
   }
 
-  // Where the loop closed, so it can be drawn rather than only counted. GetLoopClosurePoses
-  // returns the last 10 events, so this is a snapshot of recent history on every rising
-  // edge, not an append-only log - the viewer should take the latest message, not accumulate.
+  // Where the loop closed. GetLoopClosurePoses returns a rolling last-10 window, so the
+  // events have to be ACCUMULATED and de-duplicated on timestamp - taking the latest
+  // message loses older closures and double-counts the ones still inside the window.
+  // Same approach as cuVSLAM's own euroc example (reported_loop_closures).
   void publish_loop_closures(const builtin_interfaces::msg::Time& stamp) {
     std::vector<cuvslam::PoseStamped> poses;
     try {
@@ -642,11 +650,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
                            "GetLoopClosurePoses failed: %s", e.what());
       return;
     }
-    geometry_msgs::msg::PoseArray pa;
-    pa.header.stamp = stamp;
-    pa.header.frame_id = odom_frame_;
-    pa.poses.reserve(poses.size());
     for (const auto& ps : poses) {
+      if (!lc_seen_.insert(ps.timestamp_ns).second) continue;   // already reported
       geometry_msgs::msg::Pose q;
       q.position.x = ps.pose.translation[0];
       q.position.y = ps.pose.translation[1];
@@ -655,9 +660,92 @@ class CuvslamMulticamNode : public rclcpp::Node {
       q.orientation.y = ps.pose.rotation[1];
       q.orientation.z = ps.pose.rotation[2];
       q.orientation.w = ps.pose.rotation[3];
-      pa.poses.push_back(q);
+      lc_accum_.push_back(q);
     }
+    geometry_msgs::msg::PoseArray pa;
+    pa.header.stamp = stamp;
+    pa.header.frame_id = odom_frame_;
+    pa.poses = lc_accum_;
     lc_pub_->publish(pa);
+    publish_slam_path(stamp);
+    publish_loop_edges(stamp);
+  }
+
+  // THE OPTIMISED TRAJECTORY, not the stream of GetPose() values.
+  //
+  // /cuvslam/slam_odometry is the current corrected pose, and accumulating it into a line
+  // is wrong: a loop closure re-optimises the WHOLE graph, so every earlier point in such a
+  // line is stale and the line steps at each closure. cuVSLAM's own app says so outright -
+  // "if slam is enabled, overwrite all slam poses in the end after LCs and PGOs" - and
+  // re-reads get_all_slam_poses() rather than keeping what it accumulated
+  // (tools/cuvslam_app/cuvslam_app.py). GetAllSlamPoses() returns the whole trajectory as
+  // currently optimised, which is globally consistent and has no steps in it.
+  void publish_slam_path(const builtin_interfaces::msg::Time& stamp) {
+    std::vector<cuvslam::PoseStamped> poses;
+    try {
+      slam_->GetAllSlamPoses(poses);
+    } catch (const std::exception& e) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "GetAllSlamPoses failed: %s", e.what());
+      return;
+    }
+    nav_msgs::msg::Path path;
+    path.header.stamp = stamp;
+    path.header.frame_id = odom_frame_;
+    path.poses.reserve(poses.size());
+    for (const auto& ps : poses) {
+      geometry_msgs::msg::PoseStamped p;
+      p.header.frame_id = odom_frame_;
+      p.header.stamp = rclcpp::Time(ps.timestamp_ns);
+      p.pose.position.x = ps.pose.translation[0];
+      p.pose.position.y = ps.pose.translation[1];
+      p.pose.position.z = ps.pose.translation[2];
+      p.pose.orientation.x = ps.pose.rotation[0];
+      p.pose.orientation.y = ps.pose.rotation[1];
+      p.pose.orientation.z = ps.pose.rotation[2];
+      p.pose.orientation.w = ps.pose.rotation[3];
+      path.poses.push_back(p);
+    }
+    slam_path_pub_->publish(path);
+  }
+
+  // The loop-closure EDGES: which pose was matched to which earlier one. This is the thing
+  // that makes a closure legible - a marker on its own says a loop closed, an edge says
+  // where it closed BACK TO. cuVSLAM leaves this as a "future extension" in the euroc
+  // example (ReadPoseGraph is commented out there), so the reading of it is ours: a graph
+  // edge whose two node ids are not adjacent is not a sequential odometry link.
+  void publish_loop_edges(const builtin_interfaces::msg::Time& stamp) {
+    std::shared_ptr<const cuvslam::Slam::PoseGraph> g;
+    try {
+      g = slam_->ReadPoseGraph();
+    } catch (const std::exception&) {
+      return;
+    }
+    if (!g || g->nodes.empty()) return;
+    std::unordered_map<uint64_t, const cuvslam::Pose*> by_id;
+    for (const auto& n : g->nodes) by_id[n.id] = &n.node_pose;
+    geometry_msgs::msg::PoseArray pa;   // consecutive PAIRS: [from, to, from, to, ...]
+    pa.header.stamp = stamp;
+    pa.header.frame_id = odom_frame_;
+    size_t n_loop = 0;
+    for (const auto& e : g->edges) {
+      const uint64_t lo = std::min(e.node_from, e.node_to), hi = std::max(e.node_from, e.node_to);
+      if (hi - lo <= 1) continue;                       // sequential odometry link
+      auto a = by_id.find(e.node_from), b = by_id.find(e.node_to);
+      if (a == by_id.end() || b == by_id.end()) continue;
+      for (const cuvslam::Pose* q : {a->second, b->second}) {
+        geometry_msgs::msg::Pose m;
+        m.position.x = q->translation[0];
+        m.position.y = q->translation[1];
+        m.position.z = q->translation[2];
+        m.orientation.w = 1.0;
+        pa.poses.push_back(m);
+      }
+      ++n_loop;
+    }
+    lc_edge_pub_->publish(pa);
+    RCLCPP_INFO(get_logger(), "  pose graph: %zu nodes, %zu edges, %zu of them non-sequential "
+                "(loop links)", g->nodes.size(), g->edges.size(), n_loop);
   }
 
   void publish(const cuvslam::PoseWithCovariance& pwc, const builtin_interfaces::msg::Time& stamp) {
@@ -710,7 +798,10 @@ class CuvslamMulticamNode : public rclcpp::Node {
   double max_speed_mps_ = 5.0;
   std::unique_ptr<cuvslam::Slam> slam_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr slam_pub_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr lc_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr lc_pub_, lc_edge_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr slam_path_pub_;
+  std::set<int64_t> lc_seen_;
+  std::vector<geometry_msgs::msg::Pose> lc_accum_;
   bool enable_slam_ = false, lc_prev_ = false;
   std::string slam_map_path_, debug_dump_dir_;
   int slam_throttling_ms_ = 0, slam_max_map_size_ = 300;

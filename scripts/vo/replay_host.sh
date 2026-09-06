@@ -70,6 +70,7 @@ LAUNCH_ARGS="${LAUNCH_ARGS} image_qos:=${QOS} image_qos_depth:=${QOS_DEPTH}"
 if [[ "${SLAM:-0}" == "1" ]]; then
   LAUNCH_ARGS="${LAUNCH_ARGS} enable_slam:=true"
   REC_TOPICS="${REC_TOPICS} /cuvslam/slam_odometry /cuvslam/loop_closures"
+  REC_TOPICS="${REC_TOPICS} /cuvslam/slam_path /cuvslam/loop_closure_edges"
 fi
 
 echo "replay BAG=$BAG_IN RATE=$RATE OUT=$OUT_IN OBS=$OBS QOS=$QOS/$QOS_DEPTH"
