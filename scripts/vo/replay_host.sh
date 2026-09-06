@@ -52,6 +52,11 @@ case "$OUT" in
 esac
 mkdir -p "$(dirname "$OUT")"
 
+# Replay wants RELIABLE image QoS: the default best-effort loses ~1 set in 6 to dropped
+# UDP fragments at every replay rate (5.10). Override with IMAGE_QOS=sensor_data to
+# reproduce the old behaviour.
+QOS="${IMAGE_QOS:-reliable}"
+QOS_DEPTH="${IMAGE_QOS_DEPTH:-100}"
 if [[ "$OBS" == "1" ]]; then
   LAUNCH_ARGS="publish_landmarks:=true publish_observations:=true"
   REC_TOPICS="/cuvslam/odometry /tf /cuvslam/landmarks /cuvslam/observations"
@@ -59,8 +64,15 @@ else
   LAUNCH_ARGS=""
   REC_TOPICS="/cuvslam/odometry /tf"
 fi
+LAUNCH_ARGS="${LAUNCH_ARGS} image_qos:=${QOS} image_qos_depth:=${QOS_DEPTH}"
+# SLAM=1 adds the pose graph and loop closure, publishing /cuvslam/slam_odometry BESIDE the
+# pure-VO /cuvslam/odometry. Both are recorded so the two trajectories can be compared.
+if [[ "${SLAM:-0}" == "1" ]]; then
+  LAUNCH_ARGS="${LAUNCH_ARGS} enable_slam:=true"
+  REC_TOPICS="${REC_TOPICS} /cuvslam/slam_odometry"
+fi
 
-echo "replay BAG=$BAG_IN RATE=$RATE OUT=$OUT_IN OBS=$OBS"
+echo "replay BAG=$BAG_IN RATE=$RATE OUT=$OUT_IN OBS=$OBS QOS=$QOS/$QOS_DEPTH"
 "${COMPOSE[@]}" run --rm shell bash -lc "
 set -eo pipefail
 source /opt/ros/foxy/setup.bash

@@ -7,6 +7,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -15,6 +16,15 @@ def generate_launch_description():
         # it for visualisation runs and leave the §5 rate measurement on the plain path.
         DeclareLaunchArgument('publish_landmarks', default_value='false'),
         DeclareLaunchArgument('publish_observations', default_value='false'),
+        # 'sensor_data' (BEST_EFFORT) is the live-rig default: a slow tracker must never
+        # back-pressure the camera. Bag replay wants 'reliable' - see the node comment and
+        # retarget-vo-to-imx296-rig 5.10.
+        # Loop closure. Off by default: it forces the observation/landmark export
+        # (Slam::Track consumes Odometry::State, and GetState throws without it) and adds a
+        # pose graph, which the TX2 has no headroom for. See add-replay-visual-diagnostics 1.7.
+        DeclareLaunchArgument('enable_slam', default_value='false'),
+        DeclareLaunchArgument('image_qos', default_value='sensor_data'),
+        DeclareLaunchArgument('image_qos_depth', default_value='10'),
         Node(
             package='bev_cuvslam',
             executable='cuvslam_multicam_node',
@@ -39,6 +49,11 @@ def generate_launch_description():
                 # anything near this limit is a trigger fault - do NOT widen it to make
                 # sets appear. The bundler that used to do exactly that is gone.
                 'max_skew_us': 1000,
+                'enable_slam': ParameterValue(LaunchConfiguration('enable_slam'),
+                                              value_type=bool),
+                'image_qos': LaunchConfiguration('image_qos'),
+                'image_qos_depth': ParameterValue(LaunchConfiguration('image_qos_depth'),
+                                                  value_type=int),
                 'match_history': 8,
                 'publish_landmarks': LaunchConfiguration('publish_landmarks'),
                 'publish_observations': LaunchConfiguration('publish_observations'),

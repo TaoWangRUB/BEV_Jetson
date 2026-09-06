@@ -119,6 +119,17 @@ class CuvslamMulticamNode : public rclcpp::Node {
     // below. So they cover the case we already see, and say nothing about the one that
     // actually bit us in 5.0g: a solve that SUCCEEDS on a featureless view and returns a
     // zero delta. 1=Error 2=Warning 3=Message (Release caps at 3).
+    // SLAM / loop closure. Odometry alone has no pose graph and nothing pins the
+    // trajectory, which is the structural source of the drift in section 5. cuvslam::Slam
+    // adds the graph and the loop closures on top of the SAME Odometry - it consumes
+    // Odometry::State, it does not replace the tracker.
+    enable_slam_ = declare_parameter<bool>("enable_slam", false);
+    slam_map_path_ = declare_parameter<std::string>("slam_map_path", "");
+    // 0 = no throttle. The header suggests 1000 ms for real-time mapping; leave it open
+    // offline, where wall-clock is not the constraint.
+    slam_throttling_ms_ = declare_parameter<int>("slam_throttling_ms", 0);
+    // 300 poses is the header's real-time figure; 0 is an unlimited graph.
+    slam_max_map_size_ = declare_parameter<int>("slam_max_map_size", 300);
     debug_dump_dir_ = declare_parameter<std::string>("cuvslam_debug_dump_dir", "");
     // Saturation gate. See check_exposure(): cuVSLAM has no image-quality input at all, so
     // a blown frame reaches the solver looking like a valid one.
@@ -136,12 +147,36 @@ class CuvslamMulticamNode : public rclcpp::Node {
 
     build_tracker();
 
-    auto qos = rclcpp::SensorDataQoS();
+    // IMAGE QoS: best-effort is right on the rig and wrong on a replay.
+    //
+    // Live, a slow VO must never back-pressure the camera, so SensorDataQoS (BEST_EFFORT,
+    // KeepLast) is correct. On bag replay it silently costs about a sixth of the run:
+    // `ros2 bag play` publishes RELIABLE (the bag's offered_qos_profiles is empty, so
+    // rosbag2 uses its default), a BEST_EFFORT reader matches it but tells DDS not to
+    // retransmit, and a 1456x1088 mono image is ~1.5 MB - far over the UDP datagram limit,
+    // so every sample is fragmented and losing one fragment loses the whole frame. The
+    // orphaned partners then pair across trigger edges and die on the 1 ms skew gate.
+    // Measured before this parameter existed: 81-84 % of sets reached the matcher at 0.25x,
+    // 0.5x and 1.0x alike - rate was never the variable (5.10).
+    const std::string qos_mode = declare_parameter<std::string>("image_qos", "sensor_data");
+    const int qos_depth = declare_parameter<int>("image_qos_depth", 10);
+    rclcpp::QoS qos = rclcpp::QoS(rclcpp::KeepLast(static_cast<size_t>(qos_depth)));
+    if (qos_mode == "reliable") {
+      qos.reliable();
+      RCLCPP_INFO(get_logger(), "image QoS RELIABLE depth %d — for bag replay, where losing "
+                  "a fragment loses a whole 1.5 MB frame. Do NOT use on the live rig: it lets "
+                  "a slow tracker back-pressure the camera.", qos_depth);
+    } else {
+      qos.best_effort();
+      RCLCPP_INFO(get_logger(), "image QoS BEST_EFFORT depth %d (live-rig default)", qos_depth);
+    }
     for (size_t i = 0; i < 4; ++i)
       subs_[i] = create_subscription<Img>(topics_[i], qos,
           [this, i](const Img::ConstSharedPtr msg) { on_frame(i, msg); });
 
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("cuvslam/odometry", 10);
+    if (enable_slam_)
+      slam_pub_ = create_publisher<nav_msgs::msg::Odometry>("cuvslam/slam_odometry", 10);
     if (publish_landmarks_)
       cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("cuvslam/landmarks", 10);
     if (publish_observations_)
@@ -206,6 +241,13 @@ class CuvslamMulticamNode : public rclcpp::Node {
     cfg.enable_final_landmarks_export = publish_landmarks_;
     // Per the API header, the final-landmarks flag already implies observations export.
     cfg.enable_observations_export = publish_observations_;
+    // Slam::Track takes Odometry::State, and GetState() THROWS unless export is on. So
+    // enabling SLAM forces the export we otherwise keep off for rate measurements - that
+    // cost is the reason enable_slam defaults to false, not an oversight.
+    if (enable_slam_) {
+      cfg.enable_observations_export = true;
+      cfg.enable_landmarks_export = true;
+    }
     // cuVSLAM's own debug facility: every Track() call's images plus the rig config are
     // written here in edex format, which its offline tools read. Off unless asked — it
     // writes a PNG per virtual camera per frame, so it fills a disk at 8 cameras x 20 Hz.
@@ -215,6 +257,29 @@ class CuvslamMulticamNode : public rclcpp::Node {
                   "this will fill the disk)", debug_dump_dir_.c_str());
     }
     tracker_ = std::make_unique<cuvslam::Odometry>(rig, cfg);
+
+    if (enable_slam_) {
+      cuvslam::Slam::Config sc = cuvslam::Slam::GetDefaultConfig();
+      sc.use_gpu = true;
+      sc.enable_reading_internals = true;   // pose graph + loop-closure layers
+      sc.map_cache_path = slam_map_path_;   // empty = in memory only
+      sc.throttling_time_ms = static_cast<uint32_t>(slam_throttling_ms_);
+      sc.max_map_size = static_cast<uint32_t>(slam_max_map_size_);
+      // Every virtual pinhole is primary, matching MulticameraMode::Precision above
+      // ("all cameras are primary"). Anything narrower would quietly change which views
+      // can close a loop.
+      std::vector<uint8_t> primary(vpin_.size());
+      for (size_t i = 0; i < vpin_.size(); ++i) primary[i] = static_cast<uint8_t>(i);
+      slam_ = std::make_unique<cuvslam::Slam>(rig, primary, sc);
+      slam_->EnableReadingData(cuvslam::Slam::DataLayer::LoopClosure, 4096);
+      slam_->EnableReadingData(cuvslam::Slam::DataLayer::PoseGraph, 4096);
+      RCLCPP_INFO(get_logger(), "SLAM ON: pose graph + loop closure over %zu primary cameras "
+                  "(max_map_size %d, throttle %d ms, map %s). /cuvslam/slam_odometry carries "
+                  "the corrected pose; /cuvslam/odometry stays PURE VO so the section-5 drift "
+                  "numbers remain comparable.",
+                  primary.size(), slam_max_map_size_, slam_throttling_ms_,
+                  slam_map_path_.empty() ? "in memory" : slam_map_path_.c_str());
+    }
   }
 
   // Keep a short history per camera; camera 0 arriving tries to form a set from it.
@@ -294,6 +359,9 @@ class CuvslamMulticamNode : public rclcpp::Node {
                 sets_, worst_skew_ns_ / 1e3, dropped_sets_, remap_us_, vpin_.size(),
                 track_n_ ? track_us_sum_ / track_n_ : 0, track_us_max_, 100.0 * sat_worst_);
     track_us_sum_ = 0; track_us_max_ = 0; track_n_ = 0;
+    if (slam_)
+      RCLCPP_INFO(get_logger(), "  SLAM: %ld loop closures, %ld pose-graph optimisations",
+                  lc_events_, pgo_events_);
     worst_skew_ns_ = 0;
     sat_worst_ = 0.0;
     last_report_ = now;
@@ -354,6 +422,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
     }
     check_pose_health(*est.world_from_rig, msgs[0]->header.stamp);
     publish(*est.world_from_rig, msgs[0]->header.stamp);
+    if (slam_) slam_track(msgs[0]->header.stamp);
     if (publish_landmarks_ && landmark_stride_ > 0 && (sets_ % landmark_stride_) == 0)
       publish_landmarks(msgs[0]->header.stamp);
     if (publish_observations_)
@@ -510,6 +579,50 @@ class CuvslamMulticamNode : public rclcpp::Node {
     have_last_pose_ = true;
   }
 
+  // Hand the tracker's state to SLAM and publish the corrected pose beside the raw VO one.
+  // Never in place of it: section 5's drift and scale figures are measured on pure VO, and
+  // silently swapping the topic's meaning would invalidate every one of them.
+  void slam_track(const builtin_interfaces::msg::Time& stamp) {
+    try {
+      cuvslam::Odometry::State st;
+      tracker_->GetState(st);
+      slam_->Track(st);
+    } catch (const std::exception& e) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "SLAM Track() failed: %s", e.what());
+      return;
+    }
+    const cuvslam::Pose p = slam_->GetPose();
+    nav_msgs::msg::Odometry od;
+    od.header.stamp = stamp;
+    od.header.frame_id = odom_frame_;
+    od.child_frame_id = base_frame_;
+    od.pose.pose.position.x = p.translation[0];
+    od.pose.pose.position.y = p.translation[1];
+    od.pose.pose.position.z = p.translation[2];
+    od.pose.pose.orientation.x = p.rotation[0];
+    od.pose.pose.orientation.y = p.rotation[1];
+    od.pose.pose.orientation.z = p.rotation[2];
+    od.pose.pose.orientation.w = p.rotation[3];
+    slam_pub_->publish(od);
+
+    cuvslam::Slam::Metrics m{};
+    try {
+      slam_->GetSlamMetrics(m);
+    } catch (const std::exception&) {
+      return;
+    }
+    // lc_status is a level, not an edge: count the RISING edge so "12 loop closures" means
+    // twelve events rather than however many frames the flag happened to stay up for.
+    if (m.lc_status && !lc_prev_) {
+      ++lc_events_;
+      RCLCPP_INFO(get_logger(), "LOOP CLOSURE %ld: %u landmarks tracked, %u in PnP, %u good",
+                  lc_events_, m.lc_tracked_landmarks_count, m.lc_pnp_landmarks_count,
+                  m.lc_good_landmarks_count);
+    }
+    lc_prev_ = m.lc_status;
+    if (m.pgo_status) ++pgo_events_;
+  }
+
   void publish(const cuvslam::PoseWithCovariance& pwc, const builtin_interfaces::msg::Time& stamp) {
     const cuvslam::Pose& p = pwc.pose;
     nav_msgs::msg::Odometry od;
@@ -558,7 +671,12 @@ class CuvslamMulticamNode : public rclcpp::Node {
   int64_t last_pose_ns_ = 0, frozen_ = 0, frozen_warn_sets_ = 3;
   bool have_last_pose_ = false;
   double max_speed_mps_ = 5.0;
-  std::string debug_dump_dir_;
+  std::unique_ptr<cuvslam::Slam> slam_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr slam_pub_;
+  bool enable_slam_ = false, lc_prev_ = false;
+  std::string slam_map_path_, debug_dump_dir_;
+  int slam_throttling_ms_ = 0, slam_max_map_size_ = 300;
+  int64_t lc_events_ = 0, pgo_events_ = 0;
   int64_t track_us_ = 0, track_us_sum_ = 0, track_us_max_ = 0, track_n_ = 0;
   int sat_level_ = 227;
   double sat_warn_frac_ = 0.5, sat_worst_ = 0.0;
