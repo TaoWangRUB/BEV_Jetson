@@ -29,3 +29,6 @@ cyclonedds.log
 # cuNLS release tarball + extracted tree, fetched by scripts/build_cuvslam_tx2gpu.sh
 build/cunls-*.tar.gz
 build/cuNLS-*/
+
+# Host viz venv (rerun-sdk; system site-packages for rosbags/cv2)
+.venv/

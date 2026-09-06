@@ -1,11 +1,13 @@
 # Scripts
 
-Index of the helper scripts in this folder. "Runs on" = **TX2** (the board, usually inside the
-`cuvslam-foxy:tx2` container) or **dev** (your workstation, needs python3 + opencv + numpy).
+Index of the helper scripts in this folder. "Runs on" = **TX2** (board, usually inside
+`cuvslam-foxy:tx2`), **host** (laptop inside `bev-host-cuvslam`), or **dev** (workstation
+python3 + opencv + numpy, no GPU VO).
 
 **How to use them end to end** (run VO, log raw data, analyse): see
 [README §3 Procedures](../README.md#3-procedures). This file is the catalogue; that section is the
-runbook.
+runbook. Docker split: [docker-compose.yml](../docker-compose.yml) (TX2) vs
+[docker-compose.host.yml](../docker-compose.host.yml) (host offline VO).
 
 ## Top level — build & run
 
@@ -83,23 +85,51 @@ See [docs/extrinsic_calibration.md](../docs/extrinsic_calibration.md) for the fu
 
 ## vo/ — visual odometry bring-up and motion tests
 
-| script | where | what |
-|---|---|---|
-| [vo/replay_host.sh](vo/replay_host.sh) | host | bag → modular cuVSLAM on x86 (`docker-compose.host.yml`); records `/cuvslam/odometry` |
-
 | script | runs on | purpose |
 |---|---|---|
-| `docker compose run --rm logonly` | TX2 | **raw 4-camera image log, no ROS/DDS in the path.** `argus_capture_node -p image_log_dir:=` writes `camN.raw` (concatenated mono8), `camN_index.csv` (exposure-midpoint stamp, byte offset) and `geometry.txt`. Read it with `numpy.memmap('cam1.raw','u1').reshape(-1,1088,1456)`. **Measured over 60 s (2026-09-03), on set completeness**: 30 fps split `LOG_DIRS=/logs,/logs,/sdlog,/ramlog` → **97.2% at 28.74 Hz**; 20 fps trigger with all four on eMMC (`TRIGGER_FPS=20 LOG_DIR=/logs`, generator set with `j106-trigctl.py fps 20`) → **99.9% at 19.93 Hz**. Across 5.5 min of 20 fps runs what remains is one brief global stall per ~80 s (all four cameras lose the same 1–3 edges) plus a 250 ms startup transient; it is **storage bandwidth** — decimating the images 10× while still logging every trigger edge gave zero stalls in 118 s. **Do not use `IMAGE_LOG_DIRECT` at 20 fps**: without the page cache eMMC cannot take 126.7 MB/s, and all four direct dropped 661 frames in 90 s. At 30 fps the losses begin ~30 s in and then run to the end, spread uniformly rather than periodically: the split saturating over the length of the run. **Prefer the 20 fps form** unless 30 fps is the requirement. Going through ROS topics to a recorder on the same board gave 6.1 fps |
-| [docker_publish.sh](docker_publish.sh) | TX2 | push `cuvslam-foxy:tx2` to Docker Hub as `wtlove876/cuvslam-foxy:tx2` plus a dated tag. The image is Ubuntu 20.04 + ROS 2 Foxy + gcc-8/9 only — cuVSLAM, calibration and the repo are bind-mounted at runtime, so nothing project-specific is baked in. Exists because `docker image prune -af` wiped every image on the board on 2026-09-02 and cost an hour of rebuilding; with this, that is a `docker pull` |
-| [port/check_log_sets.py](port/check_log_sets.py) | dev | the metric that matters for a triggered rig: how many trigger edges have **all four** cameras. Frame count and fps hide this — cameras drop *independently*, so 1.5% per-camera loss became 7% broken sets. Measured best: **97.4% complete sets at ~28 Hz** over 60 s |
-| [port/locate_frame_loss.py](port/locate_frame_loss.py) | dev/TX2 | **where** a triggered rig loses a frame, which set completeness cannot say. The capture node records two counters per frame — `capture_id` (what the Argus session produced) and `seq` (what reached the consumer) — so a gap in both means the frame was never produced (sensor/driver missed the edge) while a gap in `seq` alone means it was produced and we failed to collect it. That distinction found the real bug: the per-frame CSV was flushed from the **capture thread**, so roughly every 5 s it blocked inside an ext4 journal commit (`data=ordered`, default 5 s) and the whole 4-camera set missed its trigger edge. Moving the CSV write onto its own thread took 20 fps from 99.5% to 99.9% complete sets |
-| [port/raw_log_to_bag.py](port/raw_log_to_bag.py) | dev | convert a raw image log into a **rosbag2 bag format v4** — what Foxy reads. Recording to a bag on the board tops out at 6–7 fps (rosbag2's writer plateaus at 38–46 MB/s while DDS carries ≥142 and eMMC takes 136), and best_effort means the shortfall is *dropped*. So capture raw at full rate and convert here, where nothing is real time. Original per-frame exposure-midpoint stamps are preserved; `--compress` applies zstd. Note `rosbags`' own Writer emits v8/v9, which Foxy cannot open — hence the hand-written v4 |
-| [port/topic_rate_probe.py](port/topic_rate_probe.py) | TX2 | count what a subscriber actually receives, to separate DDS from whatever consumes it. Measured: capture 30 Hz / 190 MB/s, subscriber 20–25 Hz / 141.8 MB/s, rosbag2 6.1 Hz / 38.5 MB/s — the transport is not the bottleneck, the writer is |
+| [vo/replay_host.sh](vo/replay_host.sh) | host | bag → modular cuVSLAM on x86 (`docker-compose.host.yml`); records `/cuvslam/odometry` + `/tf` under `datasets/replay_out/` |
+| [vo/run_motion_test.sh](vo/run_motion_test.sh) | TX2 | record a motion test (§5). Preflight **gates, not warns**: refuses unless `trigger_mode=1`, the generator is running and `active_low`, and it reads the real pulse width back so `exposure_us` is never a stale guess. `--record-images` also bags the four camera streams, making the run replayable — move the rig once, re-run the VO against it as often as needed. Do two passes: one with images for replay, one without for the live numbers, because the recorder's own load is indistinguishable from the rig misbehaving |
+| [vo/analyze_motion.py](vo/analyze_motion.py) | dev | odometry health then verdict: **continuity first** (frozen poses, teleports, gaps), then scale/drift/return-to-origin. `tape_metres.txt` optional; a discontinuous run suppresses the verdict rather than averaging over it |
+| [vo/rerun_multicam.py](vo/rerun_multicam.py) | dev | **the replay viewer.** 8 virtual-pinhole panes with the tracked features, 4 raw fisheyes, landmark map and trajectory in one Rerun timeline. Two bags: odometry+observations first, source images via `--images`. `--t-range 40:52` to focus a window, `--panorama` / `--bev-fit-plane` for the stitch prototypes |
+| [vo/rerun_odometry.py](vo/rerun_odometry.py) | dev | lighter Rerun view: trajectory + landmark cloud + raw camera frames, no virtual pinholes |
+| [vo/rerun_virtual_pinholes.py](vo/rerun_virtual_pinholes.py) | dev | just the 8 carves cuVSLAM consumes, from a camera bag alone — no VO run needed |
+| [vo/render_multicam_video.py](vo/render_multicam_video.py) | dev | the same layout as an mp4/gif, for when Rerun is not available |
 | [vo/bench_remap.cpp](vo/bench_remap.cpp) | TX2 | measure the virtual-pinhole remap against virtual and source resolution, standalone (no cameras, no ROS). Answers "should we lower the resolution" with a number: both axes are bad trades (task 4.5b) |
 | [vo/verify_rig_build.sh](vo/verify_rig_build.sh) | dev | re-run cuVSLAM's frustum test on the poses the C++ actually emits — run it **before** a board session, or a bad rig file reads as a wiring bug |
 | [vo/check_rig_poses.py](vo/check_rig_poses.py) | dev | sanity-check the rig poses fed to cuVSLAM |
-| [vo/run_motion_test.sh](vo/run_motion_test.sh) | TX2 | record a motion test (§5). Preflight **gates, not warns**: refuses unless `trigger_mode=1`, the generator is running and `active_low`, and it reads the real pulse width back so `exposure_us` is never a stale guess. `--record-images` also bags the four camera streams, making the run replayable — move the rig once, re-run the VO against it as often as needed. Do two passes: one with images for replay, one without for the live numbers, because the recorder's own load is indistinguishable from the rig misbehaving |
-| [vo/analyze_motion.py](vo/analyze_motion.py) | dev | odometry health then verdict: **continuity first** (frozen poses, teleports, gaps), then scale/drift/return-to-origin. `tape_metres.txt` optional; a discontinuous run suppresses the verdict rather than averaging over it |
+| `docker compose run --rm logonly` | TX2 | **raw 4-camera image log, no ROS/DDS in the path.** Prefer [log_rig.sh](log_rig.sh) for cameras+IMU+range. See README §3.2 for rates |
+| [docker_publish.sh](docker_publish.sh) | TX2 | push `cuvslam-foxy:tx2` to Docker Hub as `wtlove876/cuvslam-foxy:tx2` plus a dated tag |
+| [port/check_log_sets.py](port/check_log_sets.py) | dev | set completeness + IMU/range health for a raw log — see README §3.3 |
+| [port/locate_frame_loss.py](port/locate_frame_loss.py) | dev/TX2 | **where** a triggered rig loses a frame (sensor vs consumer) |
+| [port/raw_log_to_bag.py](port/raw_log_to_bag.py) | dev | convert a raw image log into a **rosbag2 bag format v4** (Foxy-readable); `--motion` cuts to the IMU motion window |
+| [port/topic_rate_probe.py](port/topic_rate_probe.py) | TX2 | count what a subscriber actually receives, to separate DDS from whatever consumes it |
+
+### Running the Rerun viewer
+
+`rerun-sdk` is not a system package here (PEP 668). The repo keeps a venv with system
+site-packages, so `rosbags`, `cv2` and `numpy` come from the system and only rerun is local:
+
+```bash
+python3 -m venv --system-site-packages .venv     # once; needs python3.12-venv
+.venv/bin/pip install rerun-sdk
+```
+
+It takes **two bags**: the VO output (with `/cuvslam/observations`, so record it with
+`OBS=1 scripts/vo/replay_host.sh`) and the source images.
+
+```bash
+.venv/bin/python scripts/vo/rerun_multicam.py \
+  datasets/replay_out/obs_run1_wall --images /tmp/run1_motion.bag \
+  --t-range 40:52 --frames 240 --save /tmp/run1_wall.rrd
+```
+
+`--save` writes an `.rrd` to open later (`rerun file.rrd`), `--spawn` opens the desktop
+viewer, `--serve` serves it over the web. **Port convention for `--serve`:** `--port` alone
+still binds 9090 for the UI, so two concurrent servers need `--port` *and*
+`--web-viewer-port`.
+
+Without `--t-range`, `--frames` subsamples the whole run — on a 57 s log that is one pose in
+five, enough to miss a 0.75 s tracking freeze completely.
 
 ## bev/ — bird's-eye ground stitch
 

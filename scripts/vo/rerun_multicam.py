@@ -253,6 +253,12 @@ def main():
     ap.add_argument("--vstereo", default="config/rig/virtual_stereo_imx296.yaml")
     ap.add_argument("--rig", default="config/rig/rig_extrinsics_imx296.yaml")
     ap.add_argument("--frames", type=int, default=180, help="max frames to log")
+    ap.add_argument("--t-range", default=None, metavar="START:END",
+                    help="log only this window, in seconds from the first pose (e.g. 40:52). "
+                         "--frames then subsamples the WINDOW, so a short window is logged at "
+                         "full rate. Without it --frames subsamples the whole run, which on a "
+                         "57 s log is one pose in five - enough to miss a 0.75 s tracking "
+                         "freeze entirely (5.0g).")
     ap.add_argument("--map-radius", type=float, default=20.0,
                     help="display-only: drop landmarks further than this (m) from the "
                          "trajectory. Low-parallax features triangulate to hundreds of "
@@ -478,8 +484,16 @@ def main():
             dome[c] = fisheye_dome(omni[c], iw, ih, a.dome_radius)
         print("fisheye domes: %d triangles each" % len(dome[CAMS[0]][1]))
 
-    step = max(1, len(P) // a.frames)
-    idxs = list(range(0, len(P), step))
+    sel = np.arange(len(P))
+    if a.t_range:
+        t_lo, t_hi = (float(x) for x in a.t_range.split(":"))
+        rel = np.asarray(ts) - ts[0]
+        sel = np.where((rel >= t_lo) & (rel <= t_hi))[0]
+        if not len(sel):
+            sys.exit("--t-range %s selects no poses (run spans 0..%.1f s)" % (a.t_range, rel[-1]))
+        print("t-range %.1f..%.1f s -> %d of %d poses" % (t_lo, t_hi, len(sel), len(P)))
+    step = max(1, len(sel) // a.frames)
+    idxs = list(sel[::step])
     print("logging %d frames from %d poses, %d landmarks" % (len(idxs), len(P), len(lm)))
 
     if len(lm):

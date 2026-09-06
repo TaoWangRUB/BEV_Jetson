@@ -8,7 +8,7 @@
 and optionally /cuvslam/landmarks. Pass --images to overlay the source camera frames
 (the odometry bag carries no images), matched to poses by header stamp.
 """
-import sys, argparse, pathlib, numpy as np
+import sys, argparse, pathlib, tempfile, hashlib, numpy as np
 import rerun as rr
 from rosbags.highlevel import AnyReader
 from rosbags.typesys import Stores, get_typestore
@@ -19,8 +19,29 @@ CAM_TOPICS = [f"/cam{i}/image_raw" for i in range(1, 5)]
 
 def find_bag(d: pathlib.Path) -> pathlib.Path:
     if list(d.glob("*.db3")):
-        return d
-    return next(p for p in d.rglob("*") if p.is_dir() and list(p.glob("*.db3")))
+        return _ros2_safe_name(d)
+    return _ros2_safe_name(
+        next(p for p in d.rglob("*") if p.is_dir() and list(p.glob("*.db3"))))
+
+
+def _ros2_safe_name(bag: pathlib.Path) -> pathlib.Path:
+    """Work around rosbags dispatching on the SUFFIX, not the content.
+
+    `AnyReader` decides ROS 1 vs ROS 2 with `any(x.suffix != '.bag' for x in paths)`
+    (rosbags/highlevel/anyreader.py). Our own README tells people to build ROS 2 bags as
+    `raw_log_to_bag.py -o /tmp/run1.bag`, which makes a *directory* called `run1.bag` — so
+    every viewer that opens it gets the rosbag1 reader and dies with the very confusing
+    "Could not open file ...: Is a directory". Hand back a suffix-free symlink instead;
+    the caller's data is not touched or renamed.
+    """
+    if bag.suffix != ".bag":
+        return bag
+    link = pathlib.Path(tempfile.gettempdir()) / ("rosbag2-" + bag.name[:-4] + "-" +
+                                                  hashlib.sha1(str(bag.resolve()).encode())
+                                                  .hexdigest()[:8])
+    if not link.is_symlink():
+        link.symlink_to(bag.resolve(), target_is_directory=True)
+    return link
 
 
 def hstamp(m) -> float:

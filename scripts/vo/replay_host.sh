@@ -8,6 +8,11 @@
 #   ./scripts/vo/replay_host.sh /tmp/run1_motion.bag 0.5
 #   RATE=0.25 OUT=datasets/replay_out/odom_run1 ./scripts/vo/replay_host.sh /tmp/run1_motion.bag
 #
+# OBS=1 also publishes and records /cuvslam/landmarks + /cuvslam/observations, which is
+# what scripts/vo/rerun_multicam.py needs to draw the tracked features. It costs frame
+# rate (the landmark export is on the Track() thread), so leave it OFF for any run whose
+# rate or trajectory is the measurement, and name the output obs_* rather than odom_*.
+#
 # Foxy's ros2 bag play on this stack has no --clock; VO matches on image header
 # stamps (same as the successful 2026-09-03 TX2 replay).
 set -euo pipefail
@@ -16,7 +21,9 @@ cd "${REPO_ROOT}"
 
 BAG="${1:?usage: $0 <camera_bag_dir> [rate]}"
 RATE="${2:-${RATE:-0.5}}"
-OUT="${OUT:-${REPO_ROOT}/datasets/replay_out/odom_$(date +%Y%m%d_%H%M%S)}"
+OBS="${OBS:-0}"
+_pfx=odom; [[ "$OBS" == "1" ]] && _pfx=obs
+OUT="${OUT:-${REPO_ROOT}/datasets/replay_out/${_pfx}_$(date +%Y%m%d_%H%M%S)}"
 COMPOSE=(docker compose -f docker-compose.host.yml)
 
 [[ -d "$BAG" || -f "$BAG" ]] || { echo "REFUSING: bag not found: $BAG" >&2; exit 1; }
@@ -45,7 +52,15 @@ case "$OUT" in
 esac
 mkdir -p "$(dirname "$OUT")"
 
-echo "replay BAG=$BAG_IN RATE=$RATE OUT=$OUT_IN"
+if [[ "$OBS" == "1" ]]; then
+  LAUNCH_ARGS="publish_landmarks:=true publish_observations:=true"
+  REC_TOPICS="/cuvslam/odometry /tf /cuvslam/landmarks /cuvslam/observations"
+else
+  LAUNCH_ARGS=""
+  REC_TOPICS="/cuvslam/odometry /tf"
+fi
+
+echo "replay BAG=$BAG_IN RATE=$RATE OUT=$OUT_IN OBS=$OBS"
 "${COMPOSE[@]}" run --rm shell bash -lc "
 set -eo pipefail
 source /opt/ros/foxy/setup.bash
@@ -53,14 +68,14 @@ source /workspace/install_host/setup.bash
 set -u
 export LD_LIBRARY_PATH=/workspace/third_party/cuVSLAM/build_host/bin:\${LD_LIBRARY_PATH:-}
 rm -rf '${OUT_IN}'
-ros2 launch bev_cuvslam bev_cuvslam.launch.py > /tmp/vo_host.log 2>&1 &
+ros2 launch bev_cuvslam bev_cuvslam.launch.py ${LAUNCH_ARGS} > /tmp/vo_host.log 2>&1 &
 VO=\$!
 for i in \$(seq 1 60); do
   ros2 node list 2>/dev/null | grep -q cuvslam_multicam && break
   sleep 1
 done
 ros2 node list | grep cuvslam || { echo 'VO node failed to start'; tail -40 /tmp/vo_host.log; exit 1; }
-ros2 bag record -o '${OUT_IN}' /cuvslam/odometry /tf > /tmp/odom_rec_host.log 2>&1 &
+ros2 bag record -o '${OUT_IN}' ${REC_TOPICS} > /tmp/odom_rec_host.log 2>&1 &
 REC=\$!
 sleep 2
 echo '=== playing ==='

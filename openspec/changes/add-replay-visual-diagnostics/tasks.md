@@ -20,9 +20,28 @@
 - [x] 1.4 **Inverted mounting handled at display only** (`--upright`), since the calibration is solved
   on the raw inverted frames and nothing downstream un-rolls them.
 
-- [ ] 1.5 Add the viewer to `scripts/README.md` with the two-bag invocation and the `--serve` port
-  convention (`--port` alone still binds 9090 for the UI, so concurrent servers need
-  `--port` *and* `--web-viewer-port`).
+- [x] 1.5 **Viewer documented in `scripts/README.md`** — the four `vo/rerun_*` / `render_*` rows
+  plus a "Running the Rerun viewer" section: the venv (rerun-sdk is not installable into the
+  system python here, PEP 668 — `python3 -m venv --system-site-packages .venv` keeps rosbags,
+  cv2 and numpy from the system), the two-bag invocation, and the `--serve` port convention
+  (`--port` alone still binds 9090 for the UI, so concurrent servers need `--port` *and*
+  `--web-viewer-port`).
+
+  Two things had to be fixed before the documented invocation actually ran:
+
+  - **`--t-range START:END`** on `rerun_multicam.py`. `--frames` subsampled the *whole* run, so
+    on a 57 s log the default 180 frames is one pose in five — enough to miss the 0.75 s
+    tracking freeze in `retarget-vo-to-imx296-rig` 5.0g completely. `--frames` now subsamples
+    the selected window instead.
+  - **`find_bag()` no longer trips over our own bag naming.** rosbags picks ROS 1 vs ROS 2 from
+    the SUFFIX (`any(x.suffix != '.bag' ...)` in `highlevel/anyreader.py`), and README §3.3 tells
+    people to write ROS 2 bags as `raw_log_to_bag.py -o /tmp/run1.bag` — a *directory* named
+    `.bag`. Every viewer therefore got the rosbag1 reader and died with "Could not open file
+    ...: Is a directory". It now hands back a suffix-free symlink; nothing is renamed.
+
+  `replay_host.sh` gained `OBS=1` to publish and record `/cuvslam/landmarks` +
+  `/cuvslam/observations` (naming the output `obs_*`), which is what the viewer needs and what
+  the default rate-measuring runs must NOT carry.
 
 ## 2. BEV prototype — satisfies `add-bev-ground-stitch` 2.6
 
