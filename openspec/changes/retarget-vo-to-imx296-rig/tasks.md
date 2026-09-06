@@ -1151,6 +1151,40 @@ physically moved - the remaining items are not doable from here.
   and stopped when the motion stops.** 37.5 s of stationary frames cost 3.7 GB of eMMC on a board
   whose free space caps a 20 fps run at ~90 s (5.0e).
 
+- [x] 5.0g **The whole log now replays, on the host, at 15.8 Hz — and it exposes a late tracking
+  blow-up the TX2 subset never reached. 2026-09-06.**
+
+  Every §5 number so far came off a *subset*: the TX2 OOMs on a full 20 fps bag, and its
+  `Track()` at 50-90 ms/set drops ~45 % of what survives. So an x86_64 offline path now replays
+  the same Foxy bags with no TX2 in the loop (`docker-compose.host.yml`,
+  `scripts/build_cuvslam_host.sh`, `scripts/vo/replay_host.sh`; `BEV_BUILD_ARGUS=OFF` drops the
+  Argus targets so only the modular multicam node builds). Host cuVSLAM is a pristine v17 tree
+  for sm_86 — **not** the CUDA-10.2 TX2 port, which the build script refuses to build on.
+
+  **The input is the cleanest log yet.** `imglog_run1_20260906_090227` (2026-09-06, 20 fps):
+  1155 of 1155 interior sets, **LOSSLESS**, 20.00 Hz over 57.7 s, and **100 % of frames inside
+  the motion window** — 5.0f's lesson applied at record time. IMU lossless at 199 Hz; the range
+  channel lossless against the trigger, 1772 readings at 20.01 Hz, its first working full run.
+
+  **The replay itself is healthy.** 937 sets, 907 odometry poses, **15.76 Hz** against the TX2
+  replay's 11.18 Hz (5.4), worst skew 1 us, 48 sets dropped on the 1 ms skew gate (5.1 %).
+  For the first 43 s the trajectory is plausible: median step 27 mm, median speed 0.49 m/s,
+  p95 0.98 m/s — a walk.
+
+  **Then it breaks.** Between t = 45.7 s and t = 47.6 s the pose jumps, including a single
+  **50.2 m step across one 50 ms interval** (1004 m/s) and a 5.8 m step just after. 14 of 906
+  intervals exceed 0.2 m and carry 60.4 m of the 89.2 m total path; strip them and the run is
+  **28.8 m**, which is a believable indoor walk. So the headline "89 m path, 44.9 m
+  displacement, ±37 m extent" is a tracking failure, not a trajectory.
+
+  This is the first thing to explain, and it was invisible before: the TX2 subset ended before
+  t = 43 s. It also **blocks 5.1 and 5.2** — a scale or drift number computed across that jump
+  is meaningless, so either the cause is fixed or the comparison window stops before t = 43 s.
+
+  **Caveat on the range channel:** `range_cm` reads min 4 / median 30 / max 203 across the run.
+  A median of 0.30 m is not a landmark distance — the beam is seeing the operator or the rig
+  itself. 5.5b needs the sensor aimed at something before it can regress anything.
+
 - [ ] 5.1 Move the rig a measured straight-line distance; record `/cuvslam/odometry` + `/tf` and compare reported translation against the tape measure (spec: *Translation is recovered at true scale*, 5 %).
       **Now the highest-value open item in this change.** `add-replay-visual-diagnostics` 3.5 finds the
       floor **1.36 m** below a head-carried rig, against an expected ~1.60–1.75 m — a suspected
@@ -1163,7 +1197,9 @@ physically moved - the remaining items are not doable from here.
       Partial evidence in 5.0d(3): ±0.4 m vertical wander, attributed to the absence of a gravity
       reference. A return-to-origin run is still required for the horizontal figure.
 - [~] 5.3 **Answered offline, pending live confirmation.** cuVSLAM does not take declared stereo pairs: it samples a grid per camera, back-projects to 2 m and 4 m, and connects pairs exceeding 0.5 (`frustum_intersection_graph.cpp:33`). Re-running that on our ring-closed rig gives **0.939 / 0.951 / 0.926 / 0.949** against a 0.961 ceiling, all 8 virtual cameras paired, no spurious edges. The links form with room to spare and the `CUVSLAM_FRUSTUM_THRESHOLD` patch is not needed for the pinholes. Still to confirm on the live pipeline.
-- [~] 5.4 **Rate confirmed on the 4-camera replay, tracking/drift pending live ground truth.** The
+- [~] 5.4 **Rate confirmed on the 4-camera replay, tracking/drift pending live ground truth.**
+  *(Rate superseded by 5.0g: 15.76 Hz on the host against the 11.18 Hz below, and the host replay
+  shows tracking does NOT hold for a whole run — it blows up at t = 47 s.)* The
   2026-09-03 replay (5.0c) produced **11.18 Hz** odometry from a 20 Hz input — above the old bundled
   rig's ~8.5 Hz — with cuVSLAM tracking held for the whole 29 s run. It stays compute-limited on the
   TX2: `Track()` at ~50–90 ms/set means ~45 % of the 20 Hz sets never reach the tracker, and the
