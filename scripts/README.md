@@ -30,6 +30,8 @@ runbook. Docker split: [docker-compose.yml](../docker-compose.yml) (TX2) vs
 | [calib/grid_view_tx2.sh](calib/grid_view_tx2.sh) | TX2 | live 2×3 IMX219 grid on the TX2 HDMI display (identify/label cameras) |
 | [calib/capture_calib_sets.sh](calib/capture_calib_sets.sh) | TX2 | grab N raw 4-cam sets for **extrinsic** calibration (pan the rig) |
 | [calib/extrinsic_calib.py](calib/extrinsic_calib.py) | dev | **retired (IMX219/KB)** — exits; feature-based relative-rotation **extrinsic** calibration. Port via `mei_project()` in `bev_panorama_node.cpp` |
+| [calib/exposure_bracket.sh](calib/exposure_bracket.sh) | dev | sweep the rig-wide gain and report what each setting does to the histogram. Run it standing still, once in the BRIGHTEST part of the route and once in the DIMMEST |
+| [calib/exposure_report.py](calib/exposure_report.py) | dev | clipping and surviving local contrast for one raw log. Detects the white level as the modal value, not `>=250` — this pipeline emits limited range and never reaches 250 |
 | [calib/pano_tuner.py](calib/pano_tuner.py) | dev | **retired (IMX219/KB)** — exits; interactive panorama extrinsics tuner (web UI) |
 
 | [calib/calibration_pipeline.ipynb](calib/calibration_pipeline.ipynb) | dev | **the end-to-end runbook** — every command actually used, each failure and why. Start here before any calibration work |

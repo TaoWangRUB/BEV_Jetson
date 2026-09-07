@@ -197,8 +197,16 @@ echo "recording ${SECS}s at ${EFF_FPS} fps -> $DIRS"
 # SENSOR MODE, and under an external trigger the sensor emits one frame per pulse regardless.
 # Verified 2026-09-03 - a 20 fps trigger against fps:=30 logged 1158 frames per camera in
 # 58.7 s (19.61 Hz) with 99.5% complete sets. TRIGGER_FPS is for the space check only.
+# GAIN. Under external trigger the exposure is the trigger pulse width, so gain is the
+# only brightness control the board has - and it is pinned at 16x analog x 4x digital,
+# 64x total, because AE hunts on gain when it cannot reach its main actuator (4.7). That
+# clamp cured the hunt and the LEVEL was never revisited: it is most of why a sunlit room
+# clips at 4.986 ms. AE_GAIN/AE_DGAIN make it brackettable without editing the node
+# (retarget-vo-to-imx296-rig 5.11a). Defaults match the node, so nothing changes silently.
 ros2 run bev_camera argus_capture_node --ros-args \
   -p width:=1456 -p height:=1088 -p fps:=30 \
+  -p ae_gain:="[${AE_GAIN:-16.0},${AE_GAIN:-16.0}]" \
+  -p ae_dgain:="[${AE_DGAIN:-4.0},${AE_DGAIN:-4.0}]" \
   -p publish_every_n:="$EVERY_N" -p exposure_us:="$EXPOSURE_US" \
   -p write_queue_depth:="${WRITE_QUEUE_DEPTH:-64}" \
   -p image_log_direct:="\"${IMAGE_LOG_DIRECT:-false}\"" \
