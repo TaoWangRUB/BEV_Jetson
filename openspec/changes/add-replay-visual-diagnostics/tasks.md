@@ -476,6 +476,25 @@
   - [ ] 5.5c T265: the weaker reference. Compare **pairwise pose distances > 2 m apart** so the ~0.2 m
         lever arm between the devices is negligible, rather than aligning trajectories directly.
   - [ ] 5.5d Write the analysis scripts once a bag containing either sensor exists. Offered, not started.
+  - [x] 5.5f **Known-object cross-checks from `multicam_full.rrd` (2026-09-07) show a
+        position-dependent underestimate, not one defensible global correction.** Each selected Rerun
+        feature was matched to the preceding retained observation sample, with the viewer's default
+        180-degree upright display rotation undone, then triangulated from all observations of its
+        cuVSLAM ID. The resolver is `scripts/vo/measure_replay_anchor.py --upright`.
+
+        | object / physical dimension | reconstructed | error | implied correction |
+        |---|---:|---:|---:|
+        | Bosch fridge front width, 0.6000 m | 0.5828 m | -2.9% | 1.0295 |
+        | Siemens range-hood width, 0.8900 m | 0.8196 m | -7.9% | 1.0859 |
+        | black glass height, 0.4000 m | 0.3361 m | -16.0% | 1.1903 |
+        | black glass width, 0.4900 m | 0.4104 m | -16.2% | 1.1939 |
+        | cabinet height, approximately 2.0500 m | 1.6221 m | -20.9% | 1.2638 |
+
+        The fridge is the cleanest single anchor. The black-glass reconstruction has an 85.1-degree
+        corner where the physical rectangle is 90 degrees, and the cabinet height is approximate;
+        neither may set the metric scale. The 1.0295--1.2638 range rules out post-scaling the map.
+        Keep 5.5 open until a measured straight run or a controlled multi-distance range run validates
+        the extrinsic translations independently.
 
 - [x] 5.7 **The rig logger's range channel never worked, and the first run of it found four
   separate faults.** `bev_range` + the `rangelog` service were committed 2026-09-04 (`a870470`)
