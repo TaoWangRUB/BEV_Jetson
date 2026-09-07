@@ -38,8 +38,18 @@ echo "trigger pulse width: ${EXPO} us"
 
 for g in $GAINS; do
   echo; echo "=== analog gain ${g}x (total $(echo "$g*$DGAIN" | bc)x) ==="
+  # Restart the Argus daemon between captures. A session leaked by the previous run fails
+  # the next one with "no session for 0" - the capture starts, announces its log directory,
+  # and produces nothing, so it reads as a hardware fault (5.7). log_rig.sh does this in
+  # preflight for the same reason; a bracket runs back-to-back captures and needs it more.
+  ssh "$TX2" "sudo systemctl restart nvargus-daemon" >/dev/null 2>&1 || true
+  sleep 3
+  # LOG_DIR is a path INSIDE the container: /logs is the bind mount for the host's
+  # /home/nvidia/logs. Passing the host path instead gives a container-local directory
+  # that vanishes with the container - the capture runs, reports success, streams all four
+  # cameras, and leaves nothing behind.
   ssh "$TX2" "cd $BEVDIR && AE_GAIN=$g AE_DGAIN=$DGAIN EXPOSURE_US=$EXPO \
-      LOG_DIR=/home/nvidia/logs LOG_LABEL=gain${g} MOTION_SECONDS=$SECS \
+      LOG_DIR=/logs LOG_LABEL=gain${g} MOTION_SECONDS=$SECS \
       docker compose run --rm logonly" >/dev/null 2>&1 || {
     echo "  capture FAILED at gain ${g}"; continue; }
   d=$(ssh "$TX2" "ls -1dt /home/nvidia/logs/imglog_gain${g}_* 2>/dev/null | head -1")
