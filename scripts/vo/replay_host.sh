@@ -79,6 +79,10 @@ if [[ "${SLAM:-0}" == "1" ]]; then
   # Unlimited pose graph by default offline: the 300-node cap ends the optimised
   # trajectory mid-run (1.7h). SLAM_MAX_MAP_SIZE=300 restores the real-time figure.
   LAUNCH_ARGS="${LAUNCH_ARGS} enable_slam:=true slam_max_map_size:=${SLAM_MAX_MAP_SIZE:-0}"
+  # Slam::Track() is the whole cost of a SLAM replay - measured to 972 ms per call against a
+  # 125 ms budget at 0.4x, while everything else in the callback is 1-11 ms. 0 is no throttle,
+  # which is what this defaulted to; the cuVSLAM header suggests 1000 ms for real-time.
+  LAUNCH_ARGS="${LAUNCH_ARGS} slam_throttling_ms:=${SLAM_THROTTLING_MS:-0}"
   REC_TOPICS="${REC_TOPICS} /cuvslam/slam_odometry /cuvslam/loop_closures"
   REC_TOPICS="${REC_TOPICS} /cuvslam/slam_path /cuvslam/loop_closure_edges"
 fi
