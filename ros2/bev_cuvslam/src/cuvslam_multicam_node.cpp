@@ -364,6 +364,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
     std::array<Img::ConstSharedPtr, 4> msgs;
     {
       std::lock_guard<std::mutex> lk(mtx_);
+      ++recv_[idx];
       auto& h = hist_[idx];
       h.push_back(m);
       // AGEING OUT IS THE ONLY WAY A FRAME LEAVES WITHOUT BEING LOOKED AT, and it was
@@ -470,6 +471,18 @@ class CuvslamMulticamNode : public rclcpp::Node {
     }
     track_us_sum_ = 0; track_us_max_ = 0; track_n_ = 0;
     kf_us_sum_ = 0; kf_n_ = 0; nkf_us_sum_ = 0; nkf_n_ = 0;
+    // THE LEDGER, INSIDE THE NODE. Without this the node can say how many sets it tried and
+    // how many it rejected, but not how many frames ever REACHED it - so a pose missing from
+    // the output could equally be a frame that never arrived (transport/QoS), one that aged
+    // out, one whose set failed the skew gate, or a Track() that returned no pose, and the
+    // only way to tell was to guess. Every count below is on the same 5 s window boundary, so
+    // received - matched - rejected - lost should equal what went out.
+    RCLCPP_INFO(get_logger(),
+        "  LEDGER recv [%ld %ld %ld %ld] -> sets %ld (skew-rejected %ld, aged out %ld) "
+        "-> poses %ld; %ld sets tracked but produced no pose",
+        recv_[0], recv_[1], recv_[2], recv_[3], sets_, dropped_sets_,
+        unmatched_[0] + unmatched_[1] + unmatched_[2] + unmatched_[3], published_,
+        sets_ - dropped_sets_ - published_);
     const int64_t unmatched = unmatched_[0] + unmatched_[1] + unmatched_[2] + unmatched_[3];
     if (unmatched > last_unmatched_) {
       RCLCPP_WARN(get_logger(), "  %ld frames (+%ld) aged out without ever forming a set "
@@ -1002,6 +1015,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
     // (Up to v15 it was [Rx,Ry,Rz,x,y,z] and needed a {3,4,5,0,1,2} permutation.)
     for (int i = 0; i < 36; ++i) od.pose.covariance[i] = pwc.covariance_xyz_rpy[i];
     odom_pub_->publish(od);
+    ++published_;
 
     // TF, on the REP-105 split described at tf_absorb_jumps_.
     const tf2::Transform raw(
@@ -1060,7 +1074,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
   double texture_frac_ = 0.25;
   int static_run_warn_ = 5;
   int64_t static_events_ = 0;
-  std::array<int64_t, 4> unmatched_{}, last_used_ns_{};
+  std::array<int64_t, 4> unmatched_{}, last_used_ns_{}, recv_{};
+  int64_t published_ = 0;
   int64_t last_unmatched_ = 0;
   int64_t max_skew_ns_ = 1000000, worst_skew_ns_ = 0, sets_ = 0, dropped_sets_ = 0;
   // Pose-health state (check_pose_health). max_speed_mps_ is deliberately far above
