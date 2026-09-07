@@ -313,6 +313,37 @@ OBS=1 ./scripts/vo/replay_host.sh /tmp/run1.bag 0.25
 # RATE or trajectory is the measurement
 ```
 
+**Loop closure on a logged run** — `SLAM=1` builds `cuvslam::Slam` on top of the same tracker and
+publishes the corrected pose and the optimised trajectory **beside** the pure-VO ones, never in
+place of them (`/cuvslam/odometry` stays pure VO so the §5 figures remain comparable):
+
+```bash
+SLAM=1 ./scripts/vo/replay_host.sh /tmp/run1.bag 0.4
+# → + /cuvslam/slam_odometry  corrected pose, per frame
+#   + /cuvslam/slam_path      the WHOLE optimised trajectory, re-read each time (a closure
+#                             re-optimises the graph, so accumulating slam_odometry is wrong)
+#   + /cuvslam/loop_closures  where each loop closed, one stamp per pose
+#   + /cuvslam/loop_closure_edges
+# SLAM_MAX_MAP_SIZE=300 restores the real-time pose-graph cap; the script defaults to 0
+# (unlimited) offline, because 300 ended the optimised path at t=41.6 s of a 57 s run
+```
+
+`Slam::Track()` consumes `Odometry::State`, not images — so enabling it turns the observation and
+landmark exports on **inside** the Odometry config and the cost lands in `Track()`: 9–12 ms without,
+**16–33 ms with, spiking to 133 ms**. At 1.0× the budget is 50 ms/set, so it overruns, drops sets,
+and the widened gaps make the **tracker** fail — a 3.42 m step appears that is simply absent from a
+clean run. Hence the 0.4× default and the warning above 0.6×; at 0.4× the VO returns to baseline
+exactly (859 vs 861 poses, 22.21 vs 22.24 m). **Offline only** — the TX2 cannot slow time, and its
+50–90 ms `Track()` against a 50 ms budget means the degraded trajectory *is* the real-time result
+there.
+
+Whether loop closure actually helps is **still open, and this log cannot answer it**: the 63
+"revisits" are a median 2.45 s apart (the tracker rematching somewhere it saw seconds ago, with no
+drift accumulated), the graph's edges *are* the odometry deltas so SLAM can only redistribute VO's
+error, and the SLAM-vs-VO difference (0.70 m median) is under the pipeline's own replay-to-replay
+noise floor (1.13 m). Answering it needs a closed circuit returned to the start, with
+`tape_metres.txt` — see `openspec/changes/add-replay-visual-diagnostics` 1.7.
+
 Foxy’s `ros2 bag play` on this stack has **no `--clock`**; VO matches on image header stamps.
 A few percent of sets can show 50 ms skew during playback (bag topics delivered out of lock-step) —
 that is a **replay** artifact, not missing frames in the raw log. Prefer `check_log_sets` for
@@ -396,7 +427,7 @@ log_rig.sh (TX2)
   → scp/rsync to datasets/
   → check_log_sets.py
   → raw_log_to_bag.py --motion
-  → replay_host.sh          # host cuVSLAM
+  → replay_host.sh          # host cuVSLAM      (SLAM=1 ... 0.4  for loop closure)
   → analyze_motion.py / rerun_multicam.py
 ```
 
