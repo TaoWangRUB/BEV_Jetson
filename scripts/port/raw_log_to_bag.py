@@ -211,7 +211,15 @@ def main():
                    entries[0][0], span, comp_fmt, comp_mode)
     print("\nwrote %s: %d msgs over %.2f s (%.1f Hz per camera)"
           % (out, len(entries), span / 1e9, len(entries) / (span / 1e9) / len(cams) if span else 0))
-    print("  ros2 bag play %s --clock     # then run nodes with use_sim_time:=true" % out)
+    # NOT --clock/use_sim_time. Foxy's `ros2 bag play` has no --clock (options are
+    # -s, --read-ahead-queue-size, -r, --topics, --qos-profile-overrides-path, -l, --remap),
+    # so nothing publishes /clock - and a node started with use_sim_time:=true against no
+    # publisher sits at t=0 forever, which silences every RCLCPP_*_THROTTLE in the VO node:
+    # frozen pose, pose jump, saturation, negative covariance. The whole pipeline carries the
+    # real time in header.stamp instead (see the module docstring), and every offline
+    # consumer reads that rather than the bag receive time.
+    print("  ./scripts/vo/replay_host.sh %s 0.5        # host cuVSLAM" % out)
+    print("  SLAM=1 ./scripts/vo/replay_host.sh %s 0.4 # + loop closure" % out)
 
 
 if __name__ == "__main__":
