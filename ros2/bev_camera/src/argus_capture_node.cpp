@@ -393,11 +393,23 @@ class ArgusCaptureNode : public rclcpp::Node {
       auto* isrc = interface_cast<ISourceSettings>(requests_[i].get());
       isrc->setFrameDurationRange(Range<uint64_t>(1e9 / fps_));
 
-      // Under external trigger the exposure IS the trigger pulse width, so AE cannot
-      // move its main actuator (the driver logs "ignoring <n>") and hunts on gain
-      // instead — a measured 3.5 Hz limit cycle swinging 150 luma levels peak-to-peak,
-      // 171% of the mean. Clamping gain and locking AE removes it (p2p 150.5 -> 0.8)
-      // at the same mean brightness. Free-running capture is left untouched.
+      // TELL AE THE EXPOSURE IS FIXED. Under external trigger the exposure IS the trigger
+      // pulse width and the driver ignores anything AE asks for ("ignoring <n>") — but
+      // nothing ever said so, because this node set the FRAME DURATION range and never the
+      // EXPOSURE TIME range. So AE kept optimising a control that does nothing and
+      // over-compensated on the one that does: a 3.5 Hz limit cycle swinging 150 luma
+      // levels peak-to-peak, 171% of the mean (4.7).
+      //
+      // Pinning the range to the measured pulse width states the constraint AE was missing,
+      // which leaves gain as its only free variable — exactly the behaviour wanted from a
+      // route that crosses rooms of different brightness. It is correct regardless of the
+      // lock, so it is applied either way; `ae_lock:=false` is then a real option rather
+      // than the known-bad free-running case. See 5.12a.
+      if (trigger_active_ && exposure_us_ > 0) {
+        const uint64_t e = static_cast<uint64_t>(exposure_us_) * 1000ULL;
+        isrc->setExposureTimeRange(Range<uint64_t>(e, e));
+      }
+
       if (ae_lock_) {
         auto* ireq_ac = interface_cast<IRequest>(requests_[i].get());
         auto* iac = interface_cast<IAutoControlSettings>(ireq_ac->getAutoControlSettings());
@@ -408,6 +420,11 @@ class ArgusCaptureNode : public rclcpp::Node {
         } else {
           RCLCPP_WARN(get_logger(), "cam idx %zu: no IAutoControlSettings — AE left free", i);
         }
+      } else if (trigger_active_) {
+        RCLCPP_WARN_ONCE(get_logger(), "AE UNLOCKED under external trigger, with the exposure "
+                         "range pinned to %d us. AE can now only vary GAIN. Watch the luma "
+                         "spread: 0.8 p2p is the locked baseline, 150.5 was free-running "
+                         "before the range was pinned (5.12a).", exposure_us_);
       }
       isession->repeat(requests_[i].get());
     }
