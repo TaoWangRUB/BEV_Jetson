@@ -143,6 +143,15 @@ class CuvslamMulticamNode : public rclcpp::Node {
     // per frame (see check_exposure).
     sat_level_ = declare_parameter<int>("saturation_level", 200);
     sat_warn_frac_ = declare_parameter<double>("saturation_warn_fraction", 0.5);
+    // Texture-collapse gate: see check_view(). A quarter of the running baseline sits
+    // between the two measured cases - run1's fatal 11% and run6's harmless 39%.
+    texture_frac_ = declare_parameter<double>("texture_collapse_fraction", 0.25);
+    // 20 frames = 1 s at 20 fps. Measured collapse lengths: run1 52-70 frames on ALL FOUR
+    // cameras at t=44.5-46.0 s (the event that ends in the teleport), run6 a single 26-frame
+    // dip on cam1 alone at t=79.1 s. So a second of it is well inside what matters and clear
+    // of transients - a doorway, someone crossing a light. Calibrated on two logs; treat the
+    // number as provisional.
+    static_run_warn_ = declare_parameter<int>("texture_collapse_frames", 20);
     // Was a hardcoded member until now, which made the one gate that guards the TF
     // CONTRACT the only unconfigurable number in the node. 5 m/s is a sprint.
     max_speed_mps_ = declare_parameter<double>("max_speed_mps", 5.0);
@@ -470,6 +479,9 @@ class CuvslamMulticamNode : public rclcpp::Node {
                   unmatched_[2], unmatched_[3], history_);
       last_unmatched_ = unmatched;
     }
+    if (static_events_)
+      RCLCPP_WARN(get_logger(), "  %ld texture-collapse episodes so far — these PRECEDE the "
+                  "jumps, they do not follow them", static_events_);
     if (jumps_)
       RCLCPP_WARN(get_logger(), "  %ld discontinuities so far, %ld absorbed into map->odom — "
                   "odom->base is continuous but map->odom has stepped, so the two frames are "
@@ -659,14 +671,22 @@ class CuvslamMulticamNode : public rclcpp::Node {
     double worst = 0.0;
     size_t worst_cam = 0;
     int worst_level = 0;
+    if (samp_.size() < holds.size()) {
+      samp_.resize(holds.size());
+      grad_ema_.assign(holds.size(), 0.0);
+      static_run_.assign(holds.size(), 0);
+    }
     for (size_t i = 0; i < holds.size(); ++i) {
       const cv::Mat& im = holds[i]->image;
       int hist[256] = {0};
       size_t n = 0;
+      auto& samp = samp_[i];
+      samp.clear();
       for (int y = 0; y < im.rows; y += 8) {
         const uint8_t* row = im.ptr<uint8_t>(y);
-        for (int x = 0; x < im.cols; x += 8, ++n) ++hist[row[x]];
+        for (int x = 0; x < im.cols; x += 8, ++n) { ++hist[row[x]]; samp.push_back(row[x]); }
       }
+      check_view(i, samp, (im.cols + 7) / 8, (im.rows + 7) / 8);
       int mode = 0;
       for (int v = 1; v < 256; ++v) if (hist[v] > hist[mode]) mode = v;
       if (mode < sat_level_) continue;              // mode too low to be clipping
@@ -682,6 +702,59 @@ class CuvslamMulticamNode : public rclcpp::Node {
           cams_[worst_cam].c_str(), 100.0 * worst, worst_level);
     }
     sat_worst_ = std::max(sat_worst_, worst);
+  }
+
+  // THE VIEW STOPPED CARRYING INFORMATION - the fault the operator sees as "the images
+  // froze", and the one that PRECEDES every jump in section 5.
+  //
+  // Measured on run1 cam2: from t=44.7 s the spatial gradient fell to 1.02 against a healthy
+  // 9.10 - 11% - while saturation climbed past 90%. The odom teleport lands at t=47.4 s, on
+  // the trailing edge, once the scene returns and the tracker finds its landmarks describe
+  // nowhere it is. NOT ONE FRAME IN THAT LOG IS BYTE-IDENTICAL TO ITS PREDECESSOR, so a
+  // duplicate-frame test sees nothing: the pixels keep dithering, the CONTENT is gone.
+  //
+  // TRIGGER ON SPATIAL TEXTURE, NOT ON FRAME-TO-FRAME CHANGE. Temporal change was tried
+  // first and cries wolf: a STATIONARY RIG produces almost no change either, and the two are
+  // indistinguishable by magnitude - run1's fatal window sat at 16% of its temporal baseline
+  // and run6's harmless stationary lead-in at 14%, and run6 has no saturation and no jumps
+  // at all. Texture separates them, because it measures what a corner detector actually eats:
+  // run1 11% of healthy against run6 39%. A parked rig looking at a textured wall is fine;
+  // a moving rig looking at a white-out is not.
+  //
+  // check_exposure() catches only the BRIGHT version of this. A blank wall, a dark corridor
+  // or a covered lens strips the texture just as completely and clips nothing at all, so it
+  // passes that test in silence. This measures the thing itself.
+  //
+  // The baseline is held while the view is degraded, deliberately: an EMA that kept adapting
+  // would drift down to meet the collapse and switch the warning off partway through exactly
+  // the event it exists to report.
+  void check_view(size_t i, const std::vector<uint8_t>& samp, int sw, int sh) {
+    if (sw < 2 || sh < 2 || samp.size() < static_cast<size_t>(sw) * sh) return;
+    double gx = 0.0, gy = 0.0;
+    size_t nx = 0, ny = 0;
+    for (int y = 0; y < sh; ++y)
+      for (int x = 1; x < sw; ++x, ++nx)
+        gx += std::abs(static_cast<int>(samp[y * sw + x]) - static_cast<int>(samp[y * sw + x - 1]));
+    for (int y = 1; y < sh; ++y)
+      for (int x = 0; x < sw; ++x, ++ny)
+        gy += std::abs(static_cast<int>(samp[y * sw + x]) - static_cast<int>(samp[(y - 1) * sw + x]));
+    const double g = 0.5 * (gx / std::max<size_t>(1, nx) + gy / std::max<size_t>(1, ny));
+    double& ema = grad_ema_[i];
+    if (ema <= 0.0) ema = g;
+    if (g < texture_frac_ * ema) {
+      if (++static_run_[i] == static_run_warn_) {
+        ++static_events_;
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+            "%s has LOST TEXTURE: gradient %.2f grey levels, %.0f%% of its %.2f baseline, for "
+            "%d frames. There is nothing left to track — blown highlights, a blank wall, or "
+            "too little light. cuVSLAM will keep solving on it and return near-zero motion, "
+            "then JUMP when the scene comes back.",
+            cams_[i].c_str(), g, 100.0 * g / ema, ema, static_run_warn_);
+      }
+    } else {
+      static_run_[i] = 0;
+      ema = 0.99 * ema + 0.01 * g;          // baseline only tracks a scene worth tracking
+    }
   }
 
   // A pose cuVSLAM returns is not the same thing as a pose it MEASURED.
@@ -981,6 +1054,12 @@ class CuvslamMulticamNode : public rclcpp::Node {
   int64_t remap_us_ = 0;
   std::string vstereo_path_;
   size_t history_ = 8;
+  std::vector<std::vector<uint8_t>> samp_;
+  std::vector<double> grad_ema_;
+  std::vector<int> static_run_;
+  double texture_frac_ = 0.25;
+  int static_run_warn_ = 5;
+  int64_t static_events_ = 0;
   std::array<int64_t, 4> unmatched_{}, last_used_ns_{};
   int64_t last_unmatched_ = 0;
   int64_t max_skew_ns_ = 1000000, worst_skew_ns_ = 0, sets_ = 0, dropped_sets_ = 0;

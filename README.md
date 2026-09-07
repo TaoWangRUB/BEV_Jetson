@@ -160,8 +160,13 @@ which is not what any of these are. The node checks instead:
 | line | what it means |
 |---|---|
 | `camN is NN% saturated at/above 227` | the scene is brighter than the trigger pulse width can hold. Features die and the pose will freeze, then jump. **Shorten the pulse** (`j106-trigctl.py`), not the AE — AE is locked because under external trigger it cannot reach its actuator and hunts on gain |
+| `camN has LOST TEXTURE` | **the warning that comes FIRST.** There is nothing left to track — blown highlights, a blank wall, or too little light. On run1 all four cameras collapsed to ~11-20 % of their gradient baseline for 2.6-3.5 s from t=44.5 s, and the 50 m teleport landed at t=47.4 s, *on the recovery edge*. Not one frame in that log is byte-identical to its predecessor, so nothing that looks for duplicate frames sees it: the pixels keep dithering, the content is gone. Tune with `texture_collapse_fraction` / `texture_collapse_frames` |
 | `pose has not moved at all for N sets` | cuVSLAM is repeating its last estimate, not measuring |
 | `pose JUMPED x m in y ms` | tracking was lost and re-initialised elsewhere; everything after is in a new frame |
+
+**Read that table top to bottom — it is the causal order.** Texture collapse is the fault; the
+frozen pose and then the jump are what it does to the tracker two to three seconds later. The
+operator fix is the trigger pulse width (`j106-trigctl.py`) or the route, never the AE.
 
 A negative covariance diagonal is reported too — that is a rank-deficient solve, not a large
 uncertainty, and it is the only quality signal cuVSLAM actually exposes.
