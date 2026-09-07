@@ -203,10 +203,18 @@ echo "recording ${SECS}s at ${EFF_FPS} fps -> $DIRS"
 # clamp cured the hunt and the LEVEL was never revisited: it is most of why a sunlit room
 # clips at 4.986 ms. AE_GAIN/AE_DGAIN make it brackettable without editing the node
 # (retarget-vo-to-imx296-rig 5.11a). Defaults match the node, so nothing changes silently.
+# Force a decimal point: the node declares these as double_array, and `AE_GAIN=4` would
+# otherwise render as [4,4] and abort the node with
+#   InvalidParameterTypeException: parameter 'ae_gain' ... expected [double_array] got
+#   [integer_array]
+# which kills the capture AFTER it has announced the log directory, so it reads as a
+# capture failure rather than a typo.
+_ae_g=$(awk -v v="${AE_GAIN:-16.0}"  'BEGIN{printf "%.3f", v}')
+_ae_d=$(awk -v v="${AE_DGAIN:-4.0}" 'BEGIN{printf "%.3f", v}')
 ros2 run bev_camera argus_capture_node --ros-args \
   -p width:=1456 -p height:=1088 -p fps:=30 \
-  -p ae_gain:="[${AE_GAIN:-16.0},${AE_GAIN:-16.0}]" \
-  -p ae_dgain:="[${AE_DGAIN:-4.0},${AE_DGAIN:-4.0}]" \
+  -p ae_gain:="[${_ae_g},${_ae_g}]" \
+  -p ae_dgain:="[${_ae_d},${_ae_d}]" \
   -p publish_every_n:="$EVERY_N" -p exposure_us:="$EXPOSURE_US" \
   -p write_queue_depth:="${WRITE_QUEUE_DEPTH:-64}" \
   -p image_log_direct:="\"${IMAGE_LOG_DIRECT:-false}\"" \
