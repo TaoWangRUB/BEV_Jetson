@@ -483,6 +483,16 @@ class CuvslamMulticamNode : public rclcpp::Node {
         recv_[0], recv_[1], recv_[2], recv_[3], sets_, dropped_sets_,
         unmatched_[0] + unmatched_[1] + unmatched_[2] + unmatched_[3], published_,
         sets_ - dropped_sets_ - published_);
+    if (cb_n_)
+      RCLCPP_INFO(get_logger(), "  CALLBACK mean %ld us / max %ld us over %ld sets; %ld sets "
+                  "exceeded their own inter-frame budget so far",
+                  cb_us_sum_ / cb_n_, cb_us_max_, cb_n_, over_budget_);
+    if (slam_)
+      RCLCPP_INFO(get_logger(), "  STAGE max us: Track %ld | slam_track %ld | slam_path %ld "
+                  "| loop_edges %ld | landmarks %ld",
+                  track_us_max_win_, slam_us_, path_us_, edges_us_, lm_us_);
+    cb_us_sum_ = 0; cb_us_max_ = 0; cb_n_ = 0;
+    slam_us_ = 0; path_us_ = 0; edges_us_ = 0; lm_us_ = 0; track_us_max_win_ = 0;
     const int64_t unmatched = unmatched_[0] + unmatched_[1] + unmatched_[2] + unmatched_[3];
     if (unmatched > last_unmatched_) {
       RCLCPP_WARN(get_logger(), "  %ld frames (+%ld) aged out without ever forming a set "
@@ -509,6 +519,14 @@ class CuvslamMulticamNode : public rclcpp::Node {
   }
 
   void track_and_publish(const std::array<Img::ConstSharedPtr, 4>& msgs) {
+    // WHOLE-CALLBACK WALL TIME, not just Track(). The budget is what the source gives us per
+    // set - 50 ms live at 20 fps, or 50/rate on a replay - and everything in here spends it:
+    // the remap, Track(), the SLAM call, the exports, the publishes. Timing only Track()
+    // hid that, and left "the consumer cannot keep up" as an inference from missing frames
+    // rather than a measurement. When this exceeds the budget the subscriber stops draining
+    // and the middleware discards images UPSTREAM of this node, which is why they never show
+    // up in any counter here.
+    const auto t_cb = std::chrono::steady_clock::now();
     std::vector<cv_bridge::CvImageConstPtr> holds(4);  // keep source buffers alive
     for (uint32_t i = 0; i < 4; ++i) holds[i] = cv_bridge::toCvShare(msgs[i], "mono8");
 
@@ -556,6 +574,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
         std::chrono::steady_clock::now() - t_track).count();
     track_us_sum_ += track_us_;
     track_us_max_ = std::max(track_us_max_, track_us_);
+    track_us_max_win_ = std::max(track_us_max_win_, track_us_);
     ++track_n_;
     // Split the timing by KEYFRAME. Track() does not do the same work every frame: a
     // non-key frame is a PnP solve against the recent landmarks, while a keyframe also
@@ -578,7 +597,15 @@ class CuvslamMulticamNode : public rclcpp::Node {
     const bool continuous = check_pose_health(*est.world_from_rig, msgs[0]->header.stamp);
     publish(*est.world_from_rig, msgs[0]->header.stamp, continuous);
     if (slam_) {
+      // PER-STAGE TIMING. The whole-callback number said the consumer falls behind but not
+      // WHICH call does it, and Track() is only 37 ms of a 643 ms callback. Every stage below
+      // exports WHOLE state - the trajectory so far, the pose graph - so each is a candidate
+      // for a cost that grows with run length. Measured rather than reasoned about, because
+      // reasoning about it produced four wrong answers.
+      const auto t_s = std::chrono::steady_clock::now();
       slam_track(msgs[0]->header.stamp);
+      slam_us_ = std::max(slam_us_, std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - t_s).count());
       // The optimised trajectory has to go out on a CADENCE, not only when a loop closes.
       // It was published from publish_loop_closures() alone, so /cuvslam/slam_path always
       // ended at the LAST CLOSURE rather than at the end of the run - 41.6 s of a 54 s run
@@ -590,19 +617,46 @@ class CuvslamMulticamNode : public rclcpp::Node {
         // Path AND edges together, from the same graph state. Publishing the edges only on
         // closures left them describing a graph up to 18 s older than the path they were
         // drawn against, so they no longer lay on it.
+        const auto t_p = std::chrono::steady_clock::now();
         publish_slam_path(msgs[0]->header.stamp);
+        path_us_ = std::max(path_us_, std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - t_p).count());
         // ReadPoseGraph() plus the edge scan is far more expensive than GetAllSlamPoses(),
         // and doing both every 20 sets cost 124 frames (1031 against 1153 at the same rate).
         // Dropped frames put GAPS in the optimised path, and a gap drawn as a chord looks
         // exactly like a jump - which is what sent us looking for a bug that was not there.
         // The graph changes only on a closure, so a fifth of the rate loses nothing.
-        if (++edge_countdown_ >= 5) { edge_countdown_ = 0; publish_loop_edges(msgs[0]->header.stamp); }
+        if (++edge_countdown_ >= 5) {
+          edge_countdown_ = 0;
+          const auto t_e = std::chrono::steady_clock::now();
+          publish_loop_edges(msgs[0]->header.stamp);
+          edges_us_ = std::max(edges_us_, std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - t_e).count());
+        }
       }
     }
-    if (publish_landmarks_ && landmark_stride_ > 0 && (sets_ % landmark_stride_) == 0)
+    if (publish_landmarks_ && landmark_stride_ > 0 && (sets_ % landmark_stride_) == 0) {
+      const auto t_l = std::chrono::steady_clock::now();
       publish_landmarks(msgs[0]->header.stamp);
+      lm_us_ = std::max(lm_us_, std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - t_l).count());
+    }
     if (publish_observations_)
       publish_observations(msgs[0]->header.stamp);
+
+    const int64_t cb_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - t_cb).count();
+    cb_us_sum_ += cb_us;
+    cb_us_max_ = std::max(cb_us_max_, cb_us);
+    ++cb_n_;
+    // Inter-arrival of the sets we actually got, which IS the budget: it already reflects
+    // the replay rate, so there is nothing to configure and nothing to assume.
+    const int64_t now_ns = rclcpp::Time(msgs[0]->header.stamp).nanoseconds();
+    if (last_cb_stamp_ns_) {
+      const int64_t budget_us = (now_ns - last_cb_stamp_ns_) / 1000;
+      if (budget_us > 0 && cb_us > budget_us) ++over_budget_;
+    }
+    last_cb_stamp_ns_ = now_ns;
   }
 
   void publish_observations(const builtin_interfaces::msg::Time& stamp) {
@@ -1076,6 +1130,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
   int64_t static_events_ = 0;
   std::array<int64_t, 4> unmatched_{}, last_used_ns_{}, recv_{};
   int64_t published_ = 0;
+  int64_t cb_us_sum_ = 0, cb_us_max_ = 0, cb_n_ = 0, over_budget_ = 0, last_cb_stamp_ns_ = 0;
+  int64_t slam_us_ = 0, path_us_ = 0, edges_us_ = 0, lm_us_ = 0, track_us_max_win_ = 0;
   int64_t last_unmatched_ = 0;
   int64_t max_skew_ns_ = 1000000, worst_skew_ns_ = 0, sets_ = 0, dropped_sets_ = 0;
   // Pose-health state (check_pose_health). max_speed_mps_ is deliberately far above
