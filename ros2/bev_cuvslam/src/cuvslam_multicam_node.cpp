@@ -46,6 +46,7 @@
 #include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <cv_bridge/cv_bridge.h>
+#include <tf2/LinearMath/Transform.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <yaml-cpp/yaml.h>
 
@@ -142,6 +143,31 @@ class CuvslamMulticamNode : public rclcpp::Node {
     // per frame (see check_exposure).
     sat_level_ = declare_parameter<int>("saturation_level", 200);
     sat_warn_frac_ = declare_parameter<double>("saturation_warn_fraction", 0.5);
+    // Was a hardcoded member until now, which made the one gate that guards the TF
+    // CONTRACT the only unconfigurable number in the node. 5 m/s is a sprint.
+    max_speed_mps_ = declare_parameter<double>("max_speed_mps", 5.0);
+    // REP-105: odom -> base_link "is guaranteed to be continuous, in that it can only
+    // change in a continuous fashion", and map -> odom is where a discontinuous correction
+    // belongs. This node published the RAW cuVSLAM pose straight onto odom -> base and had
+    // no map frame at all, so a tracking re-init went out as real motion: measured on
+    // obs_slam_v6, a 50.22 m step in one 50 ms frame - 1004 m/s - on the odom edge.
+    //
+    // WITHHOLDING THE JUMPING FRAME DOES NOT FIX THIS, which is worth stating because it
+    // was tried first: dropping the one bad sample leaves the NEXT sample stepping across
+    // the same 50 m, just over a doubled dt (measured: max step 50.23 m, apparent speed
+    // halved to 502 m/s - the gap only flatters the number).
+    //
+    // So absorb it instead. On a discontinuity, fold the step into a correction C chosen so
+    // odom -> base carries straight on from where it was, and publish C^-1 as map -> odom:
+    //     odom_base = C * raw          continuous by construction
+    //     map_odom  = C^-1             carries every teleport, which is legal there
+    //     map_base  = raw              unchanged, still the tracker's global estimate
+    // /cuvslam/odometry keeps carrying the RAW pose either way - it is the measurement
+    // record section 5 is computed from, and re-basing it would change every figure there.
+    // That means odom -> base and /cuvslam/odometry deliberately disagree after the first
+    // jump. They are answering different questions.
+    tf_absorb_jumps_ = declare_parameter<bool>("tf_absorb_jumps", true);
+    map_frame_ = declare_parameter<std::string>("map_frame", "map");
     const int verbosity = declare_parameter<int>("cuvslam_verbosity", 0);
     if (verbosity > 0) {
       cuvslam::SetVerbosity(verbosity);
@@ -416,6 +442,11 @@ class CuvslamMulticamNode : public rclcpp::Node {
     }
     track_us_sum_ = 0; track_us_max_ = 0; track_n_ = 0;
     kf_us_sum_ = 0; kf_n_ = 0; nkf_us_sum_ = 0; nkf_n_ = 0;
+    if (jumps_)
+      RCLCPP_WARN(get_logger(), "  %ld discontinuities so far, %ld absorbed into map->odom — "
+                  "odom->base is continuous but map->odom has stepped, so the two frames are "
+                  "%.2f m apart and /cuvslam/odometry no longer matches TF",
+                  jumps_, corrections_, corr_.getOrigin().length());
     if (slam_)
       RCLCPP_INFO(get_logger(), "  SLAM: %ld loop closures, %ld pose-graph optimisations",
                   lc_events_, pgo_events_);
@@ -491,8 +522,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "tracking lost (no pose)");
       return;
     }
-    check_pose_health(*est.world_from_rig, msgs[0]->header.stamp);
-    publish(*est.world_from_rig, msgs[0]->header.stamp);
+    const bool continuous = check_pose_health(*est.world_from_rig, msgs[0]->header.stamp);
+    publish(*est.world_from_rig, msgs[0]->header.stamp, continuous);
     if (slam_) {
       slam_track(msgs[0]->header.stamp);
       // The optimised trajectory has to go out on a CADENCE, not only when a loop closes.
@@ -639,8 +670,12 @@ class CuvslamMulticamNode : public rclcpp::Node {
   // best estimate available, and silently withholding it would be the same class of bug.
   // It makes the failure audible on the live rig, where nobody is running the offline
   // continuity check in scripts/vo/analyze_motion.py.
-  void check_pose_health(const cuvslam::PoseWithCovariance& pwc,
+  // Returns FALSE when this pose is not continuous with the last one, so publish() can keep
+  // it out of TF. The return value says nothing about whether the pose is good - only
+  // whether the odom->base edge can carry it without breaking its own contract.
+  bool check_pose_health(const cuvslam::PoseWithCovariance& pwc,
                          const builtin_interfaces::msg::Time& stamp) {
+    bool continuous = true;
     const auto& t = pwc.pose.translation;
     const int64_t now_ns = rclcpp::Time(stamp).nanoseconds();
     // A negative variance on the diagonal is not a large uncertainty, it is a broken
@@ -672,15 +707,19 @@ class CuvslamMulticamNode : public rclcpp::Node {
         frozen_ = 0;
       }
       if (dt > 0.0 && d / dt > max_speed_mps_) {
+        continuous = false;
+        ++jumps_;
         RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000,
             "pose JUMPED %.2f m in %.0f ms (%.0f m/s, limit %.1f) — tracking was lost and "
-            "re-initialised somewhere else. Everything downstream of here is in a new frame.",
-            d, dt * 1e3, d / dt, max_speed_mps_);
+            "re-initialised somewhere else. Everything downstream of here is in a new frame.%s",
+            d, dt * 1e3, d / dt, max_speed_mps_,
+            tf_absorb_jumps_ ? " Absorbed into map->odom; odom->base stays continuous." : "");
       }
     }
     last_t_ = {t[0], t[1], t[2]};
     last_pose_ns_ = now_ns;
     have_last_pose_ = true;
+    return continuous;
   }
 
   // Hand the tracker's state to SLAM and publish the corrected pose beside the raw VO one.
@@ -843,7 +882,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
                 "(loop links)", g->nodes.size(), g->edges.size(), n_loop);
   }
 
-  void publish(const cuvslam::PoseWithCovariance& pwc, const builtin_interfaces::msg::Time& stamp) {
+  void publish(const cuvslam::PoseWithCovariance& pwc, const builtin_interfaces::msg::Time& stamp,
+               bool continuous) {
     const cuvslam::Pose& p = pwc.pose;
     nav_msgs::msg::Odometry od;
     od.header.stamp = stamp;
@@ -862,15 +902,44 @@ class CuvslamMulticamNode : public rclcpp::Node {
     for (int i = 0; i < 36; ++i) od.pose.covariance[i] = pwc.covariance_xyz_rpy[i];
     odom_pub_->publish(od);
 
-    geometry_msgs::msg::TransformStamped tf;
-    tf.header.stamp = stamp;
-    tf.header.frame_id = odom_frame_;
-    tf.child_frame_id = base_frame_;
-    tf.transform.translation.x = p.translation[0];
-    tf.transform.translation.y = p.translation[1];
-    tf.transform.translation.z = p.translation[2];
-    tf.transform.rotation = od.pose.pose.orientation;
-    tf_bc_->sendTransform(tf);
+    // TF, on the REP-105 split described at tf_absorb_jumps_.
+    const tf2::Transform raw(
+        tf2::Quaternion(p.rotation[0], p.rotation[1], p.rotation[2], p.rotation[3]),
+        tf2::Vector3(p.translation[0], p.translation[1], p.translation[2]));
+    if (!continuous && tf_absorb_jumps_ && have_odom_pose_) {
+      // C such that C * raw == the pose odom->base already had: the step becomes zero on
+      // this edge and lands on map->odom instead.
+      corr_ = odom_base_prev_ * raw.inverse();
+      ++corrections_;
+    }
+    const tf2::Transform odom_base = tf_absorb_jumps_ ? corr_ * raw : raw;
+    odom_base_prev_ = odom_base;
+    have_odom_pose_ = true;
+
+    std::vector<geometry_msgs::msg::TransformStamped> out;
+    out.push_back(make_tf(odom_frame_, base_frame_, odom_base, stamp));
+    if (tf_absorb_jumps_)
+      out.push_back(make_tf(map_frame_, odom_frame_, corr_.inverse(), stamp));
+    tf_bc_->sendTransform(out);
+  }
+
+  static geometry_msgs::msg::TransformStamped make_tf(
+      const std::string& parent, const std::string& child, const tf2::Transform& T,
+      const builtin_interfaces::msg::Time& stamp) {
+    geometry_msgs::msg::TransformStamped m;
+    m.header.stamp = stamp;
+    m.header.frame_id = parent;
+    m.child_frame_id = child;
+    const tf2::Vector3& t = T.getOrigin();
+    m.transform.translation.x = t.x();
+    m.transform.translation.y = t.y();
+    m.transform.translation.z = t.z();
+    const tf2::Quaternion q = T.getRotation();
+    m.transform.rotation.x = q.x();
+    m.transform.rotation.y = q.y();
+    m.transform.rotation.z = q.z();
+    m.transform.rotation.w = q.w();
+    return m;
   }
 
   std::string calib_dir_, rig_path_, odom_frame_, base_frame_;
@@ -891,6 +960,14 @@ class CuvslamMulticamNode : public rclcpp::Node {
   int64_t last_pose_ns_ = 0, frozen_ = 0, frozen_warn_sets_ = 3;
   bool have_last_pose_ = false;
   double max_speed_mps_ = 5.0;
+  bool tf_absorb_jumps_ = true;
+  int64_t jumps_ = 0, corrections_ = 0;
+  std::string map_frame_;
+  // odom->base correction. Identity until the first discontinuity, so a clean run publishes
+  // exactly what it always did and map->odom is identity throughout.
+  tf2::Transform corr_ = tf2::Transform::getIdentity();
+  tf2::Transform odom_base_prev_ = tf2::Transform::getIdentity();
+  bool have_odom_pose_ = false;
   std::unique_ptr<cuvslam::Slam> slam_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr slam_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr lc_pub_;

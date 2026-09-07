@@ -164,7 +164,17 @@ which is not what any of these are. The node checks instead:
 | `pose JUMPED x m in y ms` | tracking was lost and re-initialised elsewhere; everything after is in a new frame |
 
 A negative covariance diagonal is reported too — that is a rank-deficient solve, not a large
-uncertainty, and it is the only quality signal cuVSLAM actually exposes. Tune the gate with
+uncertainty, and it is the only quality signal cuVSLAM actually exposes.
+
+**The TF tree is `map -> odom -> cam1_optical_frame`, and the two edges mean different things.**
+REP-105 requires `odom -> base` to be continuous, so a tracking re-init may not go out on it: the
+node folds each discontinuity into a correction and publishes it on `map -> odom`, where a jump is
+legal. Measured on `run1_motion` (11 discontinuities): `odom -> cam1_optical_frame` max step
+**0.21 m / 4.2 m/s**, `map -> odom` max step **50.37 m**, and `/cuvslam/odometry` keeps the raw
+50.53 m teleport because it is the measurement record §5 is computed from. **So `/cuvslam/odometry`
+and the `odom` TF deliberately disagree after the first jump** — the topic is the tracker's global
+estimate, the odom edge is the continuous local frame. `tf_absorb_jumps:=false` restores the old
+single-edge behaviour; `max_speed_mps` (default 5) is the threshold. Tune the gate with
 `saturation_level` / `saturation_warn_fraction`; `cuvslam_verbosity` and `cuvslam_debug_dump_dir`
 turn on the library's own logging and its edex dump of every `Track()` call.
 
@@ -349,9 +359,14 @@ A few percent of sets can show 50 ms skew during playback (bag topics delivered 
 that is a **replay** artifact, not missing frames in the raw log. Prefer `check_log_sets` for
 logging health.
 
-The cause is **transport, not compute, and slowing the replay does not fix it.** Measured on
+**This was fixed, and the table below is the pre-fix record.** `replay_host.sh` now defaults to
+`IMAGE_QOS=reliable` at depth 100; measured on `run1_motion` at 0.5x on 2026-09-07, that gives
+**0 skew-gate drops** and 1135-1146 poses from 1155 sets (98-99 %), against the 81-84 % below.
+Set `IMAGE_QOS=sensor_data` to reproduce the old behaviour.
+
+The cause was **transport, not compute, and slowing the replay did not fix it.** Measured on
 `run1_motion`, whose own header stamps are max 1 µs skew with zero sets over 1 ms — so the
-conversion is not at fault:
+conversion was not at fault:
 
 | replay rate | sets reaching the matcher | skew-gate drops | poses |
 |---|---|---|---|
@@ -359,12 +374,12 @@ conversion is not at fault:
 | 0.5× | 937 / 1155 (81 %) | 48 | 907 |
 | 1.0× | 967 / 1155 (84 %) | 36 | 961 |
 
-About a sixth of the sets never arrive at **any** rate. The node is nowhere near saturated on the
+About a sixth of the sets never arrived at **any** rate. The node is nowhere near saturated on the
 host — `Track()` is 6.5–10 ms and the remap ~5 ms, so ~15 ms/set, about 65 Hz — and at 1.0× it
 sustained 16.7 Hz, i.e. every set that reached it. The loss is `SensorDataQoS()` being
 **best-effort** over four 1.5 MB image streams: DDS discards fragments silently, the orphaned
 frames pair across trigger edges, and the set fails the 1 ms gate at exactly one frame period
-(50 ms at 20 Hz). The fix is reliable QoS and larger DDS buffers, not a slower replay.
+(50 ms at 20 Hz). The fix was reliable QoS and larger DDS buffers, not a slower replay — now the default.
 
 TX2-side bag replay still works for short clips (`docker compose run --rm shell` + modular launch +
 `ros2 bag play -r 0.5`), but a full ~7 GB motion bag has been OOM-killed on the board.
