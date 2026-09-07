@@ -357,7 +357,21 @@ class CuvslamMulticamNode : public rclcpp::Node {
       std::lock_guard<std::mutex> lk(mtx_);
       auto& h = hist_[idx];
       h.push_back(m);
-      while (h.size() > history_) h.pop_front();
+      // AGEING OUT IS THE ONLY WAY A FRAME LEAVES WITHOUT BEING LOOKED AT, and it was
+      // counted nowhere - the stitch node has tracked this since it was written, so a
+      // starving camera showed up there and was silent here.
+      //
+      // Counting evictions alone would fire on every healthy run: cam2..4 frames are never
+      // popped when matched, only read, so in steady state each of those deques sits at the
+      // cap and evicts one ALREADY-USED frame per edge. So a frame counts as lost only if it
+      // ages out NEWER than the last frame this camera contributed to a set - which is
+      // exactly the case where the camera ran more than match_history frames ahead of cam1
+      // and the intervening edges were never assembled.
+      while (h.size() > history_) {
+        if (rclcpp::Time(h.front()->header.stamp).nanoseconds() > last_used_ns_[idx])
+          ++unmatched_[idx];
+        h.pop_front();
+      }
 
       // ANCHOR ON CAM1'S OLDEST BUFFERED FRAME, NOT ON CAM1'S ARRIVAL.
       //
@@ -387,6 +401,10 @@ class CuvslamMulticamNode : public rclcpp::Node {
 
       msgs[0] = hist_[0].front();
       hist_[0].pop_front();
+      // Marked used before the skew gate, on purpose: a set rejected for skew is already
+      // reported as dropped_sets_, and counting its frames as unmatched too would report one
+      // fault twice. This counter is for STARVATION, that one is for PAIRING.
+      last_used_ns_[0] = t0;
       int64_t lo = t0, hi = t0;
       for (size_t i = 1; i < 4; ++i) {
         int64_t best_d = INT64_MAX;
@@ -395,6 +413,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
           if (std::llabs(t - t0) < best_d) { best_d = std::llabs(t - t0); msgs[i] = cand; }
         }
         const int64_t t = rclcpp::Time(msgs[i]->header.stamp).nanoseconds();
+        last_used_ns_[i] = t;
         lo = std::min(lo, t);
         hi = std::max(hi, t);
       }
@@ -442,6 +461,15 @@ class CuvslamMulticamNode : public rclcpp::Node {
     }
     track_us_sum_ = 0; track_us_max_ = 0; track_n_ = 0;
     kf_us_sum_ = 0; kf_n_ = 0; nkf_us_sum_ = 0; nkf_n_ = 0;
+    const int64_t unmatched = unmatched_[0] + unmatched_[1] + unmatched_[2] + unmatched_[3];
+    if (unmatched > last_unmatched_) {
+      RCLCPP_WARN(get_logger(), "  %ld frames (+%ld) aged out without ever forming a set "
+                  "[%ld %ld %ld %ld] — a camera is running more than %zu frames ahead of the "
+                  "others, so whole edges were never assembled. Is the trigger running?",
+                  unmatched, unmatched - last_unmatched_, unmatched_[0], unmatched_[1],
+                  unmatched_[2], unmatched_[3], history_);
+      last_unmatched_ = unmatched;
+    }
     if (jumps_)
       RCLCPP_WARN(get_logger(), "  %ld discontinuities so far, %ld absorbed into map->odom — "
                   "odom->base is continuous but map->odom has stepped, so the two frames are "
@@ -953,6 +981,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
   int64_t remap_us_ = 0;
   std::string vstereo_path_;
   size_t history_ = 8;
+  std::array<int64_t, 4> unmatched_{}, last_used_ns_{};
+  int64_t last_unmatched_ = 0;
   int64_t max_skew_ns_ = 1000000, worst_skew_ns_ = 0, sets_ = 0, dropped_sets_ = 0;
   // Pose-health state (check_pose_health). max_speed_mps_ is deliberately far above
   // anything the rig does — 5 m/s is a sprint — so it fires on failures, not on fast motion.
