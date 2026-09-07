@@ -7,8 +7,8 @@ the replay, and intersects its calibrated rays to recover a world-space point.
 
 Example (one click per endpoint):
   python3 scripts/vo/measure_replay_anchor.py datasets/replay_out/obs_20260903_140714 \
-    --click 621.319583,1,261.491,138.396 \
-    --click 621.319583,1,400.000,138.396
+        --upright --click 625.984279,0,357.760,218.641 \
+        --click 625.984279,0,529.008,198.469
 """
 import argparse
 import pathlib
@@ -109,6 +109,8 @@ def main():
                         help="Rerun hover values: sensor seconds, virtual camera, u, v")
     parser.add_argument("--vstereo", default="config/rig/virtual_stereo_imx296.yaml")
     parser.add_argument("--rig", default="config/rig/rig_extrinsics_imx296.yaml")
+    parser.add_argument("--upright", action="store_true",
+                        help="click coordinates are from Rerun's default 180-degree upright view")
     parser.add_argument("--max-time-error", type=float, default=0.03)
     parser.add_argument("--max-pixel-error", type=float, default=8.0)
     parser.add_argument("--min-views", type=int, default=4)
@@ -120,13 +122,17 @@ def main():
     virtual = yaml.safe_load(open(arguments.vstereo))["virtual_pinhole"]
     rig = yaml.safe_load(open(arguments.rig))["rig_in_cam1"]
     focal = float(virtual["focal_px"])
-    cx, cy = int(virtual["width"]) / 2.0, int(virtual["height"]) / 2.0
+    width, height = int(virtual["width"]), int(virtual["height"])
+    cx, cy = width / 2.0, height / 2.0
     signs = {-1: np.radians(-45), 1: np.radians(45)}
     transforms = [(np.asarray(rig[c])[:3, :3] @ rot_y(signs[sign]),
                    np.asarray(rig[c])[:3, 3]) for c, sign in VCAMS]
 
     points = []
     for click in arguments.click:
+        if arguments.upright:
+            stamp, camera, u, v = click
+            click = stamp, camera, width - 1 - u, height - 1 - v
         stamp, selected, pixel_error = nearest_observation(
             observations, click, arguments.max_time_error, arguments.max_pixel_error)
         landmark_id = int(selected[3])
