@@ -189,8 +189,17 @@ services:
       # converge to four different gains - which is per-camera exposure, and that steps the
       # panorama seams and mismatches the virtual-stereo pairs. See 5.12a.
       AE_LOCK: ${AE_LOCK:-auto}
+      # PROVISIONAL 16x total (16 analog x 1 digital), down from 64x (16 x 4), chosen
+      # 2026-09-07 from a gain sweep - the knee where clipping takes off. At 32x cam3 clipped
+      # 49.9%; at 16x the bright-facing pair sits at ~5%. Digital gain is pinned at 1.0: it
+      # amplifies noise rather than signal, so move analog first.
+      #
+      # MEASURED ON ONE STATIC POSITION, NOT THE ROUTE, and that position had cam2/cam4
+      # obstructed by a nearby object - at 16x cam4 read 85% dead while at 32x it read 1%.
+      # Re-take this somewhere all four cameras see the room, in the brightest and dimmest
+      # parts of the route (scripts/calib/exposure_bracket.sh), before trusting it (5.11a).
       AE_GAIN: ${AE_GAIN:-16.0}
-      AE_DGAIN: ${AE_DGAIN:-4.0}
+      AE_DGAIN: ${AE_DGAIN:-1.0}
       WRITE_QUEUE_DEPTH: ${WRITE_QUEUE_DEPTH:-64}
       DRAIN_MAX: ${DRAIN_MAX:-120}
       IMAGE_LOG_DIRECT: ${IMAGE_LOG_DIRECT:-false}

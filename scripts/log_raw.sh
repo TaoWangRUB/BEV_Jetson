@@ -210,7 +210,7 @@ echo "recording ${SECS}s at ${EFF_FPS} fps -> $DIRS"
 # which kills the capture AFTER it has announced the log directory, so it reads as a
 # capture failure rather than a typo.
 _ae_g=$(awk -v v="${AE_GAIN:-16.0}"  'BEGIN{printf "%.3f", v}')
-_ae_d=$(awk -v v="${AE_DGAIN:-4.0}" 'BEGIN{printf "%.3f", v}')
+_ae_d=$(awk -v v="${AE_DGAIN:-1.0}" 'BEGIN{printf "%.3f", v}')
 ros2 run bev_camera argus_capture_node --ros-args \
   -p width:=1456 -p height:=1088 -p fps:=30 \
   -p ae_lock:="\"${AE_LOCK:-auto}\"" \
