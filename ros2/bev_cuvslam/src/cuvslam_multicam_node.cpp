@@ -137,7 +137,10 @@ class CuvslamMulticamNode : public rclcpp::Node {
     debug_dump_dir_ = declare_parameter<std::string>("cuvslam_debug_dump_dir", "");
     // Saturation gate. See check_exposure(): cuVSLAM has no image-quality input at all, so
     // a blown frame reaches the solver looking like a valid one.
-    sat_level_ = declare_parameter<int>("saturation_level", 227);
+    // Not the white level itself - the LOWEST value a modal pile-up must reach before it
+    // counts as clipping rather than as a legitimately dark scene. The white level is found
+    // per frame (see check_exposure).
+    sat_level_ = declare_parameter<int>("saturation_level", 200);
     sat_warn_frac_ = declare_parameter<double>("saturation_warn_fraction", 0.5);
     const int verbosity = declare_parameter<int>("cuvslam_verbosity", 0);
     if (verbosity > 0) {
@@ -586,26 +589,38 @@ class CuvslamMulticamNode : public rclcpp::Node {
   //
   // Cost: one sample every 8th pixel each way, so 1/64 of the frame, ~25k reads per camera.
   void check_exposure(const std::vector<cv_bridge::CvImageConstPtr>& holds) {
+    // FIND the white level, do not assume it. It moves with the gain and the ISP state: at
+    // 64x gain the clipped pile-up sat at 227, at 32x it sits at 221. A fixed threshold of
+    // 227 therefore saw 1.7% of pixels "saturated" on a frame that was 58% clipped, and this
+    // check stayed silent through the whole of run4. That is the same mistake as testing for
+    // ">= 250" on a pipeline whose white level is 227 - twice now, so it is measured here.
+    //
+    // The clipped value is the MODE, and it is only clipping if the mode sits high: a dark
+    // scene legitimately has a low mode and is not clipped.
     double worst = 0.0;
     size_t worst_cam = 0;
+    int worst_level = 0;
     for (size_t i = 0; i < holds.size(); ++i) {
       const cv::Mat& im = holds[i]->image;
-      size_t hot = 0, n = 0;
+      int hist[256] = {0};
+      size_t n = 0;
       for (int y = 0; y < im.rows; y += 8) {
         const uint8_t* row = im.ptr<uint8_t>(y);
-        for (int x = 0; x < im.cols; x += 8, ++n)
-          if (row[x] >= sat_level_) ++hot;
+        for (int x = 0; x < im.cols; x += 8, ++n) ++hist[row[x]];
       }
-      const double frac = n ? static_cast<double>(hot) / n : 0.0;
-      if (frac > worst) { worst = frac; worst_cam = i; }
+      int mode = 0;
+      for (int v = 1; v < 256; ++v) if (hist[v] > hist[mode]) mode = v;
+      if (mode < sat_level_) continue;              // mode too low to be clipping
+      const double frac = n ? static_cast<double>(hist[mode]) / n : 0.0;
+      if (frac > worst) { worst = frac; worst_cam = i; worst_level = mode; }
     }
     if (worst >= sat_warn_frac_) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-          "%s is %.0f%% saturated at/above %d — the scene is brighter than the trigger pulse "
+          "%s is %.0f%% saturated at %d — the scene is brighter than the trigger pulse "
           "width can hold. Features die here and the pose will freeze, then jump. Shorten the "
           "pulse (j106-trigctl.py), not the AE: AE is locked under external trigger and "
           "cannot fix this.",
-          cams_[worst_cam].c_str(), 100.0 * worst, sat_level_);
+          cams_[worst_cam].c_str(), 100.0 * worst, worst_level);
     }
     sat_worst_ = std::max(sat_worst_, worst);
   }
