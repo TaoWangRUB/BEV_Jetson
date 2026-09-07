@@ -1449,7 +1449,30 @@ physically moved - the remaining items are not doable from here.
          rig-wide: one gain for all four cameras.
       4. **Pulse-width AE** (5.11c) only if gain alone cannot span the route.
 
-      - [ ] 5.12a **UNTRIED AND CHEAP: tell Argus AE the exposure is fixed, then unlock it.**
+      - [x] 5.12a **TRIED, MEASURED, AND IT DOES NOT WORK — for two independent reasons.**
+            Tested 2026-09-07 on the rig, static scene, exposure range pinned to the measured
+            5000 us pulse and `ae_lock:=false`:
+
+            | | AE locked | AE unlocked, range pinned |
+            |---|---|---|
+            | left/right brightness ratio | **1.92** (the real scene) | **0.99** (equalised) |
+            | luma p2p over the run | 0.1-0.2 | **49.6-85.6** |
+
+            1. **It is four AE loops, not one.** The operator asked whether unlocking applies to
+               all cameras and whether they still share settings — `sessions_[i]` and
+               `requests_[i]` are per camera, so each AE meters only its own view. All four
+               equalised themselves to ~100 mean, collapsing the scene's genuine 2x left/right
+               difference to nothing. That IS per-camera exposure: it steps the panorama seams,
+               mismatches the virtual-stereo pairs, and re-shuffles on every turn because the
+               bias follows the scene and rotates with the rig.
+            2. **It still hunts.** p2p 49.6-85.6 against 0.8 locked. Pinning the range helped
+               (150.5 free-running before it) but nowhere near enough to use.
+
+            **Keep the `setExposureTimeRange` pin regardless** — it states a fact about the rig
+            and any metering scheme needs it. The node now ERRORs on `ae_lock:=false` under
+            trigger with both numbers, so this is not re-attempted from first principles.
+
+      - [ ] 5.12a-old **(superseded, kept for the reasoning)** tell Argus AE the exposure is fixed, then unlock it.
             The node calls `setFrameDurationRange` but **never `setExposureTimeRange`**, so AE
             is free to keep trying to move an actuator the driver ignores under external
             trigger. That is the likely mechanism behind the 3.5 Hz limit cycle blamed on AE in

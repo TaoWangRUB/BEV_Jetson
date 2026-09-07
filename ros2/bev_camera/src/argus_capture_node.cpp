@@ -421,10 +421,19 @@ class ArgusCaptureNode : public rclcpp::Node {
           RCLCPP_WARN(get_logger(), "cam idx %zu: no IAutoControlSettings — AE left free", i);
         }
       } else if (trigger_active_) {
-        RCLCPP_WARN_ONCE(get_logger(), "AE UNLOCKED under external trigger, with the exposure "
-                         "range pinned to %d us. AE can now only vary GAIN. Watch the luma "
-                         "spread: 0.8 p2p is the locked baseline, 150.5 was free-running "
-                         "before the range was pinned (5.12a).", exposure_us_);
+        RCLCPP_ERROR_ONCE(get_logger(),
+            "AE UNLOCKED under external trigger. MEASURED 2026-09-07 AND IT DOES NOT WORK, "
+            "for two independent reasons (5.12a):\n"
+            "  1. There is one Argus session and one AE instance PER CAMERA, so this is FOUR "
+            "independent loops. Each metered its own view and equalised it to ~100 mean, "
+            "collapsing the scene's real left/right brightness ratio from 1.92 to 0.99. That "
+            "is per-camera exposure: it steps the panorama seams and mismatches the "
+            "virtual-stereo pairs, and it re-shuffles on every turn because the bias follows "
+            "the scene.\n"
+            "  2. It still hunts. Luma p2p 49.6-85.6 over the run against 0.8 locked - pinning "
+            "the exposure range helped (150.5 before) but nowhere near enough.\n"
+            "Use a rig-wide controller instead (5.12b): ONE gain from a whole-rig metric, "
+            "applied to all four requests.");
       }
       isession->repeat(requests_[i].get());
     }
