@@ -100,6 +100,7 @@ See [docs/extrinsic_calibration.md](../docs/extrinsic_calibration.md) for the fu
 | [vo/bench_remap.cpp](vo/bench_remap.cpp) | TX2 | measure the virtual-pinhole remap against virtual and source resolution, standalone (no cameras, no ROS). Answers "should we lower the resolution" with a number: both axes are bad trades (task 4.5b) |
 | [vo/verify_rig_build.sh](vo/verify_rig_build.sh) | dev | re-run cuVSLAM's frustum test on the poses the C++ actually emits — run it **before** a board session, or a bad rig file reads as a wiring bug |
 | [vo/check_rig_poses.py](vo/check_rig_poses.py) | dev | sanity-check the rig poses fed to cuVSLAM |
+| [vo/audit_frames.py](vo/audit_frames.py) | dev | **did every frame get tracked?** Closes a ledger between a camera bag and a replay's `/cuvslam/odometry`: an upper bound computed from the bag alone (nearest partner per cam1 frame vs the skew gate), against the poses actually published. Reports duplicates and splits losses into startup / shutdown / **mid-run** - only mid-run is a real loss |
 | `docker compose run --rm logonly` | TX2 | **raw 4-camera image log, no ROS/DDS in the path.** Prefer [log_rig.sh](log_rig.sh) for cameras+IMU+range. See README §3.2 for rates |
 | [docker_publish.sh](docker_publish.sh) | TX2 | push `cuvslam-foxy:tx2` to Docker Hub as `wtlove876/cuvslam-foxy:tx2` plus a dated tag |
 | [port/check_log_sets.py](port/check_log_sets.py) | dev | set completeness + IMU/range health for a raw log — see README §3.3 |
