@@ -183,6 +183,12 @@ services:
       # node's own 16x/4x; lower them to bracket a route that spans rooms of different
       # brightness (5.11a). One gain for the whole rig on purpose - per-camera gain steps
       # the panorama seams and mismatches the virtual-stereo pairs.
+      # "auto" locks AE whenever the external trigger is active; "0"/"false" leaves it
+      # running. Note what unlocking actually does: there is one Argus session and one AE
+      # instance PER CAMERA, so four independent loops each meter only their own view and
+      # converge to four different gains - which is per-camera exposure, and that steps the
+      # panorama seams and mismatches the virtual-stereo pairs. See 5.12a.
+      AE_LOCK: ${AE_LOCK:-auto}
       AE_GAIN: ${AE_GAIN:-16.0}
       AE_DGAIN: ${AE_DGAIN:-4.0}
       WRITE_QUEUE_DEPTH: ${WRITE_QUEUE_DEPTH:-64}
