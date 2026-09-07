@@ -1484,7 +1484,14 @@ physically moved - the remaining items are not doable from here.
             p2p 150.5 free vs 0.8 locked), so the verdict is unambiguous either way. **Do this
             before building a custom controller** — it may make 5.12b unnecessary.
 
-      - [ ] 5.12b **Custom closed-loop gain, if 5.12a does not work.** `setGainRange()` then
+      - [~] 5.12b **NOT WANTED. Operator's call, 2026-09-07: keep it simple — one fixed gain,
+            chosen by the bracket, no controller.** A closed loop would be more capable and is
+            technically available (`setGainRange()` + re-`repeat()`, with `check_exposure()`
+            already supplying a whole-rig metric), but it buys automatic adaptation at the cost
+            of a control loop that can misbehave mid-run and of photometric steps that feature
+            tracking has to absorb. If a single gain turns out not to cover the route, the
+            answer is the trigger pulse width (5.11b), not a controller. Kept here only so the
+            option is not re-derived. Original note:  **Custom closed-loop gain, if 5.12a does not work.** `setGainRange()` then
             re-`repeat()` the request changes gain at runtime, and `check_exposure()` already
             computes the saturated fraction every frame, so the measurement exists. Owning the
             loop is the point: rate limiting and hysteresis are what prevent the hunt.
