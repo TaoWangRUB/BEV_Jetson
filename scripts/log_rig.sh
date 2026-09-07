@@ -33,6 +33,30 @@ fail() { echo "REFUSING: $*" >&2; exit 1; }
 # keeps pulsing happily; with the wrong polarity every image is 3-4x darker. Both were wrong
 # after the 2026-09-03 battery repower, and a run that starts wrong is expensive to diagnose
 # afterwards - the images look plausible either way.
+# STOP THE MCU STREAMING, not just the container reading it.
+#
+# `range auto <div>` is a setting in the FIRMWARE: it survives the container, the script and
+# a reboot of the TX2, because the MCU is separately powered. Stopping the rangelog
+# container only removes the reader - the MCU carries on emitting "!range_cm=N pulses=M" at
+# the trigger rate forever. Both serial ports then stay flooded, and `j106-trigctl.py` can
+# no longer get a clean reply: it TIMES OUT. Since log_rig.sh gates on the generator's
+# status, that means the next run REFUSES TO START, and the cause looks like a dead
+# generator rather than a leftover stream. This has bitten repeatedly.
+#
+# Written raw rather than through trigctl on purpose: trigctl cannot be used to fix this,
+# because it is itself the thing the flood breaks. A direct write gets through regardless.
+range_stream_off() {
+  stty -F "$TRIG_PORT" 115200 raw -echo 2>/dev/null || return 0
+  printf 'range auto 0\r\n' > "$TRIG_PORT" 2>/dev/null || true
+  sleep 0.3
+}
+
+# Clear a stream left behind by a PREVIOUS run before probing the generator. Without this
+# the recovery only works if the last run exited cleanly - which is exactly the case where
+# it was not needed. A crashed or killed run is the one that strands the stream, and then
+# every subsequent run refuses on a generator that is actually fine.
+range_stream_off
+
 trig=$(cat /sys/module/imx296/parameters/trigger_mode 2>/dev/null || echo missing)
 [ "$trig" = "1" ] || fail "trigger_mode=$trig, expected 1.
   echo 1 | sudo tee /sys/module/imx296/parameters/trigger_mode"
@@ -77,7 +101,8 @@ mkdir -p "${HOST_LOGS}/${DIR}"
 cleanup() { docker stop -t 20 "$RANGE_NAME" >/dev/null 2>&1 || true
             docker rm -f "$RANGE_NAME"      >/dev/null 2>&1 || true
             docker stop -t 20 "$IMU_NAME"   >/dev/null 2>&1 || true
-            docker rm -f "$IMU_NAME"        >/dev/null 2>&1 || true; }
+            docker rm -f "$IMU_NAME"        >/dev/null 2>&1 || true
+            range_stream_off; }
 trap cleanup EXIT
 
 # THE RANGEFINDER IS OPTIONAL AND MUST NEVER FAIL THE RUN, so this does not gate on it the

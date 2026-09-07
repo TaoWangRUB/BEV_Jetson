@@ -189,16 +189,20 @@ services:
       # converge to four different gains - which is per-camera exposure, and that steps the
       # panorama seams and mismatches the virtual-stereo pairs. See 5.12a.
       AE_LOCK: ${AE_LOCK:-auto}
-      # PROVISIONAL 16x total (16 analog x 1 digital), down from 64x (16 x 4), chosen
-      # 2026-09-07 from a gain sweep - the knee where clipping takes off. At 32x cam3 clipped
-      # 49.9%; at 16x the bright-facing pair sits at ~5%. Digital gain is pinned at 1.0: it
-      # amplifies noise rather than signal, so move analog first.
+      # 32x total (32 analog x 1 digital). Digital gain stays at 1.0 - it amplifies noise
+      # rather than signal, so analog moves first.
       #
-      # MEASURED ON ONE STATIC POSITION, NOT THE ROUTE, and that position had cam2/cam4
-      # obstructed by a nearby object - at 16x cam4 read 85% dead while at 32x it read 1%.
-      # Re-take this somewhere all four cameras see the room, in the brightest and dimmest
-      # parts of the route (scripts/calib/exposure_bracket.sh), before trusting it (5.11a).
-      AE_GAIN: ${AE_GAIN:-16.0}
+      # Arrived at from two real recordings of the same route, not from a static sweep:
+      #   run1 @ 64x:  mean 122-142, clip 3-8%,   local std 4.5-5.5, dead 11-13%
+      #               ...but CLIPPED CATASTROPHICALLY in the sunlit room (5.0g)
+      #   run2 @ 16x:  mean  72-87,  clip 0-4.5%, local std 1.5-2.7, dead 47-68%
+      #               ...no clipping anywhere, but too dark - the texture went with it
+      # 16x solved the clipping and traded it for a texture problem, so 32x splits them.
+      # The ISP is gamma-encoded (16x -> 32x raised the mean by 1.55x, not 2x), so expect
+      # roughly mean 110-135, back in run1's working range at half its clipping.
+      #
+      # STILL PROVISIONAL until a run over the whole route confirms it holds at both ends.
+      AE_GAIN: ${AE_GAIN:-32.0}
       AE_DGAIN: ${AE_DGAIN:-1.0}
       WRITE_QUEUE_DEPTH: ${WRITE_QUEUE_DEPTH:-64}
       DRAIN_MAX: ${DRAIN_MAX:-120}
