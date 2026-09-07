@@ -244,16 +244,38 @@
   az -89.1, `cam4 +45` at -89.5) landed in the LEFT half; after it they land at columns 957 and
   958, and the left-pointing pair at 320 and 321.
 
-  **The deployed node was right and the prototype had diverged.**
-  `bev_panorama_node.cpp:274` builds `dr = {sin(az)cos(el), cos(az)cos(el), sin(el)}` with
-  forward on **+Y**, so its increasing azimuth sweeps toward +X — the opposite handedness to
-  this frame's +y-is-left, and the correct one. Fixed to `az = pi - 2*pi*(i+0.5)/out_w`.
-  `make_panorama.py` imports `pano_maps` so it inherits the fix.
+  Fixed to `az = pi - 2*pi*(i+0.5)/out_w`. `make_panorama.py` imports `pano_maps` so it
+  inherits the fix. **The Rerun panorama is pure Python — the C++ node plays no part in it.**
 
-  - [ ] 1.8a **Confirm the node's convention on the board, don't infer it.** The comparison above
-        reads the node's frame as x-right/y-forward from one comment (`center=0=forward(+Y)`);
-        that has not been checked against a real `/bev/panorama`. Point the rig at something
-        unambiguous, look at the published image, and settle it the way this was settled.
+- [ ] 1.9 **`bev_panorama_node.cpp` looks 90 deg out, and this is DEPLOYED code.** Recorded after
+  claiming in 64481f7 that "the deployed node was right and the prototype had diverged". Only
+  half of that is true: the node's azimuth SWEEP is right, its FRAME is not.
+
+  The node builds `dr = {sin(az)cos(el), cos(az)cos(el), sin(el)}` under the comment
+  `ray in rig frame: X=right, Y=forward, Z=up`, then rotates straight into the camera with the
+  rotation out of `rig_in_cam1`. But `rig_extrinsics_imx296.yaml` defines that block as poses in
+  **cam1's RAW OPTICAL frame — x right, y DOWN, z along the axis** — with cam1 identity by
+  construction. So for cam1 the node's centre ray `(0,1,0)` is cam1's **+y, straight DOWN**, and
+  `roll180` only turns it into UP. The panorama's horizon band is centred on the vertical axis.
+
+  | | centre ray (az=0, el=0) in cam1 optical | |
+  |---|---|---|
+  | node | `[0, 1, 0]` | +y = down |
+  | python `pano_maps` | `[-0.707, 0, 0.707]` | along the optical axis |
+  | | **90 deg apart** | |
+
+  The Python applies `R_rig_cam1` (`ground_plane.yaml`) to get FLU -> cam1 optical first; the
+  node has no equivalent step. Note this is a SECOND candidate cause for "the stitch never
+  registered" — `panorama_params.yaml` blames the retired IMX219 intrinsics, which were real, but
+  a 90 deg frame error would survive fixing them.
+
+  - [ ] 1.9a **Verify on the board before changing anything.** This is static analysis; the node
+        needs Argus and has not been run since. Point the rig at something unambiguous, look at
+        the published `/bev/panorama`, and settle it the way the mirroring was settled — from
+        the image.
+  - [ ] 1.9b If confirmed, the fix is to compose `R_rig_cam1` into the node's ray before the
+        per-camera rotation, exactly as `pano_maps` does, rather than to re-define its rig frame
+        comment to match what it currently computes.
 
 - [ ] 1.7g **The panorama auto-depth follows the map's outliers.** On the full-rate run the
         sphere radius ranged **2.18-23.93 m** (median 2.52). The spikes are
