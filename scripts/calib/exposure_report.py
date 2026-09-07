@@ -37,8 +37,15 @@ print(f"  {a.label or d.name}")
 print(f"    {'cam':6s} {'mean':>7s} {'% at white':>11s} {'local std':>10s} {'dead blk':>9s}")
 worst_clip, worst_flat = 0.0, 0.0
 for c in cams:
-    m = np.memmap(d / f"{c}.raw", dtype="u1", mode="r").reshape(-1, H, W)
-    n = m.shape[0]
+    # Floor to whole frames. A raw log can end mid-frame - the writer is still flushing when
+    # the run stops, and a copy taken right after will have a partial tail - and reshape()
+    # then dies with "cannot reshape array of size N", which reads as a corrupt log rather
+    # than a normal truncation.
+    flat = np.memmap(d / f"{c}.raw", dtype="u1", mode="r")
+    n = len(flat) // (H * W)
+    if n < 1:
+        print(f"    {c:6s}  no complete frames ({len(flat)} bytes)"); continue
+    m = flat[: n * H * W].reshape(n, H, W)
     idx = np.linspace(n * 0.3, n * 0.7, a.frames).astype(int)   # skip start/stop transients
     mus, clips, stds, deads = [], [], [], []
     for i in idx:
