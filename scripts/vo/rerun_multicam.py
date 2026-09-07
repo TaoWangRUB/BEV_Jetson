@@ -203,10 +203,20 @@ def pano_maps(omni, rig, R_rig_cam1, out_w=1280, el_max_deg=50.0, fov_half_deg=9
     lands in the fisheye's compressed periphery."""
     out_h = int(round(out_w * (2 * el_max_deg) / 360.0))       # square pixels
     el_max = np.radians(el_max_deg)
-    az = 2 * np.pi * (np.arange(out_w) + 0.5) / out_w - np.pi
+    # Azimuth DECREASES left-to-right, so scanning the panorama rightwards turns rightwards.
+    #
+    # This was inverted, and the operator caught it: the brick wall sits on the right in
+    # cam1 -45 and cam2 +45 - which both point forward, az 0.0 and +1.1 deg - and appeared on
+    # the LEFT of the panorama. In rig FLU (+x forward, +y LEFT) a wall to the right is at
+    # NEGATIVE azimuth, so with az increasing across the columns it landed left of centre.
+    # The whole panorama was mirrored.
+    #
+    # The deployed node has it right and this prototype had diverged: bev_panorama_node.cpp
+    # builds `dr = {sin(az)cos(el), cos(az)cos(el), sin(el)}` with forward on +Y, so its
+    # increasing az sweeps toward +X, the other way round from this frame's +y-is-left.
+    az = np.pi - 2 * np.pi * (np.arange(out_w) + 0.5) / out_w
     el = el_max - 2 * el_max * (np.arange(out_h) + 0.5) / out_h
     A, E = np.meshgrid(az, el)
-    # rig FLU: +x forward, +y left, +z up, so az sweeps forward -> left.
     d = np.stack([np.cos(E) * np.cos(A), np.cos(E) * np.sin(A), np.sin(E)], -1).reshape(-1, 3)
     d_cam1 = d @ R_rig_cam1
     fov, feath, seam = np.radians(fov_half_deg), np.radians(feather_deg), np.radians(seam_deg)

@@ -232,7 +232,30 @@
         the viewer places each marker on the optimised trajectory at its own instant: measured
         0.000 m, exact.
 
-  - [ ] 1.7g **The panorama auto-depth follows the map's outliers.** On the full-rate run the
+  - [x] 1.8 **The panorama prototype was MIRRORED, and the operator caught it from the images.**
+  The brick wall sits on the right in `cam1 -45` and `cam2 +45` — both of which point forward,
+  az **0.0** and **+1.1 deg**, which is why it appears in both — and the panorama put it on the
+  left.
+
+  `pano_maps()` built its column axis as `az = 2*pi*(i+0.5)/out_w - pi`, so azimuth INCREASED
+  left to right. The frame is rig FLU (+x forward, **+y left**), so increasing azimuth sweeps
+  toward the left and scanning the panorama rightwards turned leftwards: the whole image was
+  flipped. Verified per camera — before the fix the two right-pointing carves (`cam2 -45` at
+  az -89.1, `cam4 +45` at -89.5) landed in the LEFT half; after it they land at columns 957 and
+  958, and the left-pointing pair at 320 and 321.
+
+  **The deployed node was right and the prototype had diverged.**
+  `bev_panorama_node.cpp:274` builds `dr = {sin(az)cos(el), cos(az)cos(el), sin(el)}` with
+  forward on **+Y**, so its increasing azimuth sweeps toward +X — the opposite handedness to
+  this frame's +y-is-left, and the correct one. Fixed to `az = pi - 2*pi*(i+0.5)/out_w`.
+  `make_panorama.py` imports `pano_maps` so it inherits the fix.
+
+  - [ ] 1.8a **Confirm the node's convention on the board, don't infer it.** The comparison above
+        reads the node's frame as x-right/y-forward from one comment (`center=0=forward(+Y)`);
+        that has not been checked against a real `/bev/panorama`. Point the rig at something
+        unambiguous, look at the published image, and settle it the way this was settled.
+
+- [ ] 1.7g **The panorama auto-depth follows the map's outliers.** On the full-rate run the
         sphere radius ranged **2.18-23.93 m** (median 2.52). The spikes are
         `scene_radius_near_pose` tracking a landmark cloud that reaches far past the room (5.4:
         310 m in a 14 m log), and where the radius spikes the stitch is effectively at infinity,
