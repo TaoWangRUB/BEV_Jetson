@@ -189,8 +189,18 @@ services:
       # converge to four different gains - which is per-camera exposure, and that steps the
       # panorama seams and mismatches the virtual-stereo pairs. See 5.12a.
       AE_LOCK: ${AE_LOCK:-auto}
-      # 32x total (32 analog x 1 digital). Digital gain stays at 1.0 - it amplifies noise
+      # 16x total (16 analog x 1 digital). Digital gain stays at 1.0 - it amplifies noise
       # rather than signal, so analog moves first.
+      #
+      # 2026-09-07: moved DOWN from 32x for a brighter room, and the VO evidence supports the
+      # darker end anyway. Replaying all three gains through cuVSLAM:
+      #   64x (run1)  89% clipped at peak -> froze 12 frames and TELEPORTED 50.2 m
+      #   32x (run4)  58% clipped at peak -> tracked, worst step 1.11 m, but 36% of sets
+      #               dropped (13.5 Hz): richer images mean more features and a slower Track()
+      #   16x (run2)  0-4.5% clipped      -> CLEANEST: zero discontinuities, every set, 20.02 Hz
+      # 16x looked "too dark" on the dead-block metric (47-68%) and tracked best regardless -
+      # the proxy did not predict the outcome. Note run2 and run4 were different walks, so
+      # this is strong evidence rather than a controlled comparison.
       #
       # Arrived at from two real recordings of the same route, not from a static sweep:
       #   run1 @ 64x:  mean 122-142, clip 3-8%,   local std 4.5-5.5, dead 11-13%
@@ -202,7 +212,7 @@ services:
       # roughly mean 110-135, back in run1's working range at half its clipping.
       #
       # STILL PROVISIONAL until a run over the whole route confirms it holds at both ends.
-      AE_GAIN: ${AE_GAIN:-32.0}
+      AE_GAIN: ${AE_GAIN:-16.0}
       AE_DGAIN: ${AE_DGAIN:-1.0}
       WRITE_QUEUE_DEPTH: ${WRITE_QUEUE_DEPTH:-64}
       DRAIN_MAX: ${DRAIN_MAX:-120}
