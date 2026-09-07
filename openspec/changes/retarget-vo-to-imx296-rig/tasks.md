@@ -1449,6 +1449,36 @@ physically moved - the remaining items are not doable from here.
          rig-wide: one gain for all four cameras.
       4. **Pulse-width AE** (5.11c) only if gain alone cannot span the route.
 
+      - [ ] 5.12a **UNTRIED AND CHEAP: tell Argus AE the exposure is fixed, then unlock it.**
+            The node calls `setFrameDurationRange` but **never `setExposureTimeRange`**, so AE
+            is free to keep trying to move an actuator the driver ignores under external
+            trigger. That is the likely mechanism behind the 3.5 Hz limit cycle blamed on AE in
+            4.7 — an optimiser over-compensating on gain because its main control does nothing.
+
+            Pin `setExposureTimeRange(pulse_ns, pulse_ns)` to the measured pulse width and leave
+            `setAeLock(false)`. AE then knows exposure is constant and can only vary gain, which
+            is exactly the behaviour wanted. One line, against a baseline already measured (luma
+            p2p 150.5 free vs 0.8 locked), so the verdict is unambiguous either way. **Do this
+            before building a custom controller** — it may make 5.12b unnecessary.
+
+      - [ ] 5.12b **Custom closed-loop gain, if 5.12a does not work.** `setGainRange()` then
+            re-`repeat()` the request changes gain at runtime, and `check_exposure()` already
+            computes the saturated fraction every frame, so the measurement exists. Owning the
+            loop is the point: rate limiting and hysteresis are what prevent the hunt.
+
+      **THE CAVEAT FOR BOTH, and it is not small.** Changing gain mid-run breaks photometric
+      consistency, and feature tracking is what depends on it: a gain step scales every gradient
+      at once, which is the thing this whole exercise is trying to protect. So any controller
+      must be slow, hysteretic, rig-wide (never per-camera — 5.11a showed the left/right bias is
+      the SCENE and rotates with the rig), and must not step during fast motion.
+
+      **NOT 10-bit.** It would give 4x the range and remove the need for a controller, but it
+      means `RAW16`, bypassing the ISP, and tone-mapping back to 8 bits for cuVSLAM — which is
+      auto-exposure again in software, with the same photometric problem, for a much larger
+      change. `setPixelFormat(PIXEL_FMT_YCbCr_420_888)` today means the gamma curve is already
+      baked in by the ISP, which is also why gain cannot be extrapolated: 16x -> 32x raised the
+      mean by 1.55x, not 2x.
+
       **Explicitly rejected:** per-camera exposure or gain — it steps the panorama seams and
       mismatches the virtual-stereo pairs, which is the same reason exposure is rig-wide.
       Alternating short/long HDR frames — it breaks the synchronised-set assumption the whole
