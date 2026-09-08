@@ -70,9 +70,15 @@ def read_slam(bag):
     path_t, lc_t = np.zeros(0), np.zeros(0)
     with AnyReader([bag], default_typestore=TS) as r:
         def last(topic):
+            # An EMPTY connections list means "no filter" to rosbags, not "no messages" - so a
+            # bag without the SLAM topics used to return the last message of the WHOLE bag and
+            # then die on it ('PointCloud2 has no attribute poses'). That made every OBS=1
+            # SLAM=0 replay unrenderable. Bail out explicitly when the topic is absent.
+            cons = [c for c in r.connections if c.topic == topic]
+            if not cons:
+                return None
             out = None
-            for con, _, raw in r.messages(
-                    connections=[c for c in r.connections if c.topic == topic]):
+            for con, _, raw in r.messages(connections=cons):
                 out = r.deserialize(raw, con.msgtype)
             return out
         m = last("/cuvslam/slam_path")
