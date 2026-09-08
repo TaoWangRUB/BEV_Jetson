@@ -554,10 +554,19 @@ def main():
         extras.append(rrb.Spatial2DView(origin="/pano", name="equirectangular 360 (%s)" % how))
     # The panorama is 1280x356 - a wide, short pane. 0.18 of the column made it a sliver
     # that reads as "the panorama is missing"; give it a real share.
+    #
+    # BEV AND PANORAMA SHARE ONE ROW. They are the two ground-referenced views and reading
+    # them side by side is the point: the same instant, once looking down and once looking
+    # out. The BEV is square and the panorama is 3.6:1, so an even split wastes most of the
+    # BEV's width on background - it gets a third, the panorama two thirds.
     ex_share = 0.26
-    scale = 1.0 - ex_share * len(extras)
-    shares = [0.25 * scale, 0.5 * scale, 0.25 * scale] + [ex_share] * len(extras)
-    rows += [rrb.Horizontal(contents=[e]) for e in extras]
+    n_extra_rows = 1 if extras else 0
+    scale = 1.0 - ex_share * n_extra_rows
+    shares = [0.25 * scale, 0.5 * scale, 0.25 * scale] + [ex_share] * n_extra_rows
+    if len(extras) == 2:
+        rows.append(rrb.Horizontal(contents=extras, column_shares=[1, 2]))
+    elif extras:
+        rows.append(rrb.Horizontal(contents=extras))
     blueprint = rrb.Blueprint(rrb.Vertical(row_shares=shares, contents=rows),
                               rrb.TimePanel(state="collapsed"))
 
