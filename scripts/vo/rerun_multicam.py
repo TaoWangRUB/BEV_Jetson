@@ -658,7 +658,9 @@ def main():
     if len(slam_P):
         segs = split_on_gaps(slam_P, slam_t) if len(slam_t) == len(slam_P) else [slam_P]
         rr.log("map/trajectory_slam",
-               rr.LineStrips3D([g @ Rz180.T for g in segs], colors=[0xFF44CCFF], radii=0.012),
+               # Wider than the pure-VO reference: this is the path the closure markers sit
+               # on, so it is the one the eye should follow.
+               rr.LineStrips3D([g @ Rz180.T for g in segs], colors=[0xFF44CCFF], radii=0.020),
                static=True)
         if len(segs) > 1:
             print("  optimised path drawn as %d segments (time gaps, not jumps)" % len(segs))
@@ -667,7 +669,7 @@ def main():
     if len(ref_P):
         segs = split_on_gaps(ref_P, ref_t)
         rr.log("map/trajectory_vo_clean",
-               rr.LineStrips3D([g @ Rz180.T for g in segs], colors=[0x33DD66FF], radii=0.012),
+               rr.LineStrips3D([g @ Rz180.T for g in segs], colors=[0x33DD66FF], radii=0.008),
                static=True)
     if len(slam_lc):
         # Put each marker on the optimised trajectory AT ITS OWN INSTANT. The pose stored

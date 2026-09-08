@@ -319,21 +319,22 @@ def main():
                 mid[y, x] = (int(col[2]), int(col[1]), int(col[0]))
         # Green = pure VO reference, magenta = this run - the same pairing as the .rrd, drawn
         # causally so the two are seen to diverge rather than presented as a finished result.
-        # The reference goes UNDER and WIDER. The two paths nearly coincide (35.87 m of pure
-        # VO against 35.64 m with SLAM), so an equal-or-thinner green line is covered pixel
-        # for pixel by the magenta and reads as absent. Wider underneath, it shows as a green
-        # margin wherever they agree and as its own line wherever they part - which is the
-        # only thing the comparison is for.
+        # The SLAM-tracked path is the SUBJECT and carries the closure markers, so it is the
+        # wide line; pure VO is the thin reference drawn under it. (The reverse was tried and
+        # read backwards: the eye follows the widest stroke, which put the attention on the
+        # reference rather than on the trajectory the markers annotate.) They nearly coincide
+        # - 35.87 m of pure VO against 36.00 m optimised - so the thin green shows through
+        # wherever they agree and separates wherever loop closure actually acted.
         if ref2d is not None:
             nref = int(np.searchsorted(ref_t, ts[i]))
             if nref > 1:
-                cv2.polylines(mid, [ref2d[:nref]], False, (90, 230, 90), 5, cv2.LINE_AA)
+                cv2.polylines(mid, [ref2d[:nref]], False, (90, 230, 90), 2, cv2.LINE_AA)
         if slam2d is not None and slam_t2 is not None:
             nsl = int(np.searchsorted(slam_t2, ts[i]))
             if nsl > 1:
-                cv2.polylines(mid, [slam2d[:nsl]], False, (200, 80, 255), 2, cv2.LINE_AA)
+                cv2.polylines(mid, [slam2d[:nsl]], False, (200, 80, 255), 5, cv2.LINE_AA)
         elif ref2d is None:
-            cv2.polylines(mid, [traj2d[: i + 1]], False, (200, 80, 255), 2, cv2.LINE_AA)
+            cv2.polylines(mid, [traj2d[: i + 1]], False, (200, 80, 255), 5, cv2.LINE_AA)
         # Loop edges under the trajectory, 1 px, matching the 0.002 radius in the .rrd.
         now = ts[i]
         if slam_edges2d is not None:
