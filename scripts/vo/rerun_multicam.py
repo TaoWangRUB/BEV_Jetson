@@ -657,8 +657,10 @@ def main():
             marks = np.array([slam_P[int(np.abs(slam_t - t).argmin())] for t in slam_lc_t],
                              np.float32)
         rr.log("map/loop_closures",
-               rr.Points3D(marks @ Rz180.T, colors=[255, 0, 0], radii=0.06,
-                           labels=["loop %d" % (i + 1) for i in range(len(marks))]),
+               # No labels: "loop 1..N" on every marker crowds the 3D view and the ordinal
+               # says nothing you cannot read from the trajectory. The edge labels carry the
+               # informative part (the time each closure bridges).
+               rr.Points3D(marks @ Rz180.T, colors=[255, 0, 0], radii=0.06),
                static=True)
     # The edges are the point of the whole display: each one joins a pose to the EARLIER
     # pose it was matched against, so a closure reads as "here is where the rig recognised
@@ -683,7 +685,7 @@ def main():
                 ends.append(e); labels.append("")
         rr.log("map/loop_edges",
                rr.LineStrips3D([e @ Rz180.T for e in ends], colors=[0xFFDD00FF],
-                               radii=0.02, labels=labels), static=True)
+                               radii=0.002, labels=labels), static=True)
     traj = []
     heights = []
     # BOUNDED. Each entry is four cameras' worth of float32 remap tables plus an owner mask -
