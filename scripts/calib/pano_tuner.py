@@ -11,6 +11,25 @@ re-render live in the browser. Save the result to rig_extrinsics_tuned.yaml when
 Reuses the exact stitch math from extrinsic_calib.render_panorama (R = camera->rig, 180 flip for the
 upside-down mount). Needs the 4 RAW images (camN_image_raw.png) + the KB intrinsics for that res.
 """
+
+# ---------------------------------------------------------------------------
+# ⚠ IMX219 / KANNALA-BRANDT LINEAGE — NOT PORTED TO THE IMX296 RIG (2026-09-04)
+#
+# This tool reads equidistant (KANNALA_BRANDT) intrinsics and the board_center
+# rig format. Both belonged to the retired 4x IMX219 rig. The IMX219 intrinsics
+# under scripts/config/ have been deleted and the rig files moved to
+# config/rig/archive/imx219/, so this script has no valid input any more.
+#
+# The IMX296 rig is calibrated in omni/Mei (config/calib/imx296_1456x1088) with
+# extrinsics in config/rig/rig_extrinsics_imx296.yaml. Porting means teaching this
+# tool the Mei projection - bev_panorama_node.cpp has a reference implementation
+# in mei_project(). Until then it exits rather than produce a wrong answer.
+# ---------------------------------------------------------------------------
+import sys as _sys
+if "--i-know-this-is-imx219" not in _sys.argv:
+    _sys.exit(__file__ + ": IMX219/KB lineage, not ported to the IMX296 rig. "
+              "See the banner at the top of this file.")
+
 import argparse
 import io
 import os
@@ -155,7 +174,7 @@ class H(BaseHTTPRequestHandler):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--calib-dir", default="scripts/config/1640x1232")
+    ap.add_argument("--calib-dir", default="config/calib/imx296_1456x1088")
     ap.add_argument("--rig", default="config/rig/rig_extrinsics.yaml")
     ap.add_argument("--images", default="scripts/calib/capture")
     ap.add_argument("--port", type=int, default=8000)

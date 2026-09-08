@@ -1,0 +1,101 @@
+# Extrinsics for the 4x IMX296 rig, solved 2026-09-01, ring-closed 2026-09-01.
+# ROUND 2 - supersedes the 2026-08-29 solve ENTIRELY. See the warning at the bottom.
+#
+# Each pair was solved from its own recording with KALIBR's AprilGrid detector and pose
+# estimate (GridDetector + observation.T_t_c) - reimplementing the board model by hand
+# plateaued at 11 px residual and a metre of baseline error before that was abandoned.
+#
+# `rig_in_cam1` is what the VO node reads: each camera's pose expressed in cam1's frame.
+# cam1's is identity by construction.
+#
+# FRAME. cam1's RAW optical frame: z along cam1's optical axis, x right and y down IN THE
+# RAW IMAGE. The modules are mounted upside-down and the capture node does not rotate, so
+# +x is PHYSICALLY LEFT and +y is PHYSICALLY UP. That is why cam2 (front_right) sits at
+# x < 0 and cam3 (back_left) at x > 0. Verified by scripts/vo/check_rig_poses.py, which
+# asserts exactly these signs against config/rig/rig_layout.yaml.
+#
+# ORIGIN OF EACH TRANSLATION: THE ENTRANCE PUPIL, NOT THE SENSOR. These are optical
+# centres, which for an outward-facing ring sit ~20 mm RADIALLY OUTSIDE the sensor dies.
+# Tape-measuring the rig will therefore under-read every distance in this file, and the
+# gap is large enough to read as a calibration failure. Recorded 2026-09-04 after exactly
+# that scare:
+#   cam1 -> cam4 diagonal, sensor die to sensor die, by tape:   180   mm
+#   cam1 -> cam4 diagonal as solved here (pupil to pupil):      219.0 mm
+#   => pupil 19.5 mm ahead of the die, ordinary for a 1.78 mm D190 M12 barrel.
+# Confirm on a module with calipers (PCB face to front vertex, expect >= 20 mm) rather
+# than by re-measuring across the rig.
+#
+# WHY THAT 22% WAS NOT A SCALE ERROR - and it is worth knowing how this was settled,
+# because a common scale factor is the ONE error class nothing else here catches. Ring
+# closure, the epipolar residuals below, and cuVSLAM's frustum overlap are ALL
+# scale-invariant and pass unchanged if every translation is multiplied by k. Metric
+# scale enters from exactly two places, and both were checked independently:
+#   1. Board size. config/calib/april_6x6.yaml assumes tagSize 0.055; the print measures
+#      55 mm black square / 16.5 mm gap. Confirmed 2026-09-04.
+#   2. Focal length. A monocular intrinsic solve fixes fx in PIXELS from the board's
+#      SHAPE, so fx does not move if the assumed tagSize is wrong - that makes it a check
+#      independent of (1). Mei paraxial scale fx/(1+xi) x 3.45 um pixel pitch gives
+#      1.842 / 1.838 / 1.817 / 1.831 mm for cam1..cam4 against a 1.78 mm vendor spec,
+#      i.e. +2.1 to +3.5%, agreed across four separately-solved cameras.
+# Baseline scale goes as f_px * S_phys, so both factors are pinned to a few percent and
+# a 21.7% inflation has nowhere to come from. Shape is sound too: the adjacent baselines
+# mean 155.6 mm, x sqrt(2) = 220.1 mm, against a measured diagonal mean of 220.0 mm -
+# agreement to 0.1 mm on a quantity four separate recordings never constrained to agree.
+#
+# Do NOT run fold_roll_for_vo.py on this file. That script serves the panorama lineage
+# (rig_extrinsics_calibrated.yaml, kept in the nominal image-up convention). These
+# extrinsics come straight from the frames the capture node publishes and already carry
+# the mount roll; folding it in again puts every camera 180 deg out.
+#
+# =====================================================================================
+# NEVER MERGE A VALUE FROM THE 2026-08-29 FILE INTO THIS ONE.
+# The two solves are MIRRORED: round 1 placed cam2 at x = +0.109 and cam3 at x = -0.100,
+# this one places them at -0.108 and +0.113. Every check the project had passes BOTH -
+# the ring closure (1.58 deg), the epipolar residuals, and cuVSLAM's own frustum graph,
+# which scores ~0.94 either way because each fisheye contributes two carves and one
+# always ends up facing a neighbour. A mixture would be geometrically incoherent and
+# entirely silent. That is what the sign check in check_rig_poses.py now exists to catch.
+# =====================================================================================
+#
+# Per-pair evidence (from pair_*.yaml, same session):
+#   front  cam1 -> cam2   baseline 0.1527 m, rotation 89.43 deg, 1178 simultaneous poses,
+#          angular spread median 0.65 deg / p90 1.23 deg
+#   right  cam2 -> cam4   baseline 0.1532 m, rotation 90.90 deg, 1067 simultaneous poses,
+#          angular spread median 0.54 deg / p90 1.27 deg
+#   rear   cam4 -> cam3   baseline 0.1611 m, rotation 90.64 deg, 1364 simultaneous poses,
+#          angular spread median 0.65 deg / p90 1.24 deg
+#   left   cam3 -> cam1   baseline 0.1554 m, rotation 90.01 deg, 994 simultaneous poses,
+#          angular spread median 0.48 deg / p90 0.91 deg
+#
+# Ring closure: pre-closure loop residual 3.63 deg -> 1.58 deg after re-solving on the
+# round-2 recordings; the closure itself then distributes what is left. Largest per-edge
+# correction 0.94 deg, on cam3 - which is also the weakest camera intrinsically
+# (34.4 px subset stability) and carries the two worst virtual-stereo pairs. If VO
+# tracks poorly, cam3 is the first thing to re-sweep.
+#
+# Frustum check on the poses the node builds (scripts/vo/verify_rig_build.sh):
+#   cam1_L-cam2_R 0.936, cam1_R-cam3_L 0.934, cam2_L-cam4_R 0.916, cam3_R-cam4_L 0.945
+#   - all clear of cuVSLAM's hard-coded 0.5 gate.
+#
+calib_session: 20260901
+rig_in_cam1:
+  cam1:
+  - [1, 0, 0, 0]
+  - [0, 1, 0, 0]
+  - [0, 0, 1, 0]
+  - [0, 0, 0, 1]
+  cam2:
+  - [0.014674, -0.109234, -0.993908, -0.108272]
+  - [0.055559, 0.992568, -0.108266, -0.007617]
+  - [0.998347, -0.053632, 0.020634, -0.107459]
+  - [0, 0, 0, 1]
+  cam3:
+  - [0.002532, 0.07125, 0.997455, 0.112807]
+  - [-0.110338, 0.991387, -0.070537, -0.007847]
+  - [-0.993891, -0.109878, 0.010372, -0.106372]
+  - [0, 0, 0, 1]
+  cam4:
+  - [-0.999936, 0.010562, -0.003948, -0.002778]
+  - [0.011025, 0.989247, -0.145834, -0.019306]
+  - [0.002366, -0.145868, -0.989301, -0.218106]
+  - [0, 0, 0, 1]

@@ -1,25 +1,37 @@
 # Parameters for the surround panorama node (bev_panorama_node): GPU equirectangular stitch of
 # the 4 fisheye -> /bev/panorama (mono8).
 #
-# Uses the FULL-SENSOR 1640x1232 mode: HFOV ~127deg vs ~97deg at 720p. With the cameras 90deg
-# apart, that gives ~37deg of adjacent overlap (vs only ~7deg at 720p) — far better stitch
-# seams (and VFOV ~92deg vs ~53deg). Sensor mode 1640x1232 runs at 22 fps.
+# RETARGETED TO THE IMX296 RIG 2026-09-04. Everything here previously described the RETIRED
+# IMX219 rig - scripts/config/1640x1232 (KANNALA_BRANDT, 1640x1232, mu ~788 px) and
+# rig_extrinsics_calibrated.yaml. On IMX296 pixels that focal implies a 2.72 mm lens against
+# a 1.78 mm part, a ~48% error applied silently, on a resolution these cameras cannot even
+# produce. That is why the stitch never registered. The IMX219 intrinsics have been deleted;
+# the node now REFUSES a KANNALA_BRANDT file rather than mis-projecting one.
+#
 # Paths are relative to the run directory (repo root / container -w /workspace).
 /**:
   ros__parameters:
-    calib_dir: scripts/config/1640x1232      # KB intrinsics for the capture resolution
-    rig_extrinsics: config/rig/rig_extrinsics_calibrated.yaml   # feature-calibrated rotations (scripts/calib/extrinsic_calib.py)
+    calib_dir: config/calib/imx296_1456x1088   # Mei/omni intrinsics, calib_session 20260901
+    rig_extrinsics: config/rig/rig_extrinsics_imx296.yaml   # ring-closed, solved 2026-09-01
     cameras: [cam1, cam2, cam3, cam4]        # cam1..4 = ports c,d,e,f
     sensor_ids: [1, 2, 3, 4]                 # Argus indices compact over present sensors (port b absent): a=0,c=1,d=2,e=3,f=4 -> cam1..4=ports c,d,e,f=sensors 1,2,3,4
-    width: 1640                              # capture/output res (must match calib_dir)
-    height: 1232
-    sensor_width: 1640                       # full-sensor mode (full FOV); = width for native
-    sensor_height: 1232
-    fps: 60                                  # sensor mode caps it (1640x1232 -> 22 fps)
+    width: 1456                              # IMX296 native; must match calib resolution
+    height: 1088
+    sensor_width: 1456
+    sensor_height: 1088
+    fps: 30                                  # external trigger sets the real rate
     pano_width: 1920                         # equirectangular output canvas
-    pano_height: 540                         # ~square px at +/-50deg elevation
-    elevation_max_deg: 50.0                  # vertical coverage (+/-); ~VFOV/2, poles black
-    fisheye_fov_half_deg: 65.0               # per-camera half-HFOV used for the remap (~127/2)
-    feather_deg: 20.0                        # overlap feather band (now there's real overlap)
-    flip_180: true                           # cameras are mounted upside-down (180 roll)
+    pano_height: 540
+    elevation_max_deg: 50.0                  # vertical coverage (+/-); poles black
+    # 80 deg = H160/2. The lenses are D190/H160, ~192 deg diagonal by our own fits, so the
+    # DIAGONAL half-angle is ~96; 80 keeps the remap inside the horizontal extent where the
+    # calibration is best constrained. The old 65.0 was inherited from the IMX219 config and
+    # is called out as wrong in openspec retarget-vo-to-imx296-rig tasks.md 2.9.
+    fisheye_fov_half_deg: 80.0
+    feather_deg: 20.0                        # overlap feather band
+    # FALSE for this lineage, deliberately. The IMX296 intrinsics AND extrinsics were solved
+    # on the raw, already-inverted frames (the modules are mounted upside-down and the capture
+    # node does not rotate), so applying the roll again would double it. The IMX219 lineage
+    # needed true. See config/calib/imx296_1456x1088/cam1.yaml.
+    flip_180: false
     save_video: ""                           # set a path (e.g. bags/pano.mp4) to also record

@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>bev_imu</name>
+  <version>0.1.0</version>
+  <description>MPU-9250 IMU node for the J106 rig: samples are timestamped at the sensor's
+  data-ready edge on CLOCK_MONOTONIC — the same clock and convention the cameras use — and
+  published as sensor_msgs/Imu for VIO and for camera-IMU calibration.</description>
+  <maintainer email="archerwang.gyaw@gmail.com">User</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

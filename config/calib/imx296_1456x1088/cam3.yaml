@@ -1,0 +1,47 @@
+# IMX296 intrinsics, solved 2026-09-01 with tartancalib (omni-radtan / Mei).
+# ROUND 2 - after the cameras were reconnected, the lenses refocused, and the trigger
+# source changed to the F401. Supersedes the 2026-08-29 solve entirely.
+#
+# MODEL CHOICE IS NOT FREE HERE. These lenses are 1.78 mm, D190/H160 on 1/3" - a genuine
+# >180 deg fisheye, confirmed three ways: the vendor spec, our fits (~192 deg diagonal),
+# and OmniNxt hard-coding fov=190 for the same class. The equidistant model
+# (pinhole-equi / Kannala-Brandt) CANNOT represent rays past 90 deg incidence and
+# diverged on every camera after hours of optimisation.
+#
+# Consequence: cuVSLAM cannot consume these cameras directly - its only fisheye model is
+# that same equidistant one. The virtual-stereo path (rectify to pinhole, feed cuVSLAM
+# plain Pinhole) is required, not preferred. See docs/cuvslam_tx2.md.
+#
+# SOLVED ON RAW, INVERTED FRAMES - the capture node memcpys and does not rotate, and the
+# modules are mounted upside-down. Re-confirmed 2026-09-01 from stage1_cam1_sel.bag,
+# where printed text reads upside-down and the floor is at the top of the image. Do NOT
+# apply a 180 deg roll anywhere downstream: these are already in the frame the node
+# publishes. (rig_layout.yaml camera_roll_deg, and 3R.16's warning about
+# fold_roll_for_vo.py, which belongs to the panorama lineage and not to this one.)
+#
+# SUBSET STABILITY is reported per camera and is the number that matters, not the
+# reprojection error. It refits each camera on half its own recording: a solve sitting on
+# the xi/focal degeneracy ridge reprojects beautifully and still moves fx by tens of
+# pixels. All four reproject at 0.24-0.29 px; they are NOT equally trustworthy.
+#
+# intrinsics = [xi, fx, fy, cx, cy]; distortion = radtan [k1, k2, p1, p2]
+#
+# cam3: port e, back_left.  reprojection error 0.28/0.24 px
+# subset stability (fx refit on half the recording): 34.4 px
+#       WEAKEST OF THE FOUR, and a re-sweep is outstanding. Reprojection error is fine
+#       (0.28 px) and coverage was the BEST of the four (0/64 cells short), yet fx moves
+#       34.4 px between halves of its own recording - the xi/focal ridge, which coverage
+#       does not measure. Its two virtual-stereo pairs are the worst (left 2.06, rear 3.67
+#       px), both its baselines are inflated, and it took the largest ring correction
+#       (0.94 deg). Promoted as-is deliberately: VO on this rig is the cheapest test of
+#       whether it matters. If tracking is poor, re-sweep cam3 before blaming anything else.
+# source: solve_cam3/log1-camchain.yaml (datasets/calib_20260901)
+camera_model: omni
+distortion_model: radtan
+intrinsics: [1.9667089262887578, 1562.5827423944331, 1564.038082485288, 740.0737867986502, 558.9098203490303]
+distortion_coeffs: [-0.12648158855790315, 0.22298110704886218, 0.0010053640061388604, 0.002684888139661275]
+resolution: [1456, 1088]
+sensor: imx296
+port: e
+position: back_left
+calib_session: 20260901

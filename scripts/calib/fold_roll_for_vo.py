@@ -16,6 +16,25 @@ Translations and the IMU pose are unchanged (the roll is per-camera, about the o
 
 Re-run this after any recalibration to regenerate the VO file from the new calibrated rotations.
 """
+
+# ---------------------------------------------------------------------------
+# ⚠ IMX219 / KANNALA-BRANDT LINEAGE — NOT PORTED TO THE IMX296 RIG (2026-09-04)
+#
+# This tool reads equidistant (KANNALA_BRANDT) intrinsics and the board_center
+# rig format. Both belonged to the retired 4x IMX219 rig. The IMX219 intrinsics
+# under scripts/config/ have been deleted and the rig files moved to
+# config/rig/archive/imx219/, so this script has no valid input any more.
+#
+# The IMX296 rig is calibrated in omni/Mei (config/calib/imx296_1456x1088) with
+# extrinsics in config/rig/rig_extrinsics_imx296.yaml. Porting means teaching this
+# tool the Mei projection - bev_panorama_node.cpp has a reference implementation
+# in mei_project(). Until then it exits rather than produce a wrong answer.
+# ---------------------------------------------------------------------------
+import sys as _sys
+if "--i-know-this-is-imx219" not in _sys.argv:
+    _sys.exit(__file__ + ": IMX219/KB lineage, not ported to the IMX296 rig. "
+              "See the banner at the top of this file.")
+
 import argparse
 
 import yaml

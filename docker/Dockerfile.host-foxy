@@ -1,0 +1,23 @@
+# Host-side ROS 2 Foxy for viewing and recording the TX2's topics over DDS.
+#
+# Why a container at all, when the host has /opt/ros/foxy installed: that install is
+# built for python 3.8 and this host's python3 is 3.12, so `import rclpy.node` dies on a
+# missing `_rclpy.cpython-312-*.so`. Foxy is Ubuntu 20.04's ROS, and this image is the
+# supported way to get it. (Do NOT reach for a newer distro to avoid the container:
+# Jazzy/Humble will not interoperate with the board's Foxy over DDS.)
+#
+# Why not osrf/ros:foxy-desktop directly: it ships rmw_fastrtps only, and this link runs
+# CycloneDDS (scripts/stream/cyclonedds_lowlat.xml) - unicast, 64 kB fragments, big
+# socket buffers - because multicast discovery across this host's interfaces is exactly
+# what failed before between this board and this host.
+#
+#   docker build -f docker/Dockerfile.host-foxy -t bev-host-foxy:latest .
+# Used by scripts/stream/host_receiver.sh, which builds it on first run.
+FROM osrf/ros:foxy-desktop
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ros-foxy-rmw-cyclonedds-cpp \
+        python3-opencv \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp

@@ -1,0 +1,34 @@
+[
+  {
+    "pair": "front_right",
+    "measured_rot_deg": 93.36035814853497,
+    "vo_off_deg": 3.831187290478312,
+    "baseline_dir_off_deg": 26.6195729950096,
+    "inliers": 428,
+    "matches": 2930
+  },
+  {
+    "pair": "right_back",
+    "measured_rot_deg": 105.13900651916215,
+    "vo_off_deg": 19.008883303170713,
+    "baseline_dir_off_deg": 72.843018418928,
+    "inliers": 103,
+    "matches": 2203
+  },
+  {
+    "pair": "back_left",
+    "measured_rot_deg": 112.90106185755597,
+    "vo_off_deg": 177.1402036606309,
+    "baseline_dir_off_deg": 22.353156285832842,
+    "inliers": 60,
+    "matches": 2378
+  },
+  {
+    "pair": "left_front",
+    "measured_rot_deg": 82.53577147330552,
+    "vo_off_deg": 1.8083414209448254,
+    "baseline_dir_off_deg": 88.43352330823102,
+    "inliers": 688,
+    "matches": 3204
+  }
+]

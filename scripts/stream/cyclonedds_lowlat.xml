@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- CycloneDDS tuned for one 1 GbE hop carrying raw camera frames, board -> host.
+     Used by BOTH ends (NET_IFACE and PEER differ; see the wrapper scripts).
+
+     Why these settings, since defaults are tuned for small messages on shared LANs:
+
+     * AllowMulticast=false + an explicit Peer. This is a point-to-point link, and
+       multicast discovery across a host-shared interface is exactly what failed before
+       between this board and this host. Unicast discovery to a known address is both
+       faster to converge and deterministic.
+     * MaxMessageSize/FragmentSize raised to ~64 kB. A 1456x1088 mono frame is 1.58 MB;
+       at Cyclone's default fragment size that is over 1100 DDS fragments per frame, each
+       with its own bookkeeping. Larger fragments hand the splitting to IP, which is
+       cheaper, and cut per-frame CPU on the sender - the constrained end here.
+     * Big socket buffers. A 1.58 MB sample arrives as a burst; a small receive buffer
+       drops fragments, and one lost fragment discards the WHOLE sample. This is the
+       setting that most often turns "images look laggy" into "images arrive".
+     * Watermarks raised so the writer does not stall mid-frame on a slow reader.
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <NetworkInterfaceAddress>${NET_IFACE}</NetworkInterfaceAddress>
+      <AllowMulticast>false</AllowMulticast>
+      <MaxMessageSize>65500B</MaxMessageSize>
+      <FragmentSize>65000B</FragmentSize>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <Peers>
+        <Peer address="${PEER}"/>
+      </Peers>
+    </Discovery>
+    <Internal>
+      <!-- Foxy ships CycloneDDS 0.7, where this is MinimumSocketReceiveBufferSize.
+           The newer <SocketReceiveBufferSize min="..."/> spelling is REJECTED, and
+           Cyclone rejects the whole file rather than the one element: the visible
+           symptom is "rmw_create_node: failed to create domain" and a node that dies
+           at startup, not a warning about a config key. Both ends here are Foxy. -->
+      <MinimumSocketReceiveBufferSize>16MB</MinimumSocketReceiveBufferSize>
+      <Watermarks>
+        <WhcHigh>4MB</WhcHigh>
+      </Watermarks>
+    </Internal>
+    <Tracing>
+      <Verbosity>warning</Verbosity>
+      <!-- Default is a cyclonedds.log in the CWD; where that is not writable Cyclone
+           fails to create the domain outright ("cannot open for writing" -> rmw_create_node
+           failed), which reads as a DDS fault rather than a permissions one. -->
+      <OutputFile>stderr</OutputFile>
+    </Tracing>
+  </Domain>
+</CycloneDDS>

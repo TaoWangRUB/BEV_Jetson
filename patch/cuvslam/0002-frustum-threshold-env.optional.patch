@@ -1,0 +1,31 @@
+diff --git a/libs/camera/frustum_intersection_graph.cpp b/libs/camera/frustum_intersection_graph.cpp
+index c5dd7a6..75c6137 100644
+--- a/libs/camera/frustum_intersection_graph.cpp
++++ b/libs/camera/frustum_intersection_graph.cpp
+@@ -17,6 +17,7 @@
+ 
+ #include "camera/frustum_intersection_graph.h"
+ 
++#include <cstdlib>
+ #include <queue>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -54,6 +55,9 @@ std::vector<CameraGraphNode> BuildCameraGraph(const camera::Rig& rig) {
+   float d_min = 2;
+   float d_max = 4;
+   float intersected_num_points_ratio_threshold = 0.5;
++  // Wide-FOV surround rigs (fisheyes ~90 deg apart) overlap far less than 50%; allow tuning the
++  // stereo-pair gate without a rebuild. Set CUVSLAM_FRUSTUM_THRESHOLD low (e.g. 0.05) to connect them.
++  if (const char* e = std::getenv("CUVSLAM_FRUSTUM_THRESHOLD")) intersected_num_points_ratio_threshold = std::atof(e);
+   int side_number_of_points = static_cast<int>(sqrt(total_number_of_points));
+   for (int32_t cam_id_i = 0; cam_id_i < rig.num_cameras; cam_id_i++) {
+     for (int32_t cam_id_j = cam_id_i + 1; cam_id_j < rig.num_cameras; cam_id_j++) {
+@@ -108,6 +112,8 @@ std::vector<CameraGraphNode> BuildCameraGraph(const camera::Rig& rig) {
+       float intersected_num_points_ratio =
+           static_cast<float>(intersected_points) / static_cast<float>(total_number_of_points);
+ 
++      TraceWarning("frustum pair %d-%d intersection ratio %.3f (threshold %.3f)", cam_id_i, cam_id_j,
++                   intersected_num_points_ratio, intersected_num_points_ratio_threshold);
+       if (intersected_num_points_ratio > intersected_num_points_ratio_threshold) {
+         {
+           camera_config_graph[cam_id_i].stereo_camera_pairs.emplace_back(cam_id_j, intersected_num_points_ratio);

@@ -1,8 +1,12 @@
 # Build / colcon artifacts
 build/
 install/
+install_host/
+build_host/
 log/
 third_party/cuVSLAM/build/
+third_party/cuVSLAM/build_host/
+third_party/cuVSLAM/build_tx2gpu/
 
 # Calibration outputs
 calib_port_*.npz
@@ -17,3 +21,14 @@ __pycache__/
 bags/
 scripts/calib/capture/
 config/rig/rig_extrinsics_tuned.yaml
+
+# Recorded sessions: hundreds of GB, and calib_20260831 is a symlink to /mnt/DataStore.
+# The SOLVER OUTPUTS are preserved under config/calib/archive/ instead - see its README.
+datasets/
+cyclonedds.log
+# cuNLS release tarball + extracted tree, fetched by scripts/build_cuvslam_tx2gpu.sh
+build/cunls-*.tar.gz
+build/cuNLS-*/
+
+# Host viz venv (rerun-sdk; system site-packages for rosbags/cv2)
+.venv/

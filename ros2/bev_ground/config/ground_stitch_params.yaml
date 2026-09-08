@@ -1,0 +1,72 @@
+# Parameters for bev_ground_stitch: metric top-down ground mosaic -> /bev/ground (mono8).
+# Paths are relative to the run directory (repo root; the container runs with -w /workspace).
+/**:
+  ros__parameters:
+    # --- calibration the rig actually has -------------------------------------------
+    # Mei (omni-radtan). The panorama node's Kannala-Brandt path cannot consume these at
+    # all: pinhole-equi diverged on every camera because the lenses measure ~165 deg
+    # horizontal and KB cannot represent a ray past 90 deg incidence.
+    calib_dir: config/calib/imx296_1456x1088
+    # The ring-CLOSED rig. The pairwise blocks in that file are four independent solves
+    # that disagreed by 1.58 deg around the loop; a stitch fed those would put the four
+    # seams in four inconsistent places.
+    rig_extrinsics: config/rig/rig_extrinsics_imx296.yaml
+    ground_plane: config/rig/ground_plane.yaml
+
+    cameras: [cam1, cam2, cam3, cam4]        # = ports c, d, e, f
+    image_topics: [/cam1/image_raw, /cam2/image_raw, /cam3/image_raw, /cam4/image_raw]
+    # Walking the rig, NOT walking the names. cam2 and cam3 are diagonal and overlap
+    # nowhere; pairing them would put a blend band where there is nothing to blend.
+    ring_order: [cam1, cam2, cam4, cam3]
+
+    # --- stale-calibration guard: what the live cameras are -------------------------
+    image_width: 1456
+    image_height: 1088
+    sensor: imx296
+
+    # --- output raster ---------------------------------------------------------------
+    resolution_m_per_px: 0.01                # 10 mm cells -> 400x400 over 4x4 m
+    range_forward_m: 2.0
+    range_back_m: 2.0
+    range_left_m: 2.0
+    range_right_m: 2.0
+
+    # --- optics gating ----------------------------------------------------------------
+    # The vendor half-angle (D190). The fitted Mei model stays single-valued out to
+    # ~119 deg, but the AprilGrid never reached there, so trusting it that far is
+    # extrapolation; the node takes the min of the two and logs both.
+    lens_fov_half_deg: 95.0
+    fov_feather_deg: 8.0                     # fade out approaching the field edge
+    border_feather_px: 24.0                  # fade out approaching the image border
+    # Sector ownership: each camera dominates around its own bearing and hands over to
+    # its neighbour at the 45 deg bisector with equal weight. PHOTOMETRIC ONLY — it
+    # decides whose pixels are seen, never where they land.
+    sector_power: 4.0
+
+    # --- synchronised sets -------------------------------------------------------------
+    # The rig is hardware-triggered and measures 1 us of skew, so anything near this
+    # limit is a trigger fault. Do NOT widen it to make sets appear.
+    max_skew_us: 1000
+    match_history: 8
+
+    # --- the ground plane --------------------------------------------------------------
+    # ground_plane.yaml is currently status: unmeasured, so the node REFUSES to start.
+    # For a bench look only, set both of these; output is then stamped PROVISIONAL and
+    # its scale is not a measurement.
+    allow_unmeasured_plane: false
+    provisional_height_m: 0.0                # metres from cam1's OPTICAL CENTRE to the floor
+
+    # --- photometric --------------------------------------------------------------------
+    # cam2 and cam4 face windows (openspec 3R.4) and can sit well apart from cam1/cam3,
+    # which shows as a brightness step exactly on a seam and reads as a geometry error.
+    equalize_exposure: true
+    gain_smoothing: 0.9
+    gain_limit: 2.0
+
+    rig_frame: rig
+    output_frame: bev_ground
+    publish_source_mask: true
+    # The capture node publishes RAW (inverted) images and the extrinsics are solved from
+    # exactly those, so no roll is applied. Set true ONLY if something upstream already
+    # rotated 180 (csi_sender FLIP=2 does).
+    input_rotated_180: false

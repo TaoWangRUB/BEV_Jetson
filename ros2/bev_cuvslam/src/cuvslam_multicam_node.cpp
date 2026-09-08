@@ -2,20 +2,36 @@
 //
 // Runs the CUDA-10.2-ported libcuvslam in OdometryMode::Multicamera (visual only;
 // cuVSLAM v15 does NOT fuse an IMU in multicam mode — the IMU is fused externally
-// by an EKF). Loads per-camera KANNALA_BRANDT intrinsics (camN.yaml) + the rig
-// extrinsics (rig_extrinsics.yaml), builds the cuVSLAM rig, synchronizes 4 image
-// topics, calls Track(), and publishes nav_msgs/Odometry + a TF.
+// by an EKF). Loads per-camera MEI / omni-radtan intrinsics (camN.yaml, via LoadOmni)
+// + the ring-closed rig extrinsics (rig_extrinsics_imx296.yaml), builds the cuVSLAM
+// rig, synchronizes 4 image topics, calls Track(), and publishes nav_msgs/Odometry
+// + a TF.
 //
-// NOTE on sync: the IMX219 cameras have no hardware trigger and free-run at slightly
-// different rates (measured 4-cam spread ~30–86 ms). cuVSLAM wants <1 ms. We bundle the
-// latest frame per camera (driver = index 0 triggers Track) and feed the set one unified
-// timestamp so cuVSLAM accepts it. The cameras did NOT capture the same instant, so this
-// is the rig's main accuracy limiter under motion — real fix is hardware frame sync.
+// NOT Kannala-Brandt, which this comment claimed until 2026-09-01. These lenses are
+// ~192 deg and pinhole-equi diverged on every camera; the calibration is Mei. cuVSLAM
+// never sees either model - each fisheye is carved into two virtual PINHOLES with no
+// distortion, because the remap has already removed it (see the rig loop below).
+//
+// SYNC: the rig is hardware-triggered (4x IMX296 on one STM32 edge, measured skew 1 us),
+// so the cameras really do capture the same instant and each frame carries its own
+// exposure-midpoint timestamp (docs/timestamps.md). A set is four frames whose stamps span less
+// than max_skew_us — cuVSLAM's own Multicamera gate is 1 ms — and a set that fails is
+// DROPPED AND COUNTED, never re-stamped.
+//
+// The previous version had to bundle the latest frame per camera and hand cuVSLAM one
+// synthesised timestamp, because the free-running IMX219 rig could not produce a
+// coherent set at all. That workaround is gone: it threw away the per-frame time on the
+// one rig that has it, and it made an unsynchronised set look acceptable instead of
+// making it visible.
 
 #include <array>
+#include <chrono>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
 #include <memory>
+#include <set>
+#include <unordered_map>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -23,13 +39,20 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <geometry_msgs/msg/pose_array.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <cv_bridge/cv_bridge.h>
+#include <tf2/LinearMath/Transform.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <yaml-cpp/yaml.h>
 
 #include "cuvslam/cuvslam2.h"
+#include "bev_cuvslam/rig_build.hpp"
+#include "bev_cuvslam/virtual_pinhole.hpp"
 
 namespace {
 
@@ -47,21 +70,9 @@ YAML::Node load_yaml(const std::string& path) {
   return YAML::Load(ss.str());
 }
 
-// Build a cuVSLAM Camera (intrinsics + fisheye distortion) from a KANNALA_BRANDT yaml.
-cuvslam::Camera load_intrinsics(const std::string& path) {
-  YAML::Node y = load_yaml(path);
-  cuvslam::Camera c;
-  c.size = {y["image_width"].as<int>(), y["image_height"].as<int>()};
-  YAML::Node pp = y["projection_parameters"];
-  c.focal = {pp["mu"].as<float>(), pp["mv"].as<float>()};
-  c.principal = {pp["u0"].as<float>(), pp["v0"].as<float>()};
-  YAML::Node dp = y["distortion_parameters"];
-  c.distortion.model = cuvslam::Distortion::Model::Fisheye;  // 4-coeff equidistant = OpenCV fisheye
-  c.distortion.parameters = {dp["k2"].as<float>(), dp["k3"].as<float>(),
-                             dp["k4"].as<float>(), dp["k5"].as<float>()};
-  return c;
-}
-
+// 4x4 row-major matrix from yaml (rig_in_cam1 blocks).
+// cuVSLAM Pose (quaternion xyzw + translation) from a 4x4. cuVSLAM uses the OpenCV
+// convention - x right, y down, z forward - which is what our extrinsics are already in.
 // rig_from_<frame> pose from a node with t_xyz_m + q_wxyz (yaml is wxyz; cuVSLAM wants xyzw).
 cuvslam::Pose load_pose(const YAML::Node& n) {
   cuvslam::Pose p;
@@ -77,38 +88,165 @@ cuvslam::Pose load_pose(const YAML::Node& n) {
 class CuvslamMulticamNode : public rclcpp::Node {
  public:
   CuvslamMulticamNode() : Node("cuvslam_multicam") {
-    calib_dir_ = declare_parameter<std::string>("calib_dir", "scripts/config/calib");
-    rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics_vo.yaml");
+    calib_dir_ = declare_parameter<std::string>("calib_dir", "config/calib/imx296_1456x1088");
+    rig_path_ = declare_parameter<std::string>("rig_extrinsics", "config/rig/rig_extrinsics_imx296.yaml");
+    vstereo_path_ = declare_parameter<std::string>("virtual_stereo", "config/rig/virtual_stereo_imx296.yaml");
     cams_ = declare_parameter<std::vector<std::string>>("cameras", {"cam1", "cam2", "cam3", "cam4"});
     topics_ = declare_parameter<std::vector<std::string>>(
         "image_topics", {"/cam1/image_raw", "/cam2/image_raw", "/cam3/image_raw", "/cam4/image_raw"});
     odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
-    base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
-    // Staleness bound for the latest-frame bundler. The IMX219 rig free-runs with no HW
-    // trigger; measured 4-cam spread is ~30–86 ms (slowest cam ~14 Hz). 120 ms accepts
-    // most sets (~8 Hz odom; 80 ms gave ~5 Hz). Higher = more rate but more inter-camera
-    // skew (accuracy cost under motion). Lower it once frames are hardware-synced.
-    int slop_ms = declare_parameter<int>("sync_slop_ms", 120);
+    // NOT "base_link", and the difference matters. cuVSLAM reports world_from_rig, and
+    // this node's rig frame IS cam1's optical frame (z forward, x right, y down),
+    // additionally rolled 180 deg by the inverted mount. Publishing that as base_link
+    // would tell every tf consumer it is FLU on the vehicle, which it is not - and a
+    // 180 deg roll produces trajectories that look entirely plausible. Publishing a
+    // true base_link needs R_body_from_cam1, which is not measured; see
+    // config/rig/rig_layout.yaml and 3R.16b. Override the parameter only once it is.
+    base_frame_ = declare_parameter<std::string>("base_frame", "cam1_optical_frame");
+    // A set whose frames span more than this is not a set. cuVSLAM's Multicamera gate is
+    // 1 ms; the triggered rig measures 1 us, so anything near the limit is a fault, not
+    // something to widen the window for.
+    max_skew_ns_ = static_cast<int64_t>(declare_parameter<int>("max_skew_us", 1000)) * 1000;
+    // How far back to look for a matching frame from the other cameras. A few frame
+    // periods is plenty when they share a trigger edge; more just delays noticing a fault.
+    history_ = static_cast<size_t>(declare_parameter<int>("match_history", 8));
+    // Off by default: the landmark export slows an already Track()-bound node, so only
+    // enable it for visualisation/debug runs, not the §5 rate measurement.
+    publish_landmarks_ = declare_parameter<bool>("publish_landmarks", false);
+    landmark_stride_ = declare_parameter<int>("landmark_stride", 3);
+    publish_observations_ = declare_parameter<bool>("publish_observations", false);
+    // cuVSLAM's own logging is OFF unless we ask: SetVerbosity(0) is the library default and
+    // nothing in this node used to call it, so the library was silent by construction. Worth
+    // knowing what it will and will not say (libs/odometry/multi_visual_odometry_base.cpp):
+    // its three tracking messages — "images are not available", "Failed to track on the 2D
+    // tracking stage", "Failed to track on the PnP stage" — all sit on paths that return
+    // false, which reaches us as an EMPTY world_from_rig and the "tracking lost" warning
+    // below. So they cover the case we already see, and say nothing about the one that
+    // actually bit us in 5.0g: a solve that SUCCEEDS on a featureless view and returns a
+    // zero delta. 1=Error 2=Warning 3=Message (Release caps at 3).
+    // SLAM / loop closure. Odometry alone has no pose graph and nothing pins the
+    // trajectory, which is the structural source of the drift in section 5. cuvslam::Slam
+    // adds the graph and the loop closures on top of the SAME Odometry - it consumes
+    // Odometry::State, it does not replace the tracker.
+    enable_slam_ = declare_parameter<bool>("enable_slam", false);
+    slam_map_path_ = declare_parameter<std::string>("slam_map_path", "");
+    // 0 = no throttle. The header suggests 1000 ms for real-time mapping; leave it open
+    // offline, where wall-clock is not the constraint.
+    slam_throttling_ms_ = declare_parameter<int>("slam_throttling_ms", 0);
+    // 300 poses is the header's real-time figure; 0 is an unlimited graph.
+    slam_max_map_size_ = declare_parameter<int>("slam_max_map_size", 300);
+    debug_dump_dir_ = declare_parameter<std::string>("cuvslam_debug_dump_dir", "");
+    // Saturation gate. See check_exposure(): cuVSLAM has no image-quality input at all, so
+    // a blown frame reaches the solver looking like a valid one.
+    // Not the white level itself - the LOWEST value a modal pile-up must reach before it
+    // counts as clipping rather than as a legitimately dark scene. The white level is found
+    // per frame (see check_exposure).
+    sat_level_ = declare_parameter<int>("saturation_level", 200);
+    sat_warn_frac_ = declare_parameter<double>("saturation_warn_fraction", 0.5);
+    // Texture-collapse gate: see check_view(). A quarter of the running baseline sits
+    // between the two measured cases - run1's fatal 11% and run6's harmless 39%.
+    texture_frac_ = declare_parameter<double>("texture_collapse_fraction", 0.25);
+    // 20 frames = 1 s at 20 fps. Measured collapse lengths: run1 52-70 frames on ALL FOUR
+    // cameras at t=44.5-46.0 s (the event that ends in the teleport), run6 a single 26-frame
+    // dip on cam1 alone at t=79.1 s. So a second of it is well inside what matters and clear
+    // of transients - a doorway, someone crossing a light. Calibrated on two logs; treat the
+    // number as provisional.
+    static_run_warn_ = declare_parameter<int>("texture_collapse_frames", 20);
+    // Was a hardcoded member until now, which made the one gate that guards the TF
+    // CONTRACT the only unconfigurable number in the node. 5 m/s is a sprint.
+    max_speed_mps_ = declare_parameter<double>("max_speed_mps", 5.0);
+    // REP-105: odom -> base_link "is guaranteed to be continuous, in that it can only
+    // change in a continuous fashion", and map -> odom is where a discontinuous correction
+    // belongs. This node published the RAW cuVSLAM pose straight onto odom -> base and had
+    // no map frame at all, so a tracking re-init went out as real motion: measured on
+    // obs_slam_v6, a 50.22 m step in one 50 ms frame - 1004 m/s - on the odom edge.
+    //
+    // WITHHOLDING THE JUMPING FRAME DOES NOT FIX THIS, which is worth stating because it
+    // was tried first: dropping the one bad sample leaves the NEXT sample stepping across
+    // the same 50 m, just over a doubled dt (measured: max step 50.23 m, apparent speed
+    // halved to 502 m/s - the gap only flatters the number).
+    //
+    // So absorb it instead. On a discontinuity, fold the step into a correction C chosen so
+    // odom -> base carries straight on from where it was, and publish C^-1 as map -> odom:
+    //     odom_base = C * raw          continuous by construction
+    //     map_odom  = C^-1             carries every teleport, which is legal there
+    //     map_base  = raw              unchanged, still the tracker's global estimate
+    // /cuvslam/odometry keeps carrying the RAW pose either way - it is the measurement
+    // record section 5 is computed from, and re-basing it would change every figure there.
+    // That means odom -> base and /cuvslam/odometry deliberately disagree after the first
+    // jump. They are answering different questions.
+    tf_absorb_jumps_ = declare_parameter<bool>("tf_absorb_jumps", true);
+    map_frame_ = declare_parameter<std::string>("map_frame", "map");
+    const int verbosity = declare_parameter<int>("cuvslam_verbosity", 0);
+    if (verbosity > 0) {
+      cuvslam::SetVerbosity(verbosity);
+      RCLCPP_INFO(get_logger(), "cuVSLAM library verbosity %d (its own messages go to stdout)",
+                  verbosity);
+    }
 
     if (cams_.size() != 4 || topics_.size() != 4)
       throw std::runtime_error("this node is wired for exactly 4 cameras");
 
     build_tracker();
 
-    // Sync the 4 image streams (ApproximateTime: IMX219 has no hardware trigger).
-    // Latest-frame bundler (the IMX219 rig has no hardware trigger, and ApproximateTime
-    // can't reliably match 4 drifting, best-effort, different-rate streams). Cache the
-    // newest frame per camera; the driver camera (index 0) triggers a Track() using the
-    // most-recent frame from the others, as long as they're within max_stale_ns_.
-    max_stale_ns_ = static_cast<int64_t>(slop_ms) * 1000000;
-    auto qos = rclcpp::SensorDataQoS();
+    // IMAGE QoS: best-effort is right on the rig and wrong on a replay.
+    //
+    // Live, a slow VO must never back-pressure the camera, so SensorDataQoS (BEST_EFFORT,
+    // KeepLast) is correct. On bag replay it silently costs about a sixth of the run:
+    // `ros2 bag play` publishes RELIABLE (the bag's offered_qos_profiles is empty, so
+    // rosbag2 uses its default), a BEST_EFFORT reader matches it but tells DDS not to
+    // retransmit, and a 1456x1088 mono image is ~1.5 MB - far over the UDP datagram limit,
+    // so every sample is fragmented and losing one fragment loses the whole frame. The
+    // orphaned partners then pair across trigger edges and die on the 1 ms skew gate.
+    // Measured before this parameter existed: 81-84 % of sets reached the matcher at 0.25x,
+    // 0.5x and 1.0x alike - rate was never the variable (5.10).
+    const std::string qos_mode = declare_parameter<std::string>("image_qos", "sensor_data");
+    const int qos_depth = declare_parameter<int>("image_qos_depth", 10);
+    rclcpp::QoS qos = rclcpp::QoS(rclcpp::KeepLast(static_cast<size_t>(qos_depth)));
+    if (qos_mode == "reliable") {
+      qos.reliable();
+      RCLCPP_INFO(get_logger(), "image QoS RELIABLE depth %d — for bag replay, where losing "
+                  "a fragment loses a whole 1.5 MB frame. Do NOT use on the live rig: it lets "
+                  "a slow tracker back-pressure the camera.", qos_depth);
+    } else {
+      qos.best_effort();
+      RCLCPP_INFO(get_logger(), "image QoS BEST_EFFORT depth %d (live-rig default)", qos_depth);
+    }
     for (size_t i = 0; i < 4; ++i)
       subs_[i] = create_subscription<Img>(topics_[i], qos,
           [this, i](const Img::ConstSharedPtr msg) { on_frame(i, msg); });
 
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("cuvslam/odometry", 10);
+    if (enable_slam_) {
+      slam_pub_ = create_publisher<nav_msgs::msg::Odometry>("cuvslam/slam_odometry", 10);
+      // Latched: a loop closure is a rare event, and a viewer or recorder attaching later
+      // must still see the last one rather than wait for the next.
+      lc_pub_ = create_publisher<nav_msgs::msg::Path>(
+          "cuvslam/loop_closures", rclcpp::QoS(10).transient_local());
+      slam_path_pub_ = create_publisher<nav_msgs::msg::Path>(
+          "cuvslam/slam_path", rclcpp::QoS(2).transient_local());
+      lc_edge_pub_ = create_publisher<geometry_msgs::msg::PoseArray>(
+          "cuvslam/loop_closure_edges", rclcpp::QoS(10).transient_local());
+    }
+    if (publish_landmarks_)
+      cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("cuvslam/landmarks", 10);
+    if (publish_observations_)
+      obs_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("cuvslam/observations", 10);
     tf_bc_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
-    RCLCPP_INFO(get_logger(), "cuVSLAM multicam VO up: 4 cameras, mode=Multicamera (visual only).");
+    RCLCPP_INFO(get_logger(), "cuVSLAM multicam VO up: 4 fisheyes -> %zu virtual pinholes, "
+                "mode=Multicamera (visual only), sets gated at %.1f ms skew on real per-frame "
+                "timestamps.", vpin_.size(), max_skew_ns_ / 1e6);
+    // Say the frame out loud. Anyone reading this trajectory in rviz or fusing it with
+    // the IMU needs to know it is not a vehicle frame, and the pose alone will not tell
+    // them - a 180 deg roll still traces a plausible path.
+    RCLCPP_INFO(get_logger(),
+                "odometry frame: %s -> %s. The child frame is CAM1'S OPTICAL FRAME "
+                "(z forward, x right, y down), rolled 180 deg by the inverted mount. "
+                "It is NOT base_link and NOT FLU. Translation magnitudes and "
+                "return-to-origin drift are frame-independent and unaffected; anything "
+                "wanting a vehicle frame must compose R_body_from_cam1, which is not yet "
+                "measured (config/rig/rig_layout.yaml, 3R.16b).",
+                odom_frame_.c_str(), base_frame_.c_str());
   }
 
  private:
@@ -120,95 +258,800 @@ class CuvslamMulticamNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "cuVSLAM %d.%d.%d — warming up GPU...", major, minor, patch);
     cuvslam::WarmUpGPU();
 
-    YAML::Node rig_y = load_yaml(rig_path_);
-    cuvslam::Rig rig;
-    for (size_t i = 0; i < 4; ++i) {
-      cuvslam::Camera cam = load_intrinsics(calib_dir_ + "/" + cams_[i] + ".yaml");
-      cam.rig_from_camera = load_pose(rig_y["cameras"][cams_[i]]);
-      rig.cameras.push_back(cam);
-      RCLCPP_INFO(get_logger(), "  %s: %dx%d f=(%.1f,%.1f) c=(%.1f,%.1f)", cams_[i].c_str(),
-                  cam.size[0], cam.size[1], cam.focal[0], cam.focal[1], cam.principal[0], cam.principal[1]);
-    }
+    // Carve each fisheye into two virtual pinholes. cuVSLAM cannot consume the raw
+    // cameras at all: its only fisheye model is equidistant, capped below 180 deg, and
+    // these lenses fit ~192 deg. See virtual_pinhole.hpp.
+    //
+    // Built by bev_cuvslam/rig_build.hpp, SHARED with the fused node - see the note there
+    // on why this is one implementation and not two.
+    auto vrig = bev_cuvslam::BuildVirtualRig(calib_dir_, rig_path_, vstereo_path_,
+                                             {cams_[0], cams_[1], cams_[2], cams_[3]});
+    for (const auto& w : vrig.warnings) RCLCPP_WARN(get_logger(), "%s", w.c_str());
+    vpin_ = std::move(vrig.vpin);
+    vsrc_ = std::move(vrig.vsrc);
+    cuvslam::Rig rig = std::move(vrig.rig);
+    for (size_t k = 0; k < vpin_.size(); ++k)
+      RCLCPP_INFO(get_logger(), "  vcam %zu = %s %+.0f deg: %dx%d f=%.1f", k,
+                  cams_[vsrc_[k]].c_str(), vpin_[k].yaw_rad * 180.0 / CV_PI,
+                  vpin_[k].width, vpin_[k].height, vpin_[k].focal);
+
     // No IMU in multicam mode (cuVSLAM v15 limitation).
 
     cuvslam::Odometry::Config cfg = cuvslam::Odometry::GetDefaultConfig();
     cfg.odometry_mode = cuvslam::Odometry::OdometryMode::Multicamera;
     cfg.multicam_mode = cuvslam::Odometry::MulticameraMode::Precision;
     cfg.use_gpu = true;
+    // REPRODUCIBILITY, and why this flag is NOT the fix.
+    //
+    // async_sba runs bundle adjustment on a background thread, so how many iterations land
+    // between two frames depends on wall-clock arrival. Replaying run1_motion at 0.4x and
+    // 0.2x - both essentially lossless, 1153 and 1155 of 1155 sets - gave trajectories a
+    // median 1.13 m apart. That is LARGER than the 0.70 m difference between pure VO and
+    // the loop-closed trajectory, so no offline A/B of the two means anything.
+    //
+    // Turning it off does not fix it and makes it worse: synchronous BA is slower, so the
+    // node drops MORE sets (1022 vs 1153 at 0.4x) and drops different ones, and the two
+    // rates then diverged by a median 3.28 m. The frame-drop difference is the dominant
+    // term, not the BA threading.
+    //
+    // The real fix is to stop dropping frames at all, which means taking the wall clock out
+    // of the loop: read the bag in-process and call Track() per set, with no DDS and no
+    // real-time coupling (retarget-vo-to-imx296-rig 5.10c). Until that exists, treat any
+    // offline difference smaller than ~1 m as noise. Default stays ON, matching the library
+    // and the live rig.
+    cfg.async_sba = declare_parameter<bool>("async_sba", true);
+    // Leave rectified_stereo_camera FALSE. Setting it swaps in the horizontal-only
+    // tracker, which cannot move vertically, and demands that paired cameras have
+    // identical rotation matrices to 1e-6 - our facing pinholes sit 1.0-1.4 deg apart.
+    // The default 2D LK tracker absorbs that residual instead.
+    cfg.rectified_stereo_camera = false;
+    // Export the accumulated 3D landmark map so the node can publish it as a point cloud
+    // (GetFinalLandmarks, odometry start frame). The header warns export costs time and
+    // memory, so it is off by the default config and only worth it for visualisation runs.
+    cfg.enable_final_landmarks_export = publish_landmarks_;
+    // Per the API header, the final-landmarks flag already implies observations export.
+    cfg.enable_observations_export = publish_observations_;
+    // Slam::Track takes Odometry::State, and GetState() THROWS unless export is on. So
+    // enabling SLAM forces the export we otherwise keep off for rate measurements - that
+    // cost is the reason enable_slam defaults to false, not an oversight.
+    state_readable_ = enable_slam_ || publish_observations_ || publish_landmarks_;
+    if (enable_slam_) {
+      cfg.enable_observations_export = true;
+      cfg.enable_landmarks_export = true;
+    }
+    // cuVSLAM's own debug facility: every Track() call's images plus the rig config are
+    // written here in edex format, which its offline tools read. Off unless asked — it
+    // writes a PNG per virtual camera per frame, so it fills a disk at 8 cameras x 20 Hz.
+    if (!debug_dump_dir_.empty()) {
+      cfg.debug_dump_directory = debug_dump_dir_;
+      RCLCPP_WARN(get_logger(), "cuVSLAM edex debug dump ENABLED -> %s (8 images per set, "
+                  "this will fill the disk)", debug_dump_dir_.c_str());
+    }
     tracker_ = std::make_unique<cuvslam::Odometry>(rig, cfg);
+
+    if (enable_slam_) {
+      cuvslam::Slam::Config sc = cuvslam::Slam::GetDefaultConfig();
+      sc.use_gpu = true;
+      // Left at the library default for the same reason as async_sba: running SLAM inline
+      // slows Track() and costs frames, which moves the result more than the threading does.
+      sc.sync_mode = declare_parameter<bool>("slam_sync_mode", false);
+      sc.enable_reading_internals = true;   // pose graph + loop-closure layers
+      sc.map_cache_path = slam_map_path_;   // empty = in memory only
+      sc.throttling_time_ms = static_cast<uint32_t>(slam_throttling_ms_);
+      sc.max_map_size = static_cast<uint32_t>(slam_max_map_size_);
+      // Every virtual pinhole is primary, matching MulticameraMode::Precision above
+      // ("all cameras are primary"). Anything narrower would quietly change which views
+      // can close a loop.
+      std::vector<uint8_t> primary(vpin_.size());
+      for (size_t i = 0; i < vpin_.size(); ++i) primary[i] = static_cast<uint8_t>(i);
+      slam_ = std::make_unique<cuvslam::Slam>(rig, primary, sc);
+      slam_->EnableReadingData(cuvslam::Slam::DataLayer::LoopClosure, 4096);
+      slam_->EnableReadingData(cuvslam::Slam::DataLayer::PoseGraph, 4096);
+      RCLCPP_INFO(get_logger(), "SLAM ON: pose graph + loop closure over %zu primary cameras "
+                  "(max_map_size %d, throttle %d ms, map %s). /cuvslam/slam_odometry carries "
+                  "the corrected pose; /cuvslam/odometry stays PURE VO so the section-5 drift "
+                  "numbers remain comparable.",
+                  primary.size(), slam_max_map_size_, slam_throttling_ms_,
+                  slam_map_path_.empty() ? "in memory" : slam_map_path_.c_str());
+    }
   }
 
-  // Cache every frame; only the driver camera (index 0) triggers a Track().
+  // Keep a short history per camera; camera 0 arriving tries to form a set from it.
+  // Matching is by TIMESTAMP, never by arrival order — the streams are separate DDS
+  // subscriptions and their delivery order says nothing about which trigger edge a frame
+  // came from.
   void on_frame(size_t idx, const Img::ConstSharedPtr& m) {
-    {
-      std::lock_guard<std::mutex> lk(mtx_);
-      latest_[idx] = m;
-    }
-    if (idx != 0) return;
-
     std::array<Img::ConstSharedPtr, 4> msgs;
     {
       std::lock_guard<std::mutex> lk(mtx_);
-      msgs = latest_;
-    }
-    const int64_t t0 = rclcpp::Time(m->header.stamp).nanoseconds();
-    for (size_t i = 1; i < 4; ++i) {
-      if (!msgs[i]) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "no frame yet from %s", cams_[i].c_str());
-        return;
+      ++recv_[idx];
+      auto& h = hist_[idx];
+      h.push_back(m);
+      // AGEING OUT IS THE ONLY WAY A FRAME LEAVES WITHOUT BEING LOOKED AT, and it was
+      // counted nowhere - the stitch node has tracked this since it was written, so a
+      // starving camera showed up there and was silent here.
+      //
+      // Counting evictions alone would fire on every healthy run: cam2..4 frames are never
+      // popped when matched, only read, so in steady state each of those deques sits at the
+      // cap and evicts one ALREADY-USED frame per edge. So a frame counts as lost only if it
+      // ages out NEWER than the last frame this camera contributed to a set - which is
+      // exactly the case where the camera ran more than match_history frames ahead of cam1
+      // and the intervening edges were never assembled.
+      while (h.size() > history_) {
+        if (rclcpp::Time(h.front()->header.stamp).nanoseconds() > last_used_ns_[idx])
+          ++unmatched_[idx];
+        h.pop_front();
       }
-      const int64_t dt = std::llabs(t0 - rclcpp::Time(msgs[i]->header.stamp).nanoseconds());
-      if (dt > max_stale_ns_) {
+
+      // ANCHOR ON CAM1'S OLDEST BUFFERED FRAME, NOT ON CAM1'S ARRIVAL.
+      //
+      // This matched on arrival until 2026-09-01 (`if (idx != 0) return;` and t0 from the
+      // just-received message), which races DDS delivery order: when cam1's frame for a
+      // trigger edge lands first, the SAME-EDGE frames from cam2..4 have not been
+      // delivered yet, so the nearest candidate in their history is the PREVIOUS edge.
+      // Every set was then rejected at exactly one frame period - 33.3 ms at 30 Hz -
+      // while the capture node reported 8 us of real skew on the very same frames. The
+      // gate was right and the hardware was right; the matching was wrong, and it looked
+      // exactly like a dead trigger.
+      //
+      // So: take the OLDEST cam1 frame as the anchor, and only match once every other
+      // camera has delivered a frame at or after it. That is the proof that no better
+      // candidate can still arrive. The anchor is consumed either way, matched or
+      // dropped, so a genuinely unpaired frame cannot wedge the queue.
+      if (hist_[0].empty()) return;
+      const int64_t t0 = rclcpp::Time(hist_[0].front()->header.stamp).nanoseconds();
+      for (size_t i = 1; i < 4; ++i) {
+        if (hist_[i].empty()) {
+          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "no frame yet from %s",
+                               cams_[i].c_str());
+          return;
+        }
+        if (rclcpp::Time(hist_[i].back()->header.stamp).nanoseconds() < t0) return;
+      }
+
+      msgs[0] = hist_[0].front();
+      hist_[0].pop_front();
+      // Marked used before the skew gate, on purpose: a set rejected for skew is already
+      // reported as dropped_sets_, and counting its frames as unmatched too would report one
+      // fault twice. This counter is for STARVATION, that one is for PAIRING.
+      last_used_ns_[0] = t0;
+      int64_t lo = t0, hi = t0;
+      for (size_t i = 1; i < 4; ++i) {
+        int64_t best_d = INT64_MAX;
+        for (const auto& cand : hist_[i]) {
+          const int64_t t = rclcpp::Time(cand->header.stamp).nanoseconds();
+          if (std::llabs(t - t0) < best_d) { best_d = std::llabs(t - t0); msgs[i] = cand; }
+        }
+        const int64_t t = rclcpp::Time(msgs[i]->header.stamp).nanoseconds();
+        last_used_ns_[i] = t;
+        lo = std::min(lo, t);
+        hi = std::max(hi, t);
+      }
+      const int64_t skew = hi - lo;
+      ++sets_;
+      if (skew > max_skew_ns_) {
+        ++dropped_sets_;
+        // Do not widen the window and do not re-stamp: on a triggered rig this means the
+        // trigger, a camera, or the capture node is at fault, and the VO cannot fix it.
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-            "%s stale by %.0f ms (> %ld ms) — skipping set", cams_[i].c_str(), dt / 1e6, max_stale_ns_ / 1000000);
+            "set skew %.1f ms > %.1f ms — dropped (%ld of %ld). Is the trigger running?",
+            skew / 1e6, max_skew_ns_ / 1e6, dropped_sets_, sets_);
         return;
       }
+      if (skew > worst_skew_ns_) worst_skew_ns_ = skew;
     }
+    report();
     track_and_publish(msgs);
   }
 
+  void report() {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_report_ < std::chrono::seconds(5)) return;
+    RCLCPP_INFO(get_logger(), "sets %ld, worst skew %.0f us in the last window, %ld dropped total, "
+                "remap %ld us for %zu virtual cameras, Track() mean %ld us / max %ld us, "
+                "worst saturation %.0f%%",
+                sets_, worst_skew_ns_ / 1e3, dropped_sets_, remap_us_, vpin_.size(),
+                track_n_ ? track_us_sum_ / track_n_ : 0, track_us_max_, 100.0 * sat_worst_);
+    if (kf_n_ || nkf_n_) {
+      const double kf_frac = 100.0 * kf_n_ / std::max<int64_t>(1, kf_n_ + nkf_n_);
+      RCLCPP_INFO(get_logger(), "  Track(): keyframe %ld us over %ld frames (%.0f%%), "
+                  "non-keyframe %ld us over %ld",
+                  kf_n_ ? kf_us_sum_ / kf_n_ : 0, kf_n_, kf_frac,
+                  nkf_n_ ? nkf_us_sum_ / nkf_n_ : 0, nkf_n_);
+      // A KEYFRAME FRACTION NEAR 100% IS TRACKING DISTRESS, not a busy map. The tracker
+      // declares a keyframe when it cannot carry on against the existing landmarks, so
+      // "every frame is a keyframe" means it is re-anchoring constantly. Measured on run1:
+      // 24-54% for the healthy stretch, then 100% at t=45 s - exactly the saturated window -
+      // and still 94-97% after. It also triples the cost, since a keyframe triangulates,
+      // adds to the map and triggers SBA while a normal frame only solves PnP.
+      if (kf_frac > 90.0)
+        RCLCPP_WARN(get_logger(), "  %.0f%% of frames are KEYFRAMES — the tracker is "
+                    "re-anchoring on nearly every frame, which is what tracking distress "
+                    "looks like from the inside. Check the saturation line above.", kf_frac);
+    }
+    track_us_sum_ = 0; track_us_max_ = 0; track_n_ = 0;
+    kf_us_sum_ = 0; kf_n_ = 0; nkf_us_sum_ = 0; nkf_n_ = 0;
+    // THE LEDGER, INSIDE THE NODE. Without this the node can say how many sets it tried and
+    // how many it rejected, but not how many frames ever REACHED it - so a pose missing from
+    // the output could equally be a frame that never arrived (transport/QoS), one that aged
+    // out, one whose set failed the skew gate, or a Track() that returned no pose, and the
+    // only way to tell was to guess. Every count below is on the same 5 s window boundary, so
+    // received - matched - rejected - lost should equal what went out.
+    RCLCPP_INFO(get_logger(),
+        "  LEDGER recv [%ld %ld %ld %ld] -> sets %ld (skew-rejected %ld, aged out %ld) "
+        "-> poses %ld; %ld sets tracked but produced no pose",
+        recv_[0], recv_[1], recv_[2], recv_[3], sets_, dropped_sets_,
+        unmatched_[0] + unmatched_[1] + unmatched_[2] + unmatched_[3], published_,
+        sets_ - dropped_sets_ - published_);
+    if (cb_n_)
+      RCLCPP_INFO(get_logger(), "  CALLBACK mean %ld us / max %ld us over %ld sets; %ld sets "
+                  "exceeded their own inter-frame budget so far",
+                  cb_us_sum_ / cb_n_, cb_us_max_, cb_n_, over_budget_);
+    if (slam_)
+      RCLCPP_INFO(get_logger(), "  STAGE max us: Track %ld | slam_track %ld | slam_path %ld "
+                  "| loop_edges %ld | landmarks %ld",
+                  track_us_max_win_, slam_us_, path_us_, edges_us_, lm_us_);
+    cb_us_sum_ = 0; cb_us_max_ = 0; cb_n_ = 0;
+    slam_us_ = 0; path_us_ = 0; edges_us_ = 0; lm_us_ = 0; track_us_max_win_ = 0;
+    const int64_t unmatched = unmatched_[0] + unmatched_[1] + unmatched_[2] + unmatched_[3];
+    if (unmatched > last_unmatched_) {
+      RCLCPP_WARN(get_logger(), "  %ld frames (+%ld) aged out without ever forming a set "
+                  "[%ld %ld %ld %ld] — a camera is running more than %zu frames ahead of the "
+                  "others, so whole edges were never assembled. Is the trigger running?",
+                  unmatched, unmatched - last_unmatched_, unmatched_[0], unmatched_[1],
+                  unmatched_[2], unmatched_[3], history_);
+      last_unmatched_ = unmatched;
+    }
+    if (static_events_)
+      RCLCPP_WARN(get_logger(), "  %ld texture-collapse episodes so far — these PRECEDE the "
+                  "jumps, they do not follow them", static_events_);
+    if (jumps_)
+      RCLCPP_WARN(get_logger(), "  %ld discontinuities so far, %ld absorbed into map->odom — "
+                  "odom->base is continuous but map->odom has stepped, so the two frames are "
+                  "%.2f m apart and /cuvslam/odometry no longer matches TF",
+                  jumps_, corrections_, corr_.getOrigin().length());
+    if (slam_)
+      RCLCPP_INFO(get_logger(), "  SLAM: %ld loop closures, %ld pose-graph optimisations",
+                  lc_events_, pgo_events_);
+    worst_skew_ns_ = 0;
+    sat_worst_ = 0.0;
+    last_report_ = now;
+  }
+
   void track_and_publish(const std::array<Img::ConstSharedPtr, 4>& msgs) {
-    // The IMX219 rig has no hardware trigger, so ApproximateTime-matched frames are
-    // tens of ms apart — but cuVSLAM's Multicamera mode hard-rejects sets whose
-    // timestamps differ by >1 ms. Present the matched set under one unified timestamp
-    // (cam0's) so cuVSLAM accepts it. Caveat: the cameras did NOT capture the same
-    // instant, so cross-camera geometry is skewed under motion (degrades tracking).
-    // The real fix is hardware frame sync; this unblocks bring-up. See sync_slop_ms.
-    const int64_t base_ts = rclcpp::Time(msgs[0]->header.stamp).nanoseconds();
-    std::vector<cv_bridge::CvImageConstPtr> holds(4);  // keep pixel buffers alive during Track()
+    // WHOLE-CALLBACK WALL TIME, not just Track(). The budget is what the source gives us per
+    // set - 50 ms live at 20 fps, or 50/rate on a replay - and everything in here spends it:
+    // the remap, Track(), the SLAM call, the exports, the publishes. Timing only Track()
+    // hid that, and left "the consumer cannot keep up" as an inference from missing frames
+    // rather than a measurement. When this exceeds the budget the subscriber stops draining
+    // and the middleware discards images UPSTREAM of this node, which is why they never show
+    // up in any counter here.
+    const auto t_cb = std::chrono::steady_clock::now();
+    std::vector<cv_bridge::CvImageConstPtr> holds(4);  // keep source buffers alive
+    for (uint32_t i = 0; i < 4; ++i) holds[i] = cv_bridge::toCvShare(msgs[i], "mono8");
+
+    // Remap each fisheye into its two virtual pinholes. The maps are built once at
+    // startup; this is a fixed-point bilinear gather, the cheapest form of remap.
+    const auto t_remap = std::chrono::steady_clock::now();
     cuvslam::Odometry::ImageSet images;
-    images.reserve(4);
-    for (uint32_t i = 0; i < 4; ++i) {
-      holds[i] = cv_bridge::toCvShare(msgs[i], "mono8");
-      const cv::Mat& g = holds[i]->image;
+    images.reserve(vpin_.size());
+    for (size_t k = 0; k < vpin_.size(); ++k) {
+      cv::remap(holds[vsrc_[k]]->image, vimg_[k], vpin_[k].map1, vpin_[k].map2, cv::INTER_LINEAR);
       cuvslam::Image im{};
-      im.pixels = g.data;
-      im.width = g.cols;
-      im.height = g.rows;
-      im.pitch = static_cast<int32_t>(g.step);
+      im.pixels = vimg_[k].data;
+      im.width = vimg_[k].cols;
+      im.height = vimg_[k].rows;
+      im.pitch = static_cast<int32_t>(vimg_[k].step);
       im.encoding = cuvslam::ImageData::Encoding::MONO;
       im.data_type = cuvslam::ImageData::DataType::UINT8;
       im.is_gpu_mem = false;
-      im.timestamp_ns = base_ts;  // unified per-set timestamp (see note above)
-      im.camera_index = i;
+      // Each virtual camera inherits the exposure-midpoint stamp of the fisheye it was
+      // carved from. The set already passed the skew gate, so cuVSLAM's own 1 ms check
+      // passes on the real timestamps rather than on a synthesised one.
+      im.timestamp_ns = rclcpp::Time(msgs[vsrc_[k]]->header.stamp).nanoseconds();
+      im.camera_index = static_cast<uint32_t>(k);
       images.push_back(im);
     }
+    remap_us_ = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - t_remap).count();
+
+    check_exposure(holds);
 
     cuvslam::PoseEstimate est;
+    const auto t_track = std::chrono::steady_clock::now();
     try {
       est = tracker_->Track(images);
     } catch (const std::exception& e) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Track() failed: %s", e.what());
       return;
     }
+    // Track() is the cycle-time budget: the remap is a few ms, this is the rest. Reported so
+    // "can this board keep up with 20 Hz" is a measurement rather than an inference from the
+    // output rate, which is also capped by the replay rate and by sets lost in transport.
+    // Measured 2026-09-06: host 6.5-10 ms mean; TX2 50-90 ms (5.4). Only the TX2 is
+    // compute-bound.
+    track_us_ = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - t_track).count();
+    track_us_sum_ += track_us_;
+    track_us_max_ = std::max(track_us_max_, track_us_);
+    track_us_max_win_ = std::max(track_us_max_win_, track_us_);
+    ++track_n_;
+    // Split the timing by KEYFRAME. Track() does not do the same work every frame: a
+    // non-key frame is a PnP solve against the recent landmarks, while a keyframe also
+    // triangulates, calls map_.add_keyframe(), and triggers SBA
+    // (pipelines/track_online_multi.cpp, the `if (frameState == FrameState::Key)` branch).
+    // Reporting one mean over both hides a bimodal distribution and makes the keyframe cost
+    // look like jitter.
+    if (state_readable_) {
+      try {
+        cuvslam::Odometry::State st;
+        tracker_->GetState(st);
+        if (st.keyframe) { kf_us_sum_ += track_us_; ++kf_n_; }
+        else             { nkf_us_sum_ += track_us_; ++nkf_n_; }
+      } catch (const std::exception&) { state_readable_ = false; }
+    }
     if (!est.world_from_rig) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "tracking lost (no pose)");
       return;
     }
-    publish(*est.world_from_rig, msgs[0]->header.stamp);
+    const bool continuous = check_pose_health(*est.world_from_rig, msgs[0]->header.stamp);
+    publish(*est.world_from_rig, msgs[0]->header.stamp, continuous);
+    if (slam_) {
+      // PER-STAGE TIMING. The whole-callback number said the consumer falls behind but not
+      // WHICH call does it, and Track() is only 37 ms of a 643 ms callback. Every stage below
+      // exports WHOLE state - the trajectory so far, the pose graph - so each is a candidate
+      // for a cost that grows with run length. Measured rather than reasoned about, because
+      // reasoning about it produced four wrong answers.
+      const auto t_s = std::chrono::steady_clock::now();
+      slam_track(msgs[0]->header.stamp);
+      slam_us_ = std::max(slam_us_, std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - t_s).count());
+      // The optimised trajectory has to go out on a CADENCE, not only when a loop closes.
+      // It was published from publish_loop_closures() alone, so /cuvslam/slam_path always
+      // ended at the LAST CLOSURE rather than at the end of the run - 41.6 s of a 54 s run
+      // on one replay, 37.4 s on another, each exactly its final closure. It read as SLAM
+      // giving up mid-run, and it made an optimised-vs-VO path comparison meaningless
+      // because the two covered different intervals.
+      if (++slam_path_countdown_ >= slam_path_every_) {
+        slam_path_countdown_ = 0;
+        // Path AND edges together, from the same graph state. Publishing the edges only on
+        // closures left them describing a graph up to 18 s older than the path they were
+        // drawn against, so they no longer lay on it.
+        const auto t_p = std::chrono::steady_clock::now();
+        publish_slam_path(msgs[0]->header.stamp);
+        path_us_ = std::max(path_us_, std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - t_p).count());
+        // ReadPoseGraph() plus the edge scan is far more expensive than GetAllSlamPoses(),
+        // and doing both every 20 sets cost 124 frames (1031 against 1153 at the same rate).
+        // Dropped frames put GAPS in the optimised path, and a gap drawn as a chord looks
+        // exactly like a jump - which is what sent us looking for a bug that was not there.
+        // The graph changes only on a closure, so a fifth of the rate loses nothing.
+        if (++edge_countdown_ >= 5) {
+          edge_countdown_ = 0;
+          const auto t_e = std::chrono::steady_clock::now();
+          publish_loop_edges(msgs[0]->header.stamp);
+          edges_us_ = std::max(edges_us_, std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - t_e).count());
+        }
+      }
+    }
+    if (publish_landmarks_ && landmark_stride_ > 0 && (sets_ % landmark_stride_) == 0) {
+      const auto t_l = std::chrono::steady_clock::now();
+      publish_landmarks(msgs[0]->header.stamp);
+      lm_us_ = std::max(lm_us_, std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - t_l).count());
+    }
+    if (publish_observations_)
+      publish_observations(msgs[0]->header.stamp);
+
+    const int64_t cb_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - t_cb).count();
+    cb_us_sum_ += cb_us;
+    cb_us_max_ = std::max(cb_us_max_, cb_us);
+    ++cb_n_;
+    // Inter-arrival of the sets we actually got, which IS the budget: it already reflects
+    // the replay rate, so there is nothing to configure and nothing to assume.
+    const int64_t now_ns = rclcpp::Time(msgs[0]->header.stamp).nanoseconds();
+    if (last_cb_stamp_ns_) {
+      const int64_t budget_us = (now_ns - last_cb_stamp_ns_) / 1000;
+      if (budget_us > 0 && cb_us > budget_us) ++over_budget_;
+    }
+    last_cb_stamp_ns_ = now_ns;
   }
 
-  void publish(const cuvslam::PoseWithCovariance& pwc, const builtin_interfaces::msg::Time& stamp) {
+  void publish_observations(const builtin_interfaces::msg::Time& stamp) {
+    // The 2D features cuVSLAM actually tracked this frame, per virtual camera. Packed as
+    // one cloud: x=u, y=v, z=virtual camera index, plus the landmark id for colouring.
+    sensor_msgs::msg::PointCloud2 pc;
+    pc.header.stamp = stamp;
+    pc.header.frame_id = odom_frame_;
+    pc.height = 1;
+    pc.is_dense = true;
+    sensor_msgs::PointCloud2Modifier mod(pc);
+    mod.setPointCloud2Fields(4,
+                             "x", 1, sensor_msgs::msg::PointField::FLOAT32,
+                             "y", 1, sensor_msgs::msg::PointField::FLOAT32,
+                             "z", 1, sensor_msgs::msg::PointField::FLOAT32,
+                             "id", 1, sensor_msgs::msg::PointField::FLOAT32);
+    std::vector<cuvslam::Observation> all;
+    for (uint32_t ci = 0; ci < vpin_.size(); ++ci) {
+      const auto obs = tracker_->GetLastObservations(ci);
+      all.insert(all.end(), obs.begin(), obs.end());
+    }
+    mod.resize(all.size());
+    sensor_msgs::PointCloud2Iterator<float> ix(pc, "x"), iy(pc, "y"), iz(pc, "z"),
+        iid(pc, "id");
+    for (const auto& o : all) {
+      ix[0] = o.u; iy[0] = o.v; iz[0] = static_cast<float>(o.camera_index);
+      iid[0] = static_cast<float>(o.id & 0xFFFFFFu);   // low bits are enough to colour by
+      ++ix; ++iy; ++iz; ++iid;
+    }
+    obs_pub_->publish(pc);
+  }
+
+  void publish_landmarks(const builtin_interfaces::msg::Time& stamp) {
+    // GetFinalLandmarks: the whole map, id -> xyz, already in the odometry start frame,
+    // so it drops straight into a cloud on odom_frame_ with no extra transform.
+    const auto lms = tracker_->GetFinalLandmarks();
+    sensor_msgs::msg::PointCloud2 pc;
+    pc.header.stamp = stamp;
+    pc.header.frame_id = odom_frame_;
+    pc.height = 1;
+    pc.is_dense = true;
+    sensor_msgs::PointCloud2Modifier mod(pc);
+    mod.setPointCloud2FieldsByString(1, "xyz");
+    mod.resize(lms.size());
+    sensor_msgs::PointCloud2Iterator<float> ix(pc, "x"), iy(pc, "y"), iz(pc, "z");
+    for (const auto& kv : lms) {
+      ix[0] = kv.second[0]; iy[0] = kv.second[1]; iz[0] = kv.second[2];
+      ++ix; ++iy; ++iz;
+    }
+    cloud_pub_->publish(pc);
+  }
+
+  // THE FAULT cuVSLAM DOES NOT HAVE A NAME FOR: a correctly exposed frame and a blown one
+  // are the same thing to it.
+  //
+  // Its Track() contract says "if after several calls visual odometry is not able to recover,
+  // then invalid pose will be returned" — but that path is only reached when the solve FAILS
+  // (multi_visual_odometry_base.cpp returns false and cuvslam2.cpp hands back an empty
+  // world_from_rig). On the 2026-09-06 run1 the solve kept succeeding on a saturated view and
+  // returned a zero delta, so nothing in the library ever considered it a fault. There is no
+  // image-quality field in Config, no quality output in PoseEstimate, and the only quality
+  // signal at all is the covariance — which by then is already garbage.
+  //
+  // So the rig has to notice for itself. Exposure here is the STM32 trigger pulse width, not
+  // Argus AE (AE is locked on purpose: under external trigger it cannot reach its actuator and
+  // hunts on gain, 4.7). That makes this a fault the OPERATOR can act on and the software
+  // cannot: the fix is the pulse width, or the route.
+  //
+  // Cost: one sample every 8th pixel each way, so 1/64 of the frame, ~25k reads per camera.
+  void check_exposure(const std::vector<cv_bridge::CvImageConstPtr>& holds) {
+    // FIND the white level, do not assume it. It moves with the gain and the ISP state: at
+    // 64x gain the clipped pile-up sat at 227, at 32x it sits at 221. A fixed threshold of
+    // 227 therefore saw 1.7% of pixels "saturated" on a frame that was 58% clipped, and this
+    // check stayed silent through the whole of run4. That is the same mistake as testing for
+    // ">= 250" on a pipeline whose white level is 227 - twice now, so it is measured here.
+    //
+    // The clipped value is the MODE, and it is only clipping if the mode sits high: a dark
+    // scene legitimately has a low mode and is not clipped.
+    double worst = 0.0;
+    size_t worst_cam = 0;
+    int worst_level = 0;
+    if (samp_.size() < holds.size()) {
+      samp_.resize(holds.size());
+      grad_ema_.assign(holds.size(), 0.0);
+      static_run_.assign(holds.size(), 0);
+    }
+    for (size_t i = 0; i < holds.size(); ++i) {
+      const cv::Mat& im = holds[i]->image;
+      int hist[256] = {0};
+      size_t n = 0;
+      auto& samp = samp_[i];
+      samp.clear();
+      for (int y = 0; y < im.rows; y += 8) {
+        const uint8_t* row = im.ptr<uint8_t>(y);
+        for (int x = 0; x < im.cols; x += 8, ++n) { ++hist[row[x]]; samp.push_back(row[x]); }
+      }
+      check_view(i, samp, (im.cols + 7) / 8, (im.rows + 7) / 8);
+      int mode = 0;
+      for (int v = 1; v < 256; ++v) if (hist[v] > hist[mode]) mode = v;
+      if (mode < sat_level_) continue;              // mode too low to be clipping
+      const double frac = n ? static_cast<double>(hist[mode]) / n : 0.0;
+      if (frac > worst) { worst = frac; worst_cam = i; worst_level = mode; }
+    }
+    if (worst >= sat_warn_frac_) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+          "%s is %.0f%% saturated at %d — the scene is brighter than the trigger pulse "
+          "width can hold. Features die here and the pose will freeze, then jump. Shorten the "
+          "pulse (j106-trigctl.py), not the AE: AE is locked under external trigger and "
+          "cannot fix this.",
+          cams_[worst_cam].c_str(), 100.0 * worst, worst_level);
+    }
+    sat_worst_ = std::max(sat_worst_, worst);
+  }
+
+  // THE VIEW STOPPED CARRYING INFORMATION - the fault the operator sees as "the images
+  // froze", and the one that PRECEDES every jump in section 5.
+  //
+  // Measured on run1 cam2: from t=44.7 s the spatial gradient fell to 1.02 against a healthy
+  // 9.10 - 11% - while saturation climbed past 90%. The odom teleport lands at t=47.4 s, on
+  // the trailing edge, once the scene returns and the tracker finds its landmarks describe
+  // nowhere it is. NOT ONE FRAME IN THAT LOG IS BYTE-IDENTICAL TO ITS PREDECESSOR, so a
+  // duplicate-frame test sees nothing: the pixels keep dithering, the CONTENT is gone.
+  //
+  // TRIGGER ON SPATIAL TEXTURE, NOT ON FRAME-TO-FRAME CHANGE. Temporal change was tried
+  // first and cries wolf: a STATIONARY RIG produces almost no change either, and the two are
+  // indistinguishable by magnitude - run1's fatal window sat at 16% of its temporal baseline
+  // and run6's harmless stationary lead-in at 14%, and run6 has no saturation and no jumps
+  // at all. Texture separates them, because it measures what a corner detector actually eats:
+  // run1 11% of healthy against run6 39%. A parked rig looking at a textured wall is fine;
+  // a moving rig looking at a white-out is not.
+  //
+  // check_exposure() catches only the BRIGHT version of this. A blank wall, a dark corridor
+  // or a covered lens strips the texture just as completely and clips nothing at all, so it
+  // passes that test in silence. This measures the thing itself.
+  //
+  // The baseline is held while the view is degraded, deliberately: an EMA that kept adapting
+  // would drift down to meet the collapse and switch the warning off partway through exactly
+  // the event it exists to report.
+  void check_view(size_t i, const std::vector<uint8_t>& samp, int sw, int sh) {
+    if (sw < 2 || sh < 2 || samp.size() < static_cast<size_t>(sw) * sh) return;
+    double gx = 0.0, gy = 0.0;
+    size_t nx = 0, ny = 0;
+    for (int y = 0; y < sh; ++y)
+      for (int x = 1; x < sw; ++x, ++nx)
+        gx += std::abs(static_cast<int>(samp[y * sw + x]) - static_cast<int>(samp[y * sw + x - 1]));
+    for (int y = 1; y < sh; ++y)
+      for (int x = 0; x < sw; ++x, ++ny)
+        gy += std::abs(static_cast<int>(samp[y * sw + x]) - static_cast<int>(samp[(y - 1) * sw + x]));
+    const double g = 0.5 * (gx / std::max<size_t>(1, nx) + gy / std::max<size_t>(1, ny));
+    double& ema = grad_ema_[i];
+    if (ema <= 0.0) ema = g;
+    if (g < texture_frac_ * ema) {
+      if (++static_run_[i] == static_run_warn_) {
+        ++static_events_;
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+            "%s has LOST TEXTURE: gradient %.2f grey levels, %.0f%% of its %.2f baseline, for "
+            "%d frames. There is nothing left to track — blown highlights, a blank wall, or "
+            "too little light. cuVSLAM will keep solving on it and return near-zero motion, "
+            "then JUMP when the scene comes back.",
+            cams_[i].c_str(), g, 100.0 * g / ema, ema, static_run_warn_);
+      }
+    } else {
+      static_run_[i] = 0;
+      ema = 0.99 * ema + 0.01 * g;          // baseline only tracks a scene worth tracking
+    }
+  }
+
+  // A pose cuVSLAM returns is not the same thing as a pose it MEASURED.
+  //
+  // On the 2026-09-06 run1 replay (5.0g) the rig walked into a blank white wall: fixed
+  // 4.986 ms exposure, frame mean luma 102 -> 224, and 88 % of the image left with zero
+  // local 16x16 contrast. cuVSLAM then returned the SAME pose twelve sets running — the
+  // last one it was sure of — with the covariance climbing, and then one pose 50 m away
+  // (with a NEGATIVE variance on one run) from which it carried on as if nothing had
+  // happened. Every one of those passed the `world_from_rig` check above, so the node
+  // published a frozen pose and then a teleport as measurements, and nothing said a word.
+  //
+  // This does not drop or repair anything — a pose the tracker stands behind is still the
+  // best estimate available, and silently withholding it would be the same class of bug.
+  // It makes the failure audible on the live rig, where nobody is running the offline
+  // continuity check in scripts/vo/analyze_motion.py.
+  // Returns FALSE when this pose is not continuous with the last one, so publish() can keep
+  // it out of TF. The return value says nothing about whether the pose is good - only
+  // whether the odom->base edge can carry it without breaking its own contract.
+  bool check_pose_health(const cuvslam::PoseWithCovariance& pwc,
+                         const builtin_interfaces::msg::Time& stamp) {
+    bool continuous = true;
+    const auto& t = pwc.pose.translation;
+    const int64_t now_ns = rclcpp::Time(stamp).nanoseconds();
+    // A negative variance on the diagonal is not a large uncertainty, it is a broken
+    // solve: report it whatever the pose looks like.
+    for (int i = 0; i < 6; ++i) {
+      if (pwc.covariance_xyz_rpy[i * 6 + i] < 0.0) {
+        RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
+            "pose covariance diagonal %d is NEGATIVE (%.3g) — the solve broke, this pose "
+            "and the ones after it are not trustworthy", i, pwc.covariance_xyz_rpy[i * 6 + i]);
+        break;
+      }
+    }
+    if (have_last_pose_) {
+      const double d = std::sqrt(std::pow(t[0] - last_t_[0], 2) +
+                                 std::pow(t[1] - last_t_[1], 2) +
+                                 std::pow(t[2] - last_t_[2], 2));
+      const double dt = (now_ns - last_pose_ns_) * 1e-9;
+      if (d == 0.0) {
+        // Bit-identical translation is the tracker repeating itself, not a rig at rest:
+        // a stationary rig still jitters in the last decimal.
+        ++frozen_;
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+            "pose has not moved at all for %ld sets — cuVSLAM is repeating its last "
+            "estimate, not measuring. Featureless view (blank wall, blown highlights)?",
+            frozen_);
+      } else {
+        if (frozen_ >= frozen_warn_sets_)
+          RCLCPP_WARN(get_logger(), "pose moving again after %ld frozen sets", frozen_);
+        frozen_ = 0;
+      }
+      if (dt > 0.0 && d / dt > max_speed_mps_) {
+        continuous = false;
+        ++jumps_;
+        RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000,
+            "pose JUMPED %.2f m in %.0f ms (%.0f m/s, limit %.1f) — tracking was lost and "
+            "re-initialised somewhere else. Everything downstream of here is in a new frame.%s",
+            d, dt * 1e3, d / dt, max_speed_mps_,
+            tf_absorb_jumps_ ? " Absorbed into map->odom; odom->base stays continuous." : "");
+      }
+    }
+    last_t_ = {t[0], t[1], t[2]};
+    last_pose_ns_ = now_ns;
+    have_last_pose_ = true;
+    return continuous;
+  }
+
+  // Hand the tracker's state to SLAM and publish the corrected pose beside the raw VO one.
+  // Never in place of it: section 5's drift and scale figures are measured on pure VO, and
+  // silently swapping the topic's meaning would invalidate every one of them.
+  void slam_track(const builtin_interfaces::msg::Time& stamp) {
+    try {
+      cuvslam::Odometry::State st;
+      tracker_->GetState(st);
+      slam_->Track(st);
+    } catch (const std::exception& e) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "SLAM Track() failed: %s", e.what());
+      return;
+    }
+    const cuvslam::Pose p = slam_->GetPose();
+    nav_msgs::msg::Odometry od;
+    od.header.stamp = stamp;
+    od.header.frame_id = odom_frame_;
+    od.child_frame_id = base_frame_;
+    od.pose.pose.position.x = p.translation[0];
+    od.pose.pose.position.y = p.translation[1];
+    od.pose.pose.position.z = p.translation[2];
+    od.pose.pose.orientation.x = p.rotation[0];
+    od.pose.pose.orientation.y = p.rotation[1];
+    od.pose.pose.orientation.z = p.rotation[2];
+    od.pose.pose.orientation.w = p.rotation[3];
+    slam_pub_->publish(od);
+
+    cuvslam::Slam::Metrics m{};
+    try {
+      slam_->GetSlamMetrics(m);
+    } catch (const std::exception&) {
+      return;
+    }
+    // lc_status is a level, not an edge: count the RISING edge so "12 loop closures" means
+    // twelve events rather than however many frames the flag happened to stay up for.
+    if (m.lc_status && !lc_prev_) {
+      ++lc_events_;
+      RCLCPP_INFO(get_logger(), "LOOP CLOSURE %ld: %u landmarks tracked, %u in PnP, %u good",
+                  lc_events_, m.lc_tracked_landmarks_count, m.lc_pnp_landmarks_count,
+                  m.lc_good_landmarks_count);
+      publish_loop_closures(stamp);
+    }
+    lc_prev_ = m.lc_status;
+    if (m.pgo_status) ++pgo_events_;
+  }
+
+  // Where the loop closed. GetLoopClosurePoses returns a rolling last-10 window, so the
+  // events have to be ACCUMULATED and de-duplicated on timestamp - taking the latest
+  // message loses older closures and double-counts the ones still inside the window.
+  // Same approach as cuVSLAM's own euroc example (reported_loop_closures).
+  void publish_loop_closures(const builtin_interfaces::msg::Time& stamp) {
+    std::vector<cuvslam::PoseStamped> poses;
+    try {
+      slam_->GetLoopClosurePoses(poses);
+    } catch (const std::exception& e) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "GetLoopClosurePoses failed: %s", e.what());
+      return;
+    }
+    for (const auto& ps : poses) {
+      if (!lc_seen_.insert(ps.timestamp_ns).second) continue;   // already reported
+      // A Path, not a PoseArray: PoseArray carries ONE header stamp for the whole array, so
+      // a consumer cannot tell WHEN each closure happened and can only place the marker by
+      // nearest-point search. Path stamps every pose, so the viewer can put each marker on
+      // the optimised trajectory at its own instant.
+      geometry_msgs::msg::PoseStamped q;
+      q.header.frame_id = odom_frame_;
+      q.header.stamp = rclcpp::Time(ps.timestamp_ns);
+      q.pose.position.x = ps.pose.translation[0];
+      q.pose.position.y = ps.pose.translation[1];
+      q.pose.position.z = ps.pose.translation[2];
+      q.pose.orientation.x = ps.pose.rotation[0];
+      q.pose.orientation.y = ps.pose.rotation[1];
+      q.pose.orientation.z = ps.pose.rotation[2];
+      q.pose.orientation.w = ps.pose.rotation[3];
+      lc_accum_.push_back(q);
+    }
+    nav_msgs::msg::Path pa;
+    pa.header.stamp = stamp;
+    pa.header.frame_id = odom_frame_;
+    pa.poses = lc_accum_;
+    lc_pub_->publish(pa);
+  }
+
+  // THE OPTIMISED TRAJECTORY, not the stream of GetPose() values.
+  //
+  // /cuvslam/slam_odometry is the current corrected pose, and accumulating it into a line
+  // is wrong: a loop closure re-optimises the WHOLE graph, so every earlier point in such a
+  // line is stale and the line steps at each closure. cuVSLAM's own app says so outright -
+  // "if slam is enabled, overwrite all slam poses in the end after LCs and PGOs" - and
+  // re-reads get_all_slam_poses() rather than keeping what it accumulated
+  // (tools/cuvslam_app/cuvslam_app.py). GetAllSlamPoses() returns the whole trajectory as
+  // currently optimised, which is globally consistent and has no steps in it.
+  void publish_slam_path(const builtin_interfaces::msg::Time& stamp) {
+    std::vector<cuvslam::PoseStamped> poses;
+    try {
+      slam_->GetAllSlamPoses(poses);
+    } catch (const std::exception& e) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "GetAllSlamPoses failed: %s", e.what());
+      return;
+    }
+    nav_msgs::msg::Path path;
+    path.header.stamp = stamp;
+    path.header.frame_id = odom_frame_;
+    path.poses.reserve(poses.size());
+    for (const auto& ps : poses) {
+      geometry_msgs::msg::PoseStamped p;
+      p.header.frame_id = odom_frame_;
+      p.header.stamp = rclcpp::Time(ps.timestamp_ns);
+      p.pose.position.x = ps.pose.translation[0];
+      p.pose.position.y = ps.pose.translation[1];
+      p.pose.position.z = ps.pose.translation[2];
+      p.pose.orientation.x = ps.pose.rotation[0];
+      p.pose.orientation.y = ps.pose.rotation[1];
+      p.pose.orientation.z = ps.pose.rotation[2];
+      p.pose.orientation.w = ps.pose.rotation[3];
+      path.poses.push_back(p);
+    }
+    slam_path_pub_->publish(path);
+  }
+
+  // The loop-closure EDGES: which pose was matched to which earlier one. This is the thing
+  // that makes a closure legible - a marker on its own says a loop closed, an edge says
+  // where it closed BACK TO. cuVSLAM leaves this as a "future extension" in the euroc
+  // example (ReadPoseGraph is commented out there), so the reading of it is ours: a graph
+  // edge whose two node ids are not adjacent is not a sequential odometry link.
+  void publish_loop_edges(const builtin_interfaces::msg::Time& stamp) {
+    std::shared_ptr<const cuvslam::Slam::PoseGraph> g;
+    try {
+      g = slam_->ReadPoseGraph();
+    } catch (const std::exception&) {
+      return;
+    }
+    if (!g || g->nodes.empty()) return;
+    std::unordered_map<uint64_t, const cuvslam::Pose*> by_id;
+    for (const auto& n : g->nodes) by_id[n.id] = &n.node_pose;
+    geometry_msgs::msg::PoseArray pa;   // consecutive PAIRS: [from, to, from, to, ...]
+    pa.header.stamp = stamp;
+    pa.header.frame_id = odom_frame_;
+    size_t n_loop = 0;
+    for (const auto& e : g->edges) {
+      const uint64_t lo = std::min(e.node_from, e.node_to), hi = std::max(e.node_from, e.node_to);
+      if (hi - lo <= 1) continue;                       // sequential odometry link
+      auto a = by_id.find(e.node_from), b = by_id.find(e.node_to);
+      if (a == by_id.end() || b == by_id.end()) continue;
+      for (const cuvslam::Pose* q : {a->second, b->second}) {
+        geometry_msgs::msg::Pose m;
+        m.position.x = q->translation[0];
+        m.position.y = q->translation[1];
+        m.position.z = q->translation[2];
+        m.orientation.w = 1.0;
+        pa.poses.push_back(m);
+      }
+      ++n_loop;
+    }
+    lc_edge_pub_->publish(pa);
+    RCLCPP_INFO(get_logger(), "  pose graph: %zu nodes, %zu edges, %zu of them non-sequential "
+                "(loop links)", g->nodes.size(), g->edges.size(), n_loop);
+  }
+
+  void publish(const cuvslam::PoseWithCovariance& pwc, const builtin_interfaces::msg::Time& stamp,
+               bool continuous) {
     const cuvslam::Pose& p = pwc.pose;
     nav_msgs::msg::Odometry od;
     od.header.stamp = stamp;
@@ -221,33 +1064,117 @@ class CuvslamMulticamNode : public rclcpp::Node {
     od.pose.pose.orientation.y = p.rotation[1];
     od.pose.pose.orientation.z = p.rotation[2];
     od.pose.pose.orientation.w = p.rotation[3];
-    // cuVSLAM 6x6 covariance is row-major in order [Rx,Ry,Rz,x,y,z]; ROS Odometry wants
-    // [x,y,z,Rx,Ry,Rz]. Remap with perm[ros]=cuvslam index = {3,4,5,0,1,2}.
-    static constexpr int perm[6] = {3, 4, 5, 0, 1, 2};
-    for (int r = 0; r < 6; ++r)
-      for (int c = 0; c < 6; ++c)
-        od.pose.covariance[r * 6 + c] = pwc.covariance[perm[r] * 6 + perm[c]];
+    // Since cuVSLAM v17 the 6x6 covariance is already row-major [x,y,z,Rx,Ry,Rz] (field
+    // renamed to covariance_xyz_rpy) — the same order ROS Odometry wants, so copy directly.
+    // (Up to v15 it was [Rx,Ry,Rz,x,y,z] and needed a {3,4,5,0,1,2} permutation.)
+    for (int i = 0; i < 36; ++i) od.pose.covariance[i] = pwc.covariance_xyz_rpy[i];
     odom_pub_->publish(od);
+    ++published_;
 
-    geometry_msgs::msg::TransformStamped tf;
-    tf.header.stamp = stamp;
-    tf.header.frame_id = odom_frame_;
-    tf.child_frame_id = base_frame_;
-    tf.transform.translation.x = p.translation[0];
-    tf.transform.translation.y = p.translation[1];
-    tf.transform.translation.z = p.translation[2];
-    tf.transform.rotation = od.pose.pose.orientation;
-    tf_bc_->sendTransform(tf);
+    // TF, on the REP-105 split described at tf_absorb_jumps_.
+    const tf2::Transform raw(
+        tf2::Quaternion(p.rotation[0], p.rotation[1], p.rotation[2], p.rotation[3]),
+        tf2::Vector3(p.translation[0], p.translation[1], p.translation[2]));
+    if (!continuous && tf_absorb_jumps_ && have_odom_pose_) {
+      // C such that C * raw == the pose odom->base already had: the step becomes zero on
+      // this edge and lands on map->odom instead.
+      corr_ = odom_base_prev_ * raw.inverse();
+      ++corrections_;
+    }
+    const tf2::Transform odom_base = tf_absorb_jumps_ ? corr_ * raw : raw;
+    odom_base_prev_ = odom_base;
+    have_odom_pose_ = true;
+
+    std::vector<geometry_msgs::msg::TransformStamped> out;
+    out.push_back(make_tf(odom_frame_, base_frame_, odom_base, stamp));
+    if (tf_absorb_jumps_)
+      out.push_back(make_tf(map_frame_, odom_frame_, corr_.inverse(), stamp));
+    tf_bc_->sendTransform(out);
+  }
+
+  static geometry_msgs::msg::TransformStamped make_tf(
+      const std::string& parent, const std::string& child, const tf2::Transform& T,
+      const builtin_interfaces::msg::Time& stamp) {
+    geometry_msgs::msg::TransformStamped m;
+    m.header.stamp = stamp;
+    m.header.frame_id = parent;
+    m.child_frame_id = child;
+    const tf2::Vector3& t = T.getOrigin();
+    m.transform.translation.x = t.x();
+    m.transform.translation.y = t.y();
+    m.transform.translation.z = t.z();
+    const tf2::Quaternion q = T.getRotation();
+    m.transform.rotation.x = q.x();
+    m.transform.rotation.y = q.y();
+    m.transform.rotation.z = q.z();
+    m.transform.rotation.w = q.w();
+    return m;
   }
 
   std::string calib_dir_, rig_path_, odom_frame_, base_frame_;
   std::vector<std::string> cams_, topics_;
   std::unique_ptr<cuvslam::Odometry> tracker_;
   std::array<rclcpp::Subscription<Img>::SharedPtr, 4> subs_;
-  std::array<Img::ConstSharedPtr, 4> latest_;
+  std::array<std::deque<Img::ConstSharedPtr>, 4> hist_;
+  std::vector<bev_cuvslam::VirtualPinhole> vpin_;   // 8: two per fisheye
+  std::vector<int> vsrc_;                           // which fisheye feeds each virtual cam
+  std::array<cv::Mat, 8> vimg_;                     // remap destinations, reused each set
+  int64_t remap_us_ = 0;
+  std::string vstereo_path_;
+  size_t history_ = 8;
+  std::vector<std::vector<uint8_t>> samp_;
+  std::vector<double> grad_ema_;
+  std::vector<int> static_run_;
+  double texture_frac_ = 0.25;
+  int static_run_warn_ = 5;
+  int64_t static_events_ = 0;
+  std::array<int64_t, 4> unmatched_{}, last_used_ns_{}, recv_{};
+  int64_t published_ = 0;
+  int64_t cb_us_sum_ = 0, cb_us_max_ = 0, cb_n_ = 0, over_budget_ = 0, last_cb_stamp_ns_ = 0;
+  int64_t slam_us_ = 0, path_us_ = 0, edges_us_ = 0, lm_us_ = 0, track_us_max_win_ = 0;
+  int64_t last_unmatched_ = 0;
+  int64_t max_skew_ns_ = 1000000, worst_skew_ns_ = 0, sets_ = 0, dropped_sets_ = 0;
+  // Pose-health state (check_pose_health). max_speed_mps_ is deliberately far above
+  // anything the rig does — 5 m/s is a sprint — so it fires on failures, not on fast motion.
+  std::array<double, 3> last_t_{};
+  int64_t last_pose_ns_ = 0, frozen_ = 0, frozen_warn_sets_ = 3;
+  bool have_last_pose_ = false;
+  double max_speed_mps_ = 5.0;
+  bool tf_absorb_jumps_ = true;
+  int64_t jumps_ = 0, corrections_ = 0;
+  std::string map_frame_;
+  // odom->base correction. Identity until the first discontinuity, so a clean run publishes
+  // exactly what it always did and map->odom is identity throughout.
+  tf2::Transform corr_ = tf2::Transform::getIdentity();
+  tf2::Transform odom_base_prev_ = tf2::Transform::getIdentity();
+  bool have_odom_pose_ = false;
+  std::unique_ptr<cuvslam::Slam> slam_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr slam_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr lc_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr lc_edge_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr slam_path_pub_;
+  std::set<int64_t> lc_seen_;
+  std::vector<geometry_msgs::msg::PoseStamped> lc_accum_;
+  bool enable_slam_ = false, lc_prev_ = false;
+  std::string slam_map_path_, debug_dump_dir_;
+  int slam_throttling_ms_ = 0, slam_max_map_size_ = 300;
+  int64_t lc_events_ = 0, pgo_events_ = 0;
+  // 20 sets = 1 s at the rig's 20 Hz, so the last published path is at most a second short
+  // of the end even when the node is SIGKILLed (which the replay wrapper does).
+  int slam_path_countdown_ = 0, slam_path_every_ = 20, edge_countdown_ = 0;
+  int64_t track_us_ = 0, track_us_sum_ = 0, track_us_max_ = 0, track_n_ = 0;
+  int64_t kf_us_sum_ = 0, kf_n_ = 0, nkf_us_sum_ = 0, nkf_n_ = 0;
+  bool state_readable_ = false;
+  int sat_level_ = 227;
+  double sat_warn_frac_ = 0.5, sat_worst_ = 0.0;
+  std::chrono::steady_clock::time_point last_report_ = std::chrono::steady_clock::now();
   std::mutex mtx_;
-  int64_t max_stale_ns_{120000000};
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obs_pub_;
+  bool publish_landmarks_ = false;
+  int landmark_stride_ = 3;
+  bool publish_observations_ = false;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_bc_;
 };
 

@@ -2,14 +2,21 @@
 <package format="3">
   <name>bev_camera</name>
   <version>0.1.0</version>
-  <description>4-camera IMX219 Argus capture node (libargus, in-container) publishing
-  mono8 /camN/image_raw for the BEV cuVSLAM rig.</description>
+  <description>4-camera Argus capture node (libargus, in-container) for the BEV rig:
+  resolves carrier ports to Argus sensor-ids at runtime, locks AE under the external
+  hardware trigger, and publishes mono8 /camN/image_raw with per-frame timestamps.</description>
   <maintainer email="archerwang.gyaw@gmail.com">User</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
+  <depend>yaml-cpp</depend>
+  <depend>std_msgs</depend>
+
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <export>
     <build_type>ament_cmake</build_type>

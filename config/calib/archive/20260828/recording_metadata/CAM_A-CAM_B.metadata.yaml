@@ -1,0 +1,55 @@
+rosbag2_bagfile_information:
+  version: 4
+  storage_identifier: sqlite3
+  relative_file_paths:
+    - CAM_A-CAM_B_0.db3
+  duration:
+    nanoseconds: 243528957080
+  starting_time:
+    nanoseconds_since_epoch: 1787953220876481706
+  message_count: 63825
+  topics_with_message_count:
+    - topic_metadata:
+        name: /imu0
+        type: sensor_msgs/msg/Imu
+        serialization_format: cdr
+        offered_qos_profiles: "- history: 3\n  depth: 0\n  reliability: 1\n  durability: 2\n  deadline:\n    sec: 2147483647\n    nsec: 4294967295\n  lifespan:\n    sec: 2147483647\n    nsec: 4294967295\n  liveliness: 1\n  liveliness_lease_duration:\n    sec: 2147483647\n    nsec: 4294967295\n  avoid_ros_namespace_conventions: false"
+      message_count: 36232
+    - topic_metadata:
+        name: /cam1/frame_meta
+        type: bev_camera/msg/FrameMeta
+        serialization_format: cdr
+        offered_qos_profiles: "- history: 3\n  depth: 0\n  reliability: 2\n  durability: 2\n  deadline:\n    sec: 2147483647\n    nsec: 4294967295\n  lifespan:\n    sec: 2147483647\n    nsec: 4294967295\n  liveliness: 1\n  liveliness_lease_duration:\n    sec: 2147483647\n    nsec: 4294967295\n  avoid_ros_namespace_conventions: false"
+      message_count: 6631
+    - topic_metadata:
+        name: /cam1/image_raw
+        type: sensor_msgs/msg/Image
+        serialization_format: cdr
+        offered_qos_profiles: "- history: 3\n  depth: 0\n  reliability: 2\n  durability: 2\n  deadline:\n    sec: 2147483647\n    nsec: 4294967295\n  lifespan:\n    sec: 2147483647\n    nsec: 4294967295\n  liveliness: 1\n  liveliness_lease_duration:\n    sec: 2147483647\n    nsec: 4294967295\n  avoid_ros_namespace_conventions: false"
+      message_count: 522
+    - topic_metadata:
+        name: /cam4/frame_meta
+        type: bev_camera/msg/FrameMeta
+        serialization_format: cdr
+        offered_qos_profiles: "- history: 3\n  depth: 0\n  reliability: 2\n  durability: 2\n  deadline:\n    sec: 2147483647\n    nsec: 4294967295\n  lifespan:\n    sec: 2147483647\n    nsec: 4294967295\n  liveliness: 1\n  liveliness_lease_duration:\n    sec: 2147483647\n    nsec: 4294967295\n  avoid_ros_namespace_conventions: false"
+      message_count: 6635
+    - topic_metadata:
+        name: /cam2/frame_meta
+        type: bev_camera/msg/FrameMeta
+        serialization_format: cdr
+        offered_qos_profiles: "- history: 3\n  depth: 0\n  reliability: 2\n  durability: 2\n  deadline:\n    sec: 2147483647\n    nsec: 4294967295\n  lifespan:\n    sec: 2147483647\n    nsec: 4294967295\n  liveliness: 1\n  liveliness_lease_duration:\n    sec: 2147483647\n    nsec: 4294967295\n  avoid_ros_namespace_conventions: false"
+      message_count: 6637
+    - topic_metadata:
+        name: /cam2/image_raw
+        type: sensor_msgs/msg/Image
+        serialization_format: cdr
+        offered_qos_profiles: "- history: 3\n  depth: 0\n  reliability: 2\n  durability: 2\n  deadline:\n    sec: 2147483647\n    nsec: 4294967295\n  lifespan:\n    sec: 2147483647\n    nsec: 4294967295\n  liveliness: 1\n  liveliness_lease_duration:\n    sec: 2147483647\n    nsec: 4294967295\n  avoid_ros_namespace_conventions: false"
+      message_count: 531
+    - topic_metadata:
+        name: /cam3/frame_meta
+        type: bev_camera/msg/FrameMeta
+        serialization_format: cdr
+        offered_qos_profiles: "- history: 3\n  depth: 0\n  reliability: 2\n  durability: 2\n  deadline:\n    sec: 2147483647\n    nsec: 4294967295\n  lifespan:\n    sec: 2147483647\n    nsec: 4294967295\n  liveliness: 1\n  liveliness_lease_duration:\n    sec: 2147483647\n    nsec: 4294967295\n  avoid_ros_namespace_conventions: false"
+      message_count: 6637
+  compression_format: ""
+  compression_mode: ""

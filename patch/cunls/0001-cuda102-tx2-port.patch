@@ -1,0 +1,1013 @@
+diff -ruN orig/CMakeLists.txt cuNLS-Release_07_13_2026/CMakeLists.txt
+--- a/CMakeLists.txt	2026-09-01 23:28:50.471484072 +0200
++++ b/CMakeLists.txt	2026-09-01 23:28:50.502204326 +0200
+@@ -1,11 +1,23 @@
+ cmake_minimum_required(VERSION 3.24)
+-set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89)
+-set(CMAKE_CUDA_COMPILER /usr/local/cuda/bin/nvcc)
++# TX2 port: never override what the parent project already chose. cuVSLAM sets
++# sm_62 and its own nvcc; hard-coding sm_75+ here breaks the Jetson TX2 build.
++if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
++  set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89)
++endif()
++if(NOT DEFINED CMAKE_CUDA_COMPILER)
++  set(CMAKE_CUDA_COMPILER /usr/local/cuda/bin/nvcc)
++endif()
+ 
+ project(cunls LANGUAGES CXX CUDA)
+ 
+ set(CMAKE_CXX_STANDARD 17)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
++# nvcc 10.2 cannot compile C++17 device code; the .cu sources and every header
++# they pull in are downgraded to C++14 by this patch.
++if(NOT DEFINED CMAKE_CUDA_STANDARD)
++  set(CMAKE_CUDA_STANDARD 14)
++  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
++endif()
+ option(BUILD_TESTING OFF)
+ option(BUILD_SHARED_LIBS "Build shared library (OFF for static)" ON)
+ 
+@@ -15,16 +27,15 @@
+ 
+ include(FetchContent)
+ include(cmake/AddSpdlog.cmake)
+-include(cmake/AddCUDSS.cmake)
+ include(cmake/BundleStaticDeps.cmake)
+ 
+ add_spdlog()
+-# cuDSS is fetched as a prebuilt archive. Default to 0.8.0.10; 0.7.1.4 is still
+-# supported via -DCUDSS_VERSION=0.7.1.4.
+-set(CUDSS_VERSION "0.8.0.10" CACHE STRING "cuDSS version to download")
+-add_cudss(VERSION "${CUDSS_VERSION}")
++# cuDSS REMOVED for the TX2 port: it ships only as a prebuilt binary, and NVIDIA
++# publishes it for CUDA 12/13 only -- no CUDA 10.2 and no Tegra build exists, and
++# there is no source to compile. cuVSLAM never selects it (it asks for DenseQR;
++# cuNLS's own default is BlockSparsePCG), so the backend is dropped outright.
+ 
+-set(CUNLS_LIBS spdlog::spdlog CUDA::cusparse CUDA::cublas CUDA::cusolver cudss)
++set(CUNLS_LIBS spdlog::spdlog CUDA::cusparse CUDA::cublas CUDA::cusolver)
+ 
+ option(ENABLE_PROFILING "Enable profiling" OFF)
+ if(ENABLE_PROFILING)
+@@ -91,7 +102,7 @@
+ else()
+   set_target_properties(cunls PROPERTIES
+       ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+-  bundle_static_dependencies(cunls spdlog::spdlog cudss)
++  bundle_static_dependencies(cunls spdlog::spdlog)
+ endif()
+ 
+ # C++ library install targets (skipped when only building Python wheel)
+diff -ruN orig/cunls/common/CMakeLists.txt cuNLS-Release_07_13_2026/cunls/common/CMakeLists.txt
+--- a/cunls/common/CMakeLists.txt	2026-09-01 23:28:50.471759095 +0200
++++ b/cunls/common/CMakeLists.txt	2026-09-01 23:28:50.502313270 +0200
+@@ -1,7 +1,6 @@
+ add_library(cunls_common OBJECT
+   cublas_helper.cpp
+   cuda_stream.cpp
+-  cudss_helper.cpp
+   cusolver_helper.cpp
+   cusparse_helper.cpp
+   log.cpp
+@@ -9,7 +8,7 @@
+   utils.cpp
+ )
+ 
+-target_link_libraries(cunls_common PRIVATE spdlog::spdlog cudss)
++target_link_libraries(cunls_common PRIVATE spdlog::spdlog)
+ 
+ if(ENABLE_PROFILING)
+   target_link_libraries(cunls_common PRIVATE nvtx3-cpp)
+diff -ruN orig/cunls/common/cusolver_helper.cpp cuNLS-Release_07_13_2026/cunls/common/cusolver_helper.cpp
+--- a/cunls/common/cusolver_helper.cpp	2026-09-01 23:28:50.471869047 +0200
++++ b/cunls/common/cusolver_helper.cpp	2026-09-01 23:28:50.503385459 +0200
+@@ -15,6 +15,7 @@
+  * limitations under the License.
+  */
+ 
++#include <cuda_runtime_api.h>
+ #include <cusolverDn.h>
+ 
+ #include "cunls/common/cusolver_helper.h"
+@@ -52,12 +53,14 @@
+     return "CUSOLVER_STATUS_IRS_PARAMS_NOT_INITIALIZED";
+   } else if (s == CUSOLVER_STATUS_IRS_PARAMS_INVALID) {
+     return "CUSOLVER_STATUS_IRS_PARAMS_INVALID";
++#if CUDART_VERSION >= 11000
+   } else if (s == CUSOLVER_STATUS_IRS_PARAMS_INVALID_PREC) {
+     return "CUSOLVER_STATUS_IRS_PARAMS_INVALID_PREC";
+   } else if (s == CUSOLVER_STATUS_IRS_PARAMS_INVALID_REFINE) {
+     return "CUSOLVER_STATUS_IRS_PARAMS_INVALID_REFINE";
+   } else if (s == CUSOLVER_STATUS_IRS_PARAMS_INVALID_MAXITER) {
+     return "CUSOLVER_STATUS_IRS_PARAMS_INVALID_MAXITER";
++#endif
+   } else if (s == CUSOLVER_STATUS_IRS_INTERNAL_ERROR) {
+     return "CUSOLVER_STATUS_IRS_INTERNAL_ERROR";
+   } else if (s == CUSOLVER_STATUS_IRS_NOT_SUPPORTED) {
+@@ -68,12 +71,14 @@
+     return "CUSOLVER_STATUS_IRS_NRHS_NOT_SUPPORTED_FOR_REFINE_GMRES";
+   } else if (s == CUSOLVER_STATUS_IRS_INFOS_NOT_INITIALIZED) {
+     return "CUSOLVER_STATUS_IRS_INFOS_NOT_INITIALIZED";
++#if CUDART_VERSION >= 11000
+   } else if (s == CUSOLVER_STATUS_IRS_INFOS_NOT_DESTROYED) {
+     return "CUSOLVER_STATUS_IRS_INFOS_NOT_DESTROYED";
+   } else if (s == CUSOLVER_STATUS_IRS_MATRIX_SINGULAR) {
+     return "CUSOLVER_STATUS_IRS_MATRIX_SINGULAR";
+   } else if (s == CUSOLVER_STATUS_INVALID_WORKSPACE) {
+     return "CUSOLVER_STATUS_INVALID_WORKSPACE";
++#endif
+   }
+   return "Unspecified cuSolver error";
+ }
+diff -ruN orig/cunls/common/cusparse_helper.cpp cuNLS-Release_07_13_2026/cunls/common/cusparse_helper.cpp
+--- a/cunls/common/cusparse_helper.cpp	2026-09-01 23:28:50.471900448 +0200
++++ b/cunls/common/cusparse_helper.cpp	2026-09-01 23:28:50.507404210 +0200
+@@ -74,6 +74,8 @@
+   }
+ 
+   description_ = std::exchange(other.description_, nullptr);
++  rows_ = std::exchange(other.rows_, 0);
++  cols_ = std::exchange(other.cols_, 0);
+   return *this;
+ }
+ 
+@@ -82,7 +84,8 @@
+  * CSRSparseMatrix&) */
+ cuSPARSEMatrixDescription::cuSPARSEMatrixDescription(
+     int num_rows, int num_cols, int num_nonzeros,
+-    const CSRSparseMatrix &matrix) {
++    const CSRSparseMatrix &matrix)
++    : rows_(num_rows), cols_(num_cols) {
+   auto rows_ptr = const_cast<int *>(matrix.row_offsets.data());
+   auto cols_ptr = const_cast<int *>(matrix.col_ids.data());
+   auto values_ptr = const_cast<float *>(matrix.values.data());
+@@ -97,7 +100,8 @@
+ 
+ /** @copydoc cuSPARSEMatrixDescription::cuSPARSEMatrixDescription(int,int) */
+ cuSPARSEMatrixDescription::cuSPARSEMatrixDescription(int num_rows,
+-                                                     int num_cols) {
++                                                     int num_cols)
++    : rows_(num_rows), cols_(num_cols) {
+   cusparseSpMatDescr_t descr = nullptr;
+   THROW_ON_CUSPARSE_ERROR(cusparseCreateCsr(
+       &descr, num_rows, num_cols, 0, NULL, NULL, NULL, CUSPARSE_INDEX_32I,
+@@ -119,9 +123,18 @@
+   auto cols_ptr = const_cast<int *>(matrix.col_ids.data());
+   auto values_ptr = const_cast<float *>(matrix.values.data());
+ 
+-  THROW_ON_CUSPARSE_ERROR(
+-      cusparseCsrSetPointers(static_cast<cusparseSpMatDescr_t>(description_),
+-                             rows_ptr, cols_ptr, values_ptr));
++  // CUDA 10.2's cuSPARSE has no cusparseCsrSetPointers; rebuild the descriptor.
++  if (description_) {
++    WARN_ON_CUSPARSE_ERROR(
++        cusparseDestroySpMat(static_cast<cusparseSpMatDescr_t>(description_)));
++    description_ = nullptr;
++  }
++  cusparseSpMatDescr_t descr = nullptr;
++  THROW_ON_CUSPARSE_ERROR(cusparseCreateCsr(
++      &descr, rows_, cols_, static_cast<int>(matrix.NumNonZeros()), rows_ptr,
++      cols_ptr, values_ptr, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
++      CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F));
++  description_ = static_cast<void *>(descr);
+ }
+ 
+ /** @copydoc cuSPARSEMatrixDescription::GetDescription */
+diff -ruN orig/cunls/common/cusparse_helper.h cuNLS-Release_07_13_2026/cunls/common/cusparse_helper.h
+--- a/cunls/common/cusparse_helper.h	2026-09-01 23:28:50.471919813 +0200
++++ b/cunls/common/cusparse_helper.h	2026-09-01 23:28:50.507343744 +0200
+@@ -18,6 +18,14 @@
+ #pragma once
+ 
+ #include <cuda_runtime.h>
++#include <cusparse.h>
++
++// CUDA 10.2 (cuSPARSE 10.3) calls the generic SpMV algorithm selector
++// CUSPARSE_MV_ALG_DEFAULT. CUDA 11 renamed it CUSPARSE_SPMV_ALG_DEFAULT and CUDA 12
++// removed the old spelling, so map new -> old only below 11.
++#if defined(CUSPARSE_VERSION) && CUSPARSE_VERSION < 11000
++#define CUSPARSE_SPMV_ALG_DEFAULT CUSPARSE_MV_ALG_DEFAULT
++#endif
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/common/types.h"
+@@ -190,6 +198,8 @@
+ 
+ private:
+   void *description_ = nullptr; ///< The cuSPARSE matrix descriptor
++  int rows_ = 0;                ///< Cached row count (CUDA 10.2 cannot query it back)
++  int cols_ = 0;                ///< Cached column count
+ };
+ 
+ /**
+diff -ruN orig/cunls/common/helper.h cuNLS-Release_07_13_2026/cunls/common/helper.h
+--- a/cunls/common/helper.h	2026-09-01 23:28:50.471954687 +0200
++++ b/cunls/common/helper.h	2026-09-01 23:28:50.503058855 +0200
+@@ -46,7 +46,7 @@
+       msg << "[CUDA] error " << (to_string_fn)(ret) << "(" << ret << ")";      \
+       msg << " in " << LOCATION << std::endl;                                  \
+       LogError(msg.str());                                                     \
+-      if constexpr (is_throw) {                                                \
++      if (is_throw) {                                                \
+         throw std::runtime_error(msg.str());                                   \
+       }                                                                        \
+     }                                                                          \
+diff -ruN orig/cunls/common/log.cpp cuNLS-Release_07_13_2026/cunls/common/log.cpp
+--- a/cunls/common/log.cpp	2026-09-01 23:28:50.471982132 +0200
++++ b/cunls/common/log.cpp	2026-09-01 23:28:50.503324108 +0200
+@@ -103,7 +103,7 @@
+  * Lazily initializes the logger with Silent verbosity if it hasn't been
+  * configured yet via SetLoggerOptions.
+  */
+-void Log(Verbosity verbosity, std::string_view msg) {
++void Log(Verbosity verbosity, const std::string & msg) {
+   if (!is_logger_initialized.load(std::memory_order_acquire)) {
+     SetLoggerOptions(Verbosity::Silent);
+     is_logger_initialized.store(true, std::memory_order_release);
+@@ -113,15 +113,15 @@
+   spdlog::log(log_level, msg);
+ }
+ 
+-/** @copydoc LogError(std::string_view) */
+-void LogError(std::string_view msg) { Log(Verbosity::Error, msg); }
++/** @copydoc LogError(const std::string &) */
++void LogError(const std::string & msg) { Log(Verbosity::Error, msg); }
+ 
+-/** @copydoc LogWarning(std::string_view) */
+-void LogWarning(std::string_view msg) { Log(Verbosity::Warning, msg); }
++/** @copydoc LogWarning(const std::string &) */
++void LogWarning(const std::string & msg) { Log(Verbosity::Warning, msg); }
+ 
+-/** @copydoc LogMessage(std::string_view) */
+-void LogMessage(std::string_view msg) { Log(Verbosity::Message, msg); }
++/** @copydoc LogMessage(const std::string &) */
++void LogMessage(const std::string & msg) { Log(Verbosity::Message, msg); }
+ 
+-/** @copydoc LogDebug(std::string_view) */
+-void LogDebug(std::string_view msg) { Log(Verbosity::Debug, msg); }
++/** @copydoc LogDebug(const std::string &) */
++void LogDebug(const std::string & msg) { Log(Verbosity::Debug, msg); }
+ } // namespace cunls
+diff -ruN orig/cunls/common/log.h cuNLS-Release_07_13_2026/cunls/common/log.h
+--- a/cunls/common/log.h	2026-09-01 23:28:50.471996314 +0200
++++ b/cunls/common/log.h	2026-09-01 23:28:50.507715583 +0200
+@@ -18,7 +18,6 @@
+ #pragma once
+ #include <sstream>
+ #include <string>
+-#include <string_view>
+ #include <tuple>
+ 
+ // Check for C++20 support
+@@ -56,31 +55,31 @@
+  * @param verbosity The severity level of this message.
+  * @param msg       The message string to log.
+  */
+-void Log(Verbosity verbosity, std::string_view msg);
++void Log(Verbosity verbosity, const std::string & msg);
+ 
+ /**
+  * @brief Logs a message at Error verbosity.
+  * @param msg The error message to log.
+  */
+-void LogError(std::string_view msg);
++void LogError(const std::string & msg);
+ 
+ /**
+  * @brief Logs a message at Warning verbosity.
+  * @param msg The warning message to log.
+  */
+-void LogWarning(std::string_view msg);
++void LogWarning(const std::string & msg);
+ 
+ /**
+  * @brief Logs a message at Message (informational) verbosity.
+  * @param msg The informational message to log.
+  */
+-void LogMessage(std::string_view msg);
++void LogMessage(const std::string & msg);
+ 
+ /**
+  * @brief Logs a message at Debug verbosity.
+  * @param msg The debug message to log.
+  */
+-void LogDebug(std::string_view msg);
++void LogDebug(const std::string & msg);
+ 
+ #ifdef CPP_20_OR_GREATER
+ /**
+@@ -95,7 +94,7 @@
+  * @param args      Values to substitute into the format string.
+  */
+ template <typename... Args>
+-inline void Log(Verbosity verbosity, std::string_view fmt, Args &&...args) {
++inline void Log(Verbosity verbosity, const std::string & fmt, Args &&...args) {
+   std::string buf;
+   std::vformat_to(std::back_inserter(buf), fmt, std::make_format_args(args...));
+   Log(verbosity, buf);
+@@ -117,7 +116,7 @@
+ template <size_t Index, typename Tuple>
+ void format_arg_at_index(std::ostringstream &oss, const Tuple &args,
+                          size_t target_index) {
+-  if (Index == target_index && Index < std::tuple_size_v<Tuple>) {
++  if (Index == target_index && Index < std::tuple_size<Tuple>::value) {
+     oss << std::get<Index>(args);
+   }
+ }
+@@ -137,7 +136,10 @@
+ void format_arg_recursive(std::ostringstream &oss, const Tuple &args,
+                           size_t target_index,
+                           std::index_sequence<Indices...>) {
+-  (format_arg_at_index<Indices>(oss, args, target_index), ...);
++  // C++14 has no fold expressions; expand through an initialiser list, whose
++  // elements are sequenced left-to-right just like the fold was.
++  int expand[] = {0, (format_arg_at_index<Indices>(oss, args, target_index), 0)...};
++  (void)expand;
+ }
+ 
+ /**
+@@ -152,7 +154,7 @@
+  * @return Formatted string with all placeholders replaced.
+  */
+ template <typename... Args>
+-std::string vformat_to(std::string_view fmt_str, Args &&...args) {
++std::string vformat_to(const std::string & fmt_str, Args &&...args) {
+   std::ostringstream result;
+   std::string fmt(fmt_str);
+   auto args_tuple = std::forward_as_tuple(std::forward<Args>(args)...);
+@@ -228,7 +230,7 @@
+  * @param args      Values to substitute into the format string.
+  */
+ template <typename... Args>
+-inline void Log(Verbosity verbosity, std::string_view fmt, Args &&...args) {
++inline void Log(Verbosity verbosity, const std::string & fmt, Args &&...args) {
+   std::string buf = vformat_to(fmt, std::forward<Args>(args)...);
+   Log(verbosity, buf);
+ }
+@@ -242,7 +244,7 @@
+  * @param args Values to substitute into the format string.
+  */
+ template <typename... Args>
+-inline void LogError(std::string_view fmt, Args &&...args) {
++inline void LogError(const std::string & fmt, Args &&...args) {
+   Log(Verbosity::Error, fmt, std::forward<Args>(args)...);
+ }
+ 
+@@ -254,7 +256,7 @@
+  * @param args Values to substitute into the format string.
+  */
+ template <typename... Args>
+-inline void LogWarning(std::string_view fmt, Args &&...args) {
++inline void LogWarning(const std::string & fmt, Args &&...args) {
+   Log(Verbosity::Warning, fmt, std::forward<Args>(args)...);
+ }
+ 
+@@ -266,7 +268,7 @@
+  * @param args Values to substitute into the format string.
+  */
+ template <typename... Args>
+-inline void LogMessage(std::string_view fmt, Args &&...args) {
++inline void LogMessage(const std::string & fmt, Args &&...args) {
+   Log(Verbosity::Message, fmt, std::forward<Args>(args)...);
+ }
+ 
+@@ -278,7 +280,7 @@
+  * @param args Values to substitute into the format string.
+  */
+ template <typename... Args>
+-inline void LogDebug(std::string_view fmt, Args &&...args) {
++inline void LogDebug(const std::string & fmt, Args &&...args) {
+   Log(Verbosity::Debug, fmt, std::forward<Args>(args)...);
+ }
+ } // namespace cunls
+diff -ruN orig/cunls/common/profiler.cpp cuNLS-Release_07_13_2026/cunls/common/profiler.cpp
+--- a/cunls/common/profiler.cpp	2026-09-01 23:28:50.472029445 +0200
++++ b/cunls/common/profiler.cpp	2026-09-01 23:28:50.503214120 +0200
+@@ -23,7 +23,7 @@
+ #include <nvtx3/nvtx3.hpp>
+ #endif
+ 
+-namespace cunls::profiler {
++namespace cunls { namespace profiler {
+ #ifdef ENABLE_PROFILING
+ 
+ namespace internal {
+@@ -141,4 +141,4 @@
+ }
+ 
+ #endif
+-} // namespace cunls::profiler
++}} // namespace cunls::profiler
+diff -ruN orig/cunls/common/profiler.h cuNLS-Release_07_13_2026/cunls/common/profiler.h
+--- a/cunls/common/profiler.h	2026-09-01 23:28:50.472044350 +0200
++++ b/cunls/common/profiler.h	2026-09-01 23:28:50.507657705 +0200
+@@ -18,8 +18,9 @@
+ #pragma once
+ #include <cstdint>
+ #include <string>
++#include <utility>
+ 
+-namespace cunls::profiler {
++namespace cunls { namespace profiler {
+ 
+ /**
+  * @brief RAII wrapper for an NVTX range used for profiling.
+@@ -63,7 +64,10 @@
+ public:
+   DomainRange(const DomainRange &) = delete;
+   DomainRange &operator=(const DomainRange &) = delete;
+-  DomainRange(DomainRange &&) = delete;
++  DomainRange(DomainRange &&other) noexcept
++      : handle_(other.handle_), name_(std::move(other.name_)) {
++    other.handle_ = nullptr;
++  }
+   DomainRange &operator=(DomainRange &&) = delete;
+ 
+   /**
+@@ -131,4 +135,4 @@
+   void *handle_ = nullptr; ///< Handle to the NVTX domain.
+   uint32_t color_ = 0;     ///< Current color counter for range cycling.
+ };
+-} // namespace cunls::profiler
++}} // namespace cunls::profiler
+diff -ruN orig/cunls/common/thrust_compat.h cuNLS-Release_07_13_2026/cunls/common/thrust_compat.h
+--- a/cunls/common/thrust_compat.h	1970-01-01 01:00:00.000000000 +0100
++++ b/cunls/common/thrust_compat.h	2026-09-01 23:28:50.503447132 +0200
+@@ -0,0 +1,17 @@
++/*
++ * CUDA-10.2 / TX2 port shim -- not part of upstream cuNLS.
++ */
++
++#pragma once
++
++#include <thrust/version.h>
++#include <thrust/system/cuda/execution_policy.h>
++
++// thrust::cuda::par_nosync arrived in Thrust 1.16 (CUDA 11.6). Older toolkits get
++// thrust::cuda::par, which differs only by synchronising the stream after each
++// algorithm: same results, slightly less overlap.
++#if defined(THRUST_VERSION) && THRUST_VERSION >= 101600
++#define CUNLS_PAR_NOSYNC thrust::cuda::par_nosync
++#else
++#define CUNLS_PAR_NOSYNC thrust::cuda::par
++#endif
+diff -ruN orig/cunls/common/types.h cuNLS-Release_07_13_2026/cunls/common/types.h
+--- a/cunls/common/types.h	2026-09-01 23:28:50.472074352 +0200
++++ b/cunls/common/types.h	2026-09-01 23:28:50.502483263 +0200
+@@ -17,7 +17,6 @@
+ 
+ #pragma once
+ 
+-#include <cuda/std/array>
+ #include <vector>
+ 
+ #include "device_vector.h"
+@@ -25,6 +24,23 @@
+ 
+ namespace cunls {
+ 
++// CUDA 10.2 ships libcu++ 1.0, which has no <cuda/std/array> (it provides only
++// atomic, cassert, cfloat, climits, cstddef, cstdint, type_traits, version).
++// DeviceArray is a minimal stand-in with the same aggregate layout and the subset
++// of the std::array interface cuNLS uses, usable from host and device.
++template <typename T, int N> struct DeviceArray {
++  T _elems[N];
++  __host__ __device__ T &operator[](int i) { return _elems[i]; }
++  __host__ __device__ constexpr const T &operator[](int i) const { return _elems[i]; }
++  __host__ __device__ constexpr int size() const { return N; }
++  __host__ __device__ T *data() { return _elems; }
++  __host__ __device__ constexpr const T *data() const { return _elems; }
++  __host__ __device__ T *begin() { return _elems; }
++  __host__ __device__ constexpr const T *begin() const { return _elems; }
++  __host__ __device__ T *end() { return _elems + N; }
++  __host__ __device__ constexpr const T *end() const { return _elems + N; }
++};
++
+ /**
+  * @brief Fixed-size vector of floats stored as a cuda::std::array.
+  *
+@@ -33,7 +49,7 @@
+  *
+  * @tparam Dim Number of elements in the vector.
+  */
+-template <int Dim> using Vector = cuda::std::array<float, Dim>;
++template <int Dim> using Vector = DeviceArray<float, Dim>;
+ 
+ /**
+  * @brief Fixed-size square matrix of floats stored in row-major order.
+@@ -43,7 +59,7 @@
+  *
+  * @tparam Dim Number of rows (and columns) in the square matrix.
+  */
+-template <int Dim> using Matrix = cuda::std::array<float, Dim * Dim>;
++template <int Dim> using Matrix = DeviceArray<float, Dim * Dim>;
+ 
+ /**
+  * @brief SE(3) transformation matrix representation.
+diff -ruN orig/cunls/factor/information_factor_batch.cpp cuNLS-Release_07_13_2026/cunls/factor/information_factor_batch.cpp
+--- a/cunls/factor/information_factor_batch.cpp	2026-09-01 23:28:50.472203965 +0200
++++ b/cunls/factor/information_factor_batch.cpp	2026-09-01 23:28:50.507556704 +0200
+@@ -29,12 +29,17 @@
+   constexpr float alpha = 1.0f;
+   constexpr float beta = 0.0f;
+   const size_t stride = residual_size * residual_size;
+-  constexpr size_t inc = 1;
+ 
+-  THROW_ON_CUBLAS_ERROR(cublasSgemvStridedBatched(
+-      static_cast<cublasHandle_t>(cublas_handle), CUBLAS_OP_N, residual_size,
+-      residual_size, &alpha, sqrt_information, residual_size, stride, residuals,
+-      inc, residual_size, &beta, residuals, inc, residual_size, num_factors));
++  // CUDA 10.2 has no cublasSgemvStridedBatched; expressed as a batched gemm with
++  // n = 1, which is the same operation (see patch/cunls/README.md).
++  const int n = static_cast<int>(residual_size);
++  THROW_ON_CUBLAS_ERROR(cublasSgemmStridedBatched(
++      static_cast<cublasHandle_t>(cublas_handle), CUBLAS_OP_N, CUBLAS_OP_N, n,
++      /*n=*/1, n, &alpha, sqrt_information, n,
++      static_cast<long long>(stride), residuals, n,
++      static_cast<long long>(residual_size), &beta, residuals, n,
++      static_cast<long long>(residual_size),
++      static_cast<int>(num_factors)));
+ }
+ 
+ void ApplyInformationToJacobians(void *cublas_handle,
+diff -ruN orig/cunls/factor/point_to_plane_factor_batch.h cuNLS-Release_07_13_2026/cunls/factor/point_to_plane_factor_batch.h
+--- a/cunls/factor/point_to_plane_factor_batch.h	2026-09-01 23:28:50.472298306 +0200
++++ b/cunls/factor/point_to_plane_factor_batch.h	2026-09-01 23:28:50.502617931 +0200
+@@ -17,7 +17,6 @@
+ 
+ #pragma once
+ 
+-#include <cuda/std/array>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/common/types.h"
+diff -ruN orig/cunls/factor/point_to_point_factor_batch.h cuNLS-Release_07_13_2026/cunls/factor/point_to_point_factor_batch.h
+--- a/cunls/factor/point_to_point_factor_batch.h	2026-09-01 23:28:50.472330139 +0200
++++ b/cunls/factor/point_to_point_factor_batch.h	2026-09-01 23:28:50.502560035 +0200
+@@ -17,7 +17,6 @@
+ 
+ #pragma once
+ 
+-#include <cuda/std/array>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/common/types.h"
+diff -ruN orig/cunls/factor/prior_vector_factor_batch.h cuNLS-Release_07_13_2026/cunls/factor/prior_vector_factor_batch.h
+--- a/cunls/factor/prior_vector_factor_batch.h	2026-09-01 23:28:50.472359337 +0200
++++ b/cunls/factor/prior_vector_factor_batch.h	2026-09-01 23:28:50.502717019 +0200
+@@ -17,7 +17,6 @@
+ 
+ #pragma once
+ 
+-#include <cuda/std/array>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/common/types.h"
+diff -ruN orig/cunls/factor/symmetric_point_to_plane_factor_batch.h cuNLS-Release_07_13_2026/cunls/factor/symmetric_point_to_plane_factor_batch.h
+--- a/cunls/factor/symmetric_point_to_plane_factor_batch.h	2026-09-01 23:28:50.472903611 +0200
++++ b/cunls/factor/symmetric_point_to_plane_factor_batch.h	2026-09-01 23:28:50.502668921 +0200
+@@ -17,7 +17,6 @@
+ 
+ #pragma once
+ 
+-#include <cuda/std/array>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/common/types.h"
+diff -ruN orig/cunls/linear_solver/block_sparse_pcg_solver.cu cuNLS-Release_07_13_2026/cunls/linear_solver/block_sparse_pcg_solver.cu
+--- a/cunls/linear_solver/block_sparse_pcg_solver.cu	2026-09-01 23:28:50.473035228 +0200
++++ b/cunls/linear_solver/block_sparse_pcg_solver.cu	2026-09-01 23:28:50.507195190 +0200
+@@ -956,7 +956,10 @@
+   int row_cursor = 0;
+   int block_cursor = 0;
+   size_t factor_cursor = 0;
+-  for (const auto &[count, size] : layout_) {
++  for (const auto &layout_entry : layout_) {
++    // C++14: no structured bindings. layout_ is vector<pair<int,int>>.
++    const int count = layout_entry.first;
++    const int size = layout_entry.second;
+     if (count <= 0) {
+       continue;
+     }
+@@ -1069,9 +1072,12 @@
+   if (buffer_size > spmv_buffer_.size()) {
+     spmv_buffer_.resize(buffer_size);
+   }
++#if defined(CUSPARSE_VERSION) && CUSPARSE_VERSION >= 12000
++  // Optimisation hint only; absent before CUDA 12 and not required for correctness.
+   THROW_ON_CUSPARSE_ERROR(cusparseSpMV_preprocess(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha,
+                                                   matA, vecX, &beta, vecY, CUDA_R_32F,
+                                                   CUSPARSE_SPMV_ALG_DEFAULT, spmv_buffer_.data()));
++#endif
+   WARN_ON_CUSPARSE_ERROR(cusparseDestroyDnVec(vecX));
+   WARN_ON_CUSPARSE_ERROR(cusparseDestroyDnVec(vecY));
+   return true;
+diff -ruN orig/cunls/linear_solver/CMakeLists.txt cuNLS-Release_07_13_2026/cunls/linear_solver/CMakeLists.txt
+--- a/cunls/linear_solver/CMakeLists.txt	2026-09-01 23:28:50.473015582 +0200
++++ b/cunls/linear_solver/CMakeLists.txt	2026-09-01 23:28:50.502369988 +0200
+@@ -1,10 +1,8 @@
+ add_library(cunls_linear_solver OBJECT
+   block_sparse_pcg_solver.cu
+-  cudss_sparse_linear_solver.cpp
+   dense_cholesky_solver.cu
+   dense_linear_solver.cu
+   dense_qr_solver.cu
+   sparse_linear_solver.cpp
+ )
+ 
+-target_link_libraries(cunls_linear_solver PRIVATE cudss)
+diff -ruN orig/cunls/linear_solver/sparse_linear_solver.cpp cuNLS-Release_07_13_2026/cunls/linear_solver/sparse_linear_solver.cpp
+--- a/cunls/linear_solver/sparse_linear_solver.cpp	2026-09-01 23:28:50.473242945 +0200
++++ b/cunls/linear_solver/sparse_linear_solver.cpp	2026-09-01 23:28:50.502419386 +0200
+@@ -16,7 +16,6 @@
+  */
+ 
+ #include "cunls/linear_solver/sparse_linear_solver.h"
+-#include "cunls/common/cudss_helper.h"
+ 
+ namespace cunls {
+ 
+@@ -28,7 +27,10 @@
+                             const SparseLinearSolverConfig &config) {
+   switch (type) {
+   case SparseLinearSolverType::cuDSS:
+-    return std::make_unique<cuDSSLinearSolver>(config.cudss_solver_options);
++    // Removed in the CUDA-10.2 / TX2 port: cuDSS has no build for this toolkit.
++    throw std::invalid_argument(
++        "cuDSS solver unavailable in this build (CUDA-10.2 TX2 port); "
++        "use DenseQR or BlockSparsePCG");
+   case SparseLinearSolverType::DenseLDLT:
+     return std::make_unique<DenseLDLTSolver>();
+   case SparseLinearSolverType::DenseCholesky:
+diff -ruN orig/cunls/math/dense_matrix_ops.cu cuNLS-Release_07_13_2026/cunls/math/dense_matrix_ops.cu
+--- a/cunls/math/dense_matrix_ops.cu	2026-09-01 23:28:50.473329995 +0200
++++ b/cunls/math/dense_matrix_ops.cu	2026-09-01 23:28:50.503512417 +0200
+@@ -22,6 +22,7 @@
+ 
+ #include <cmath>
+ 
++#include "cunls/common/thrust_compat.h"
+ #include "cunls/common/cublas_helper.h"
+ #include "cunls/common/cusolver_helper.h"
+ #include "cunls/common/helper.h"
+@@ -121,7 +122,7 @@
+   auto info_ptr = reinterpret_cast<int *>(info.data());
+   auto temp_matrix_ptr = reinterpret_cast<float *>(temp_matrix.data());
+ 
+-  auto stream_policy = thrust::cuda::par_nosync.on(stream);
++  auto stream_policy = CUNLS_PAR_NOSYNC.on(stream);
+ 
+   // Step 1: Compute eigenvalue decomposition A = Q * D * Q^T
+   // Query workspace size
+diff -ruN orig/cunls/minimizer/CMakeLists.txt cuNLS-Release_07_13_2026/cunls/minimizer/CMakeLists.txt
+--- a/cunls/minimizer/CMakeLists.txt	2026-09-01 23:28:50.473523908 +0200
++++ b/cunls/minimizer/CMakeLists.txt	2026-09-01 23:28:50.507457245 +0200
+@@ -7,7 +7,6 @@
+   problem.cpp
+   residual_batch.cu
+   sparse_matrix.cu
+-  cusparse_matrix_multiplier.cpp
+   sparse_matrix_multiplier.cpp
+   fast_matrix_multiplier.cu
+ )
+diff -ruN orig/cunls/minimizer/device_reduction.cu cuNLS-Release_07_13_2026/cunls/minimizer/device_reduction.cu
+--- a/cunls/minimizer/device_reduction.cu	2026-09-01 23:28:50.473576674 +0200
++++ b/cunls/minimizer/device_reduction.cu	2026-09-01 23:28:50.503111167 +0200
+@@ -49,9 +49,9 @@
+ 
+   float sum = 0.0f;
+   for (int i = gid; i < n; i += stride) {
+-    if constexpr (Mode == 0) {
++    if (Mode == 0) {
+       sum += a[i];
+-    } else if constexpr (Mode == 1) {
++    } else if (Mode == 1) {
+       sum += a[i] * b[i];
+     } else {
+       sum += a[i] * w[i] * b[i];
+diff -ruN orig/cunls/minimizer/fast_matrix_multiplier.cu cuNLS-Release_07_13_2026/cunls/minimizer/fast_matrix_multiplier.cu
+--- a/cunls/minimizer/fast_matrix_multiplier.cu	2026-09-01 23:28:50.473606599 +0200
++++ b/cunls/minimizer/fast_matrix_multiplier.cu	2026-09-01 23:28:50.506615105 +0200
+@@ -24,6 +24,7 @@
+ #include <unordered_set>
+ #include <vector>
+ 
++#include "cunls/common/thrust_compat.h"
+ #include "cunls/common/helper.h"
+ #include "cunls/minimizer/fast_matrix_multiplier.h"
+ #include "cunls/minimizer/sparse_matrix.h"
+@@ -522,7 +523,7 @@
+       cudaMemsetAsync(output.row_offsets.data(), 0, sizeof(int), stream));
+ 
+   {
+-    auto stream_policy = thrust::cuda::par_nosync.on(stream);
++    auto stream_policy = CUNLS_PAR_NOSYNC.on(stream);
+     thrust::device_ptr<int> counts_ptr(row_counts);
+     thrust::device_ptr<int> offsets_ptr(output.row_offsets.data());
+     thrust::inclusive_scan(stream_policy, counts_ptr, counts_ptr + num_cols,
+diff -ruN orig/cunls/minimizer/jacobian_ops.cu cuNLS-Release_07_13_2026/cunls/minimizer/jacobian_ops.cu
+--- a/cunls/minimizer/jacobian_ops.cu	2026-09-01 23:28:50.473677111 +0200
++++ b/cunls/minimizer/jacobian_ops.cu	2026-09-01 23:28:50.506809177 +0200
+@@ -26,6 +26,7 @@
+ #include <unordered_set>
+ #include <vector>
+ 
++#include "cunls/common/thrust_compat.h"
+ #include "cunls/common/helper.h"
+ #include "cunls/minimizer/minimizer_state.h"
+ 
+@@ -247,7 +248,7 @@
+   const int *cparam_ids = state_batch->ConstStateIds();
+   size_t num_const_params = state_batch->NumConstStateBlocks();
+   size_t tangent_dim = state_batch->TangentSize();
+-  auto stream_policy = thrust::cuda::par_nosync.on(stream);
++  auto stream_policy = CUNLS_PAR_NOSYNC.on(stream);
+ 
+   col_ids.resize(state_batch->NumStateBlocks());
+   thrust::fill(stream_policy, col_ids.begin(), col_ids.end(),
+@@ -334,7 +335,7 @@
+                 const std::vector<DeviceVector<float *>> &state_pointers,
+                 const std::vector<StateBatch *> &state_batches,
+                 dvector<int> &col_ids) {
+-  auto stream_policy = thrust::cuda::par_nosync.on(stream);
++  auto stream_policy = CUNLS_PAR_NOSYNC.on(stream);
+ 
+   // Set all the column indices to be invalid, i.e. -1
+   thrust::device_ptr<int> col_ids_ptr(col_ids.data());
+diff -ruN orig/cunls/minimizer/minimizer_state.cu cuNLS-Release_07_13_2026/cunls/minimizer/minimizer_state.cu
+--- a/cunls/minimizer/minimizer_state.cu	2026-09-01 23:28:50.473743142 +0200
++++ b/cunls/minimizer/minimizer_state.cu	2026-09-01 23:28:50.506394110 +0200
+@@ -18,6 +18,7 @@
+ #include <thrust/copy.h>
+ #include <thrust/device_ptr.h>
+ 
++#include "cunls/common/thrust_compat.h"
+ #include "cunls/common/helper.h"
+ #include "cunls/minimizer/minimizer_state.h"
+ 
+@@ -142,7 +143,7 @@
+   const auto &state_batches = problem.GetStateBatches();
+   {
+     // Copy state values from problem to local storage
+-    auto stream_policy = thrust::cuda::par_nosync.on(stream);
++    auto stream_policy = CUNLS_PAR_NOSYNC.on(stream);
+ 
+     for (size_t i = 0; i < state_batches.size(); i++) {
+       const auto &param_batch_ptr = state_batches[i];
+@@ -208,7 +209,7 @@
+     states_.resize(from.size());
+   }
+ 
+-  auto stream_policy = thrust::cuda::par_nosync.on(stream);
++  auto stream_policy = CUNLS_PAR_NOSYNC.on(stream);
+   for (size_t i = 0; i < from.size(); i++) {
+     const auto &from_dvec = from[i];
+     auto &to_dvec = states_[i];
+@@ -234,7 +235,7 @@
+  * @param[out] problem Destination problem to update.
+  */
+ void Copy(cudaStream_t stream, const MinimizerState &state, Problem &problem) {
+-  auto stream_policy = thrust::cuda::par_nosync.on(stream);
++  auto stream_policy = CUNLS_PAR_NOSYNC.on(stream);
+ 
+   auto &state_batches = problem.GetStateBatches();
+   const auto &state_values = state.GetStates();
+diff -ruN orig/cunls/minimizer/sparse_matrix.cu cuNLS-Release_07_13_2026/cunls/minimizer/sparse_matrix.cu
+--- a/cunls/minimizer/sparse_matrix.cu	2026-09-01 23:28:50.473854793 +0200
++++ b/cunls/minimizer/sparse_matrix.cu	2026-09-01 23:28:50.507276220 +0200
+@@ -29,6 +29,7 @@
+ 
+ #include <cassert>
+ 
++#include "cunls/common/thrust_compat.h"
+ #include "cunls/common/cusparse_helper.h"
+ #include "cunls/minimizer/device_reduction.h"
+ #include "cunls/minimizer/sparse_matrix.h"
+@@ -58,7 +59,7 @@
+   num_nonzeros = matrix.values.size();
+   assert(num_nonzeros > 0);
+ 
+-  auto stream_policy = thrust::cuda::par_nosync.on(stream);
++  auto stream_policy = CUNLS_PAR_NOSYNC.on(stream);
+   thrust::device_ptr<const int> col_ids_ptr(matrix.col_ids.data());
+   auto max_col_idx_it = thrust::max_element(stream_policy, col_ids_ptr,
+                                             col_ids_ptr + num_nonzeros);
+@@ -271,7 +272,7 @@
+   output.values.resize(num_nonzeros);
+   output.row_offsets.resize(num_rows + 1);
+ 
+-  auto stream_policy = thrust::cuda::par_nosync.on(stream);
++  auto stream_policy = CUNLS_PAR_NOSYNC.on(stream);
+ 
+   thrust::device_ptr<const float> in_values_ptr(input.values.data());
+   thrust::device_ptr<float> out_values_ptr(output.values.data());
+@@ -480,9 +481,12 @@
+ 
+   auto buffer_ptr = buffer.data();
+ 
++#if defined(CUSPARSE_VERSION) && CUSPARSE_VERSION >= 12000
++  // Optimisation hint only; absent before CUDA 12 and not required for correctness.
+   THROW_ON_CUSPARSE_ERROR(cusparseSpMV_preprocess(
+       cusparse_handle, operation, &alpha, matA, vecX, &beta, vecY, CUDA_R_32F,
+       CUSPARSE_SPMV_ALG_DEFAULT, buffer_ptr));
++#endif
+ 
+   THROW_ON_CUSPARSE_ERROR(cusparseSpMV(cusparse_handle, operation, &alpha, matA,
+                                        vecX, &beta, vecY, CUDA_R_32F,
+@@ -551,7 +555,7 @@
+                                   CSRSparseMatrix &csr, dvector<int> &mapping,
+                                   dvector<uint8_t> &buffer) {
+   auto cusparse_handle = static_cast<cusparseHandle_t>(handle);
+-  auto stream_policy = thrust::cuda::par_nosync.on(stream);
++  auto stream_policy = CUNLS_PAR_NOSYNC.on(stream);
+ 
+   const auto &col_ids = structure.col_ids;
+   const auto &row_ids = structure.row_ids;
+diff -ruN orig/cunls/minimizer/sparse_matrix_multiplier.cpp cuNLS-Release_07_13_2026/cunls/minimizer/sparse_matrix_multiplier.cpp
+--- a/cunls/minimizer/sparse_matrix_multiplier.cpp	2026-09-01 23:28:50.473893156 +0200
++++ b/cunls/minimizer/sparse_matrix_multiplier.cpp	2026-09-01 23:28:50.507508954 +0200
+@@ -19,7 +19,6 @@
+ 
+ #include <stdexcept>
+ 
+-#include "cunls/minimizer/cusparse_matrix_multiplier.h"
+ #include "cunls/minimizer/fast_matrix_multiplier.h"
+ 
+ namespace cunls {
+@@ -28,7 +27,11 @@
+ CreateSparseMatrixMultiplier(SparseMatrixMultiplierType type) {
+   switch (type) {
+   case SparseMatrixMultiplierType::cuSPARSE:
+-    return std::make_unique<cuSPARSESparseMatrixMultiplier>();
++    // Removed in the CUDA-10.2 / TX2 port: needs the cuSPARSE SpGEMM-reuse API
++    // (CUDA 11.3+). Use SparseMatrixMultiplierType::Fast, which is the default.
++    throw std::invalid_argument(
++        "cuSPARSE square multiplier unavailable in this build "
++        "(CUDA-10.2 TX2 port); use Fast");
+   case SparseMatrixMultiplierType::Fast:
+     return std::make_unique<FastSparseMatrixMultiplier>();
+   default:
+diff -ruN orig/cunls/robustifier/arctan_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/arctan_loss_function_batch.cu
+--- a/cunls/robustifier/arctan_loss_function_batch.cu	2026-09-01 23:28:50.473966124 +0200
++++ b/cunls/robustifier/arctan_loss_function_batch.cu	2026-09-01 23:28:50.502766101 +0200
+@@ -15,7 +15,7 @@
+  * limitations under the License.
+  */
+ 
+-#include <cuda/std/limits>
++#include <cfloat>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/robustifier/arctan_loss_function_batch.h"
+@@ -37,7 +37,7 @@
+ 
+   float3 &rho = out[tid];
+   rho.x = a * atanf(sq_error / a);
+-  rho.y = fmaxf(cuda::std::numeric_limits<float>::min(), inv);
++  rho.y = fmaxf(FLT_MIN, inv);
+   rho.z = -2.0f * sq_error * b * (inv * inv);
+ }
+ 
+diff -ruN orig/cunls/robustifier/cauchy_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/cauchy_loss_function_batch.cu
+--- a/cunls/robustifier/cauchy_loss_function_batch.cu	2026-09-01 23:28:50.473995927 +0200
++++ b/cunls/robustifier/cauchy_loss_function_batch.cu	2026-09-01 23:28:50.502949474 +0200
+@@ -15,7 +15,7 @@
+  * limitations under the License.
+  */
+ 
+-#include <cuda/std/limits>
++#include <cfloat>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/robustifier/cauchy_loss_function_batch.h"
+@@ -37,7 +37,7 @@
+ 
+   float3 &rho = out[tid];
+   rho.x = b * logf(sum);
+-  rho.y = fmaxf(cuda::std::numeric_limits<float>::min(), inv);
++  rho.y = fmaxf(FLT_MIN, inv);
+   rho.z = -c * (inv * inv);
+ }
+ 
+diff -ruN orig/cunls/robustifier/huber_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/huber_loss_function_batch.cu
+--- a/cunls/robustifier/huber_loss_function_batch.cu	2026-09-01 23:28:50.474024111 +0200
++++ b/cunls/robustifier/huber_loss_function_batch.cu	2026-09-01 23:28:50.502815992 +0200
+@@ -17,7 +17,7 @@
+ 
+ #include <stdint.h>
+ 
+-#include <cuda/std/limits>
++#include <cfloat>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/robustifier/huber_loss_function_batch.h"
+@@ -57,7 +57,7 @@
+     // 'r' is always positive.
+     const float r = sqrtf(sq_error);
+     rho.x = 2.0 * delta * r - delta_squared_;
+-    rho.y = fmaxf(cuda::std::numeric_limits<float>::min(), delta / r);
++    rho.y = fmaxf(FLT_MIN, delta / r);
+     rho.z = -rho.y / (2.0 * sq_error);
+   } else {
+     // Inlier region.
+diff -ruN orig/cunls/robustifier/scaled_loss_function_batch.h cuNLS-Release_07_13_2026/cunls/robustifier/scaled_loss_function_batch.h
+--- a/cunls/robustifier/scaled_loss_function_batch.h	2026-09-01 23:28:50.474093806 +0200
++++ b/cunls/robustifier/scaled_loss_function_batch.h	2026-09-01 23:28:50.507606315 +0200
+@@ -58,7 +58,7 @@
+  *       InformationFactorBatch.
+  */
+ template <class T, typename std::enable_if_t<
+-                       std::is_base_of_v<LossFunctionBatch, T>, int> = 0>
++                       std::is_base_of<LossFunctionBatch, T>::value, int> = 0>
+ class ScaledLossFunctionBatch : public LossFunctionBatch {
+ public:
+   /**
+diff -ruN orig/cunls/robustifier/soft_lone_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/soft_lone_loss_function_batch.cu
+--- a/cunls/robustifier/soft_lone_loss_function_batch.cu	2026-09-01 23:28:50.474108226 +0200
++++ b/cunls/robustifier/soft_lone_loss_function_batch.cu	2026-09-01 23:28:50.502908311 +0200
+@@ -15,7 +15,7 @@
+  * limitations under the License.
+  */
+ 
+-#include <cuda/std/limits>
++#include <cfloat>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/robustifier/soft_lone_loss_function_batch.h"
+@@ -37,7 +37,7 @@
+ 
+   float3 &rho = out[tid];
+   rho.x = 2.0f * b * (tmp - 1.0f);
+-  rho.y = fmaxf(cuda::std::numeric_limits<float>::min(), 1.0f / tmp);
++  rho.y = fmaxf(FLT_MIN, 1.0f / tmp);
+   rho.z = -(c * rho.y) / (2.0f * sum);
+ }
+ 
+diff -ruN orig/cunls/robustifier/tolerant_loss_function_batch.cu cuNLS-Release_07_13_2026/cunls/robustifier/tolerant_loss_function_batch.cu
+--- a/cunls/robustifier/tolerant_loss_function_batch.cu	2026-09-01 23:28:50.474137556 +0200
++++ b/cunls/robustifier/tolerant_loss_function_batch.cu	2026-09-01 23:28:50.502863367 +0200
+@@ -15,7 +15,7 @@
+  * limitations under the License.
+  */
+ 
+-#include <cuda/std/limits>
++#include <cfloat>
+ 
+ #include "cunls/common/helper.h"
+ #include "cunls/robustifier/tolerant_loss_function_batch.h"
+@@ -45,7 +45,7 @@
+     const float e_x = expf(x);
+     const float one_plus_e_x = 1.0f + e_x;
+     rho.x = b * logf(one_plus_e_x) - c;
+-    rho.y = fmaxf(cuda::std::numeric_limits<float>::min(), e_x / one_plus_e_x);
++    rho.y = fmaxf(FLT_MIN, e_x / one_plus_e_x);
+     rho.z = 0.5f / (b * (1.0f + coshf(x)));
+   }
+ }
+diff -ruN orig/cunls/state/state_batch_ops.cu cuNLS-Release_07_13_2026/cunls/state/state_batch_ops.cu
+--- a/cunls/state/state_batch_ops.cu	2026-09-01 23:28:50.474539266 +0200
++++ b/cunls/state/state_batch_ops.cu	2026-09-01 23:28:50.506240711 +0200
+@@ -24,6 +24,7 @@
+ 
+ #include <cassert>
+ 
++#include "cunls/common/thrust_compat.h"
+ #include "cunls/common/helper.h"
+ #include "cunls/state/state_batch_ops.h"
+ 
+@@ -80,7 +81,7 @@
+                          const int *const_state_block_ids,
+                          size_t num_const_state_blocks,
+                          thrust::device_vector<bool> &binary_pattern) {
+-  auto stream_policy = thrust::cuda::par_nosync.on(stream);
++  auto stream_policy = CUNLS_PAR_NOSYNC.on(stream);
+   // Fill pattern with trues
+   thrust::fill(stream_policy, binary_pattern.begin(), binary_pattern.end(),
+                true);
+@@ -114,7 +115,7 @@
+    */
+   __host__ __device__ int operator()(int map_value, bool binary_pattern) const {
+     if (!binary_pattern) {
+-      return cuda::std::numeric_limits<int>::max();
++      return INT_MAX;
+     }
+     return map_value;
+   }
+@@ -160,7 +161,7 @@
+   map_.resize(state_updates_.size());
+   thrust::device_ptr<int> map_ptr(map_.data());
+   auto map_it = map_ptr;
+-  auto stream_policy = thrust::cuda::par_nosync.on(stream);
++  auto stream_policy = CUNLS_PAR_NOSYNC.on(stream);
+ 
+   num_reduced_states_ = 0;
+   for (auto batch : state_batches) {
+@@ -204,7 +205,7 @@
+   assert(delta.size() == num_reduced_states_);
+   assert(x_ptrs.size() == x_plus_delta_ptrs.size());
+   assert(x_ptrs.size() == delta_ptrs_.size());
+-  auto stream_policy = thrust::cuda::par_nosync.on(stream);
++  auto stream_policy = CUNLS_PAR_NOSYNC.on(stream);
+ 
+   // Zero out the updates
+   thrust::device_ptr<float> updates_ptr(state_updates_.data());

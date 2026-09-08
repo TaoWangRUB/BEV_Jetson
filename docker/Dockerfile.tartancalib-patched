@@ -1,0 +1,19 @@
+# tartancalib with Kalibr's NoMEstimator bug patched at build time.
+#
+# kalibr_calibrate_imu_camera calls `aopt.NoMEstimator()` with no argument against a backend
+# whose C++ signature is `__init__(_object*, double)`, so every camera-IMU solve dies with a
+# Boost.Python.ArgumentError. It is a NO-OP estimator, so the value passed is irrelevant.
+#
+# Patching at build time rather than at run time is deliberate: the containers run as the
+# invoking uid (so recorded bags and solve outputs are not root-owned), and that user cannot
+# write to /catkin_ws - a `sed -i` at run time fails with permission denied, and if its stderr
+# is redirected the solve then fails later with the original error and no clue why.
+#
+#   docker build -f docker/Dockerfile.tartancalib-patched -t tartancalib:patched .
+FROM tartancalib:latest
+USER root
+RUN set -e; \
+    files="$(grep -rl 'NoMEstimator()' /catkin_ws || true)"; \
+    test -n "$files" || { echo "NoMEstimator() not found - upstream may have fixed it"; exit 1; }; \
+    sed -i 's/NoMEstimator()/NoMEstimator(1.0)/g' $files; \
+    echo "patched:"; echo "$files"
