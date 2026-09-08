@@ -21,6 +21,18 @@ from rerun_odometry import read_bag, find_bag, read_images       # noqa: E402
 CAMS = ["cam1", "cam2", "cam3", "cam4"]
 # 8 virtual cams as the node orders them: camN at yaw -45 then +45.
 VCAMS = [(c, s) for c in CAMS for s in (-1, +1)]
+# DISPLAY order, which is NOT VCAMS order. Panes are grouped by physical camera and the two
+# rows run in OPPOSITE carve order, so reading row 1 left-to-right and then row 2 walks the
+# ring continuously instead of jumping back across the rig at the row break:
+#
+#   row 1   cam1 +45  cam1 -45  cam2 +45  cam2 -45
+#   row 2   cam3 -45  cam3 +45  cam4 -45  cam4 +45
+#
+# Defined HERE, once, because rerun_multicam imports from this module: it used to compute
+# the same expression locally while this renderer used raw VCAMS, so the .rrd and the mp4
+# disagreed about which pane was which.
+DISPLAY_ORDER = ([VCAMS.index((c, s)) for c in CAMS[:2] for s in (+1, -1)] +
+                 [VCAMS.index((c, s)) for c in CAMS[2:] for s in (-1, +1)])
 PANE_W, PANE_H = 320, 240
 MID_H = 520
 
@@ -260,8 +272,9 @@ def main():
         cv2.putText(mid, "cuVSLAM multicam VO   frame %d/%d   path %.1f m" % (i, len(P), path_m),
                     (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (230, 230, 230), 1, cv2.LINE_AA)
 
-        top = np.hstack(panes[:4])
-        bot = np.hstack(panes[4:])
+        ordered = [panes[j] for j in DISPLAY_ORDER]
+        top = np.hstack(ordered[:4])
+        bot = np.hstack(ordered[4:])
         rows = [top, mid, bot]
         if bottom_on:
             strip = np.full((BOTTOM_H, canvas_w, 3), 18, np.uint8)

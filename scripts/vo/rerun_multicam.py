@@ -19,7 +19,8 @@ from rosbags.highlevel import AnyReader
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rerun_virtual_pinholes import load_omni, build_map, rot_y, project_omni   # noqa: E402
 from rerun_odometry import read_bag, find_bag, read_images, TS    # noqa: E402
-from render_multicam_video import CAMS, VCAMS, quat_to_R, color_from_id  # noqa: E402
+from render_multicam_video import (CAMS, VCAMS, DISPLAY_ORDER, quat_to_R,  # noqa: E402
+                                   color_from_id)
 
 
 def read_observations(bag):
@@ -527,8 +528,7 @@ def main():
     #
     # VCAMS order is cuVSLAM's own and is what each observation's vcam index refers to, so
     # only the DISPLAY order changes here - never the array.
-    order = ([VCAMS.index((c, s)) for c in CAMS[:2] for s in (+1, -1)] +
-             [VCAMS.index((c, s)) for c in CAMS[2:] for s in (-1, +1)])
+    order = DISPLAY_ORDER
     # rig/camN is the virtual pinholes' namespace (N = 0..7); the raw cameras must not
     # share it or cam1..cam4 collide with vpin 1..4.
     hide3d = [f"- /rig/cam{i}/**" for i in range(8)] if a.fisheye else \
