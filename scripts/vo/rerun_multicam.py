@@ -403,6 +403,14 @@ def main():
                          "than a few metres - which indoors is everything")
     ap.add_argument("--upright", action=argparse.BooleanOptionalAction, default=True,
                     help="display-only: undo the 180 mount roll so the scene reads upright")
+    # Orbital eye for the 3D view. Rerun stores NO view angle in a .rrd unless the blueprint
+    # sets one - it auto-frames, and an interactive orbit in the viewer is never written back
+    # - so the .rrd and the mp4 could only ever agree by accident. Pinning it here from the
+    # same --azim/--elev the mp4 uses makes them identical by construction. Both renderers
+    # display in the same frame (diag(-1,-1,1), the 180 mount roll undone), so the angles mean
+    # the same thing in both.
+    ap.add_argument("--azim", type=float, default=30.0, help="view azimuth (deg)")
+    ap.add_argument("--elev", type=float, default=22.0, help="view elevation (deg)")
     ap.add_argument("--save", nargs="?", const="", default=None)
     ap.add_argument("--spawn", action="store_true")
     ap.add_argument("--serve", action="store_true")
@@ -533,9 +541,24 @@ def main():
     # share it or cam1..cam4 collide with vpin 1..4.
     hide3d = [f"- /rig/cam{i}/**" for i in range(8)] if a.fisheye else \
              [f"- /rig/cam{i}/**" for i in (1, 3, 5, 7)]
+    # Same basis as render_multicam_video.view_basis: world is X-right, Y-down, Z-forward,
+    # up = -Y, and --azim orbits about that vertical axis.
+    _a, _e = np.radians(a.azim), np.radians(a.elev)
+    fwd = np.array([np.cos(_e) * np.sin(_a), -np.sin(_e), np.cos(_e) * np.cos(_a)])
+    Pd_eye = np.asarray(P) @ Rz180.T
+    ctr = (Pd_eye.max(0) + Pd_eye.min(0)) / 2.0
+    # Rerun's 3D view is PERSPECTIVE, ~55 deg vertical. Fitting a bounding sphere of radius R
+    # needs dist = R/tan(fov/2) ~= 1.92 R, i.e. ~0.96 of the bbox DIAGONAL. Measured either
+    # side of that: 1.4 put the trajectory at ~15% of the frame, 0.55 overflowed it.
+    dist = max(float(np.linalg.norm(Pd_eye.max(0) - Pd_eye.min(0))), 1.0) * 1.0
+    eye = ctr - fwd * dist
+    eye_ctl = rrb.EyeControls3D(kind=rrb.Eye3DKind.Orbital,
+                                position=[float(v) for v in eye],
+                                look_target=[float(v) for v in ctr],
+                                eye_up=[0.0, -1.0, 0.0])
     rows = [
         rrb.Horizontal(contents=[v2d(i, labels[i]) for i in order[:4]]),
-        rrb.Spatial3DView(name="3D", origin="/",
+        rrb.Spatial3DView(name="3D", origin="/", eye_controls=eye_ctl,
                           contents=["+ /**", "- /bev/**", "- /pano/**"] + hide3d),
         rrb.Horizontal(contents=[v2d(i, labels[i]) for i in order[4:]]),
     ]

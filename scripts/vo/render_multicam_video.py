@@ -80,7 +80,7 @@ def main():
     ap.add_argument("--gif", action="store_true", help="also write a .gif")
     # Orbital view for the 3D panel. The world is X-right, Y-down, Z-forward with up = -Y,
     # so --azim rotates about the vertical axis: +90 turns the view a quarter turn.
-    ap.add_argument("--azim", type=float, default=-60.0, help="view azimuth (deg)")
+    ap.add_argument("--azim", type=float, default=30.0, help="view azimuth (deg)")
     ap.add_argument("--elev", type=float, default=22.0, help="view elevation (deg)")
     # The rows below mirror scripts/vo/rerun_multicam.py so the mp4 shows the same scene as
     # the .rrd. Rerun cannot export video (only --screenshot-to, a single frame), so the
@@ -88,6 +88,10 @@ def main():
     ap.add_argument("--slam", action="store_true",
                     help="draw loop closures and loop edges from the bag's /cuvslam/slam_path"
                          " and /cuvslam/loop_closure_edges, as the .rrd does")
+    ap.add_argument("--vo-bag", default=None, metavar="DIR",
+                    help="a second run with SLAM OFF, drawn as the pure-VO reference in "
+                         "green beside this run's magenta trajectory - the same pair the "
+                         ".rrd shows. Replay both at the same rate.")
     ap.add_argument("--panorama", action="store_true", help="equirectangular 360 row")
     ap.add_argument("--bev-fit-plane", action="store_true",
                     help="BEV row, ground plane fitted per frame from nearby landmarks")
@@ -168,6 +172,14 @@ def main():
         return cam_im[c][k] if abs(cam_ts[c][k] - t) <= tol else None
 
     # Pick the poses to render, and the nearest source frame set for each.
+    # Pure-VO reference, projected into the same display frame as this run's trajectory.
+    ref2d = ref_t = None
+    if a.vo_bag:
+        rts, rP, _, _, _ = read_bag(find_bag(pathlib.Path(a.vo_bag)))
+        print("pure-VO reference (%s): %d poses" % (a.vo_bag, len(rP)))
+        ref_t = np.asarray(rts)
+        ref_P = np.asarray(rP)
+
     sel = list(range(len(P)))
     if a.t_range:
         lo, hi = (float(x) for x in a.t_range.split(":"))
@@ -206,7 +218,14 @@ def main():
         return np.column_stack([pts @ sx * scale + ox, pts @ sy * scale + oy]).astype(np.int32)
 
     lm2d = to2d(lm_subd) if len(lm_subd) else np.zeros((0, 2), np.int32)
+    # Colour the cloud by landmark id, as the .rrd does. A uniform grey cloud and a coloured
+    # one carry the same geometry but only the coloured one shows that neighbouring points
+    # are different landmarks rather than one smeared blob.
+    lm2d_col = (np.array([color_from_id(i * 7) for i in range(len(lm_subd))], np.uint8)
+                if len(lm_subd) else np.zeros((0, 3), np.uint8))
     traj2d = to2d(Pd)
+    if a.vo_bag:
+        ref2d = to2d(ref_P * roll)
 
     # Bottom row mirrors the .rrd blueprint: BEV on the left third, panorama on the right
     # two thirds. The BEV is square and the panorama is 3.6:1, so each is fitted into its
@@ -286,23 +305,34 @@ def main():
 
         # 3D panel: static landmark cloud + trajectory so far + current pose.
         mid = np.full((MID_H, canvas_w, 3), 18, np.uint8)
-        for x, y in lm2d:
+        for (x, y), col in zip(lm2d, lm2d_col):
             if 0 <= x < canvas_w and 0 <= y < MID_H:
-                mid[y, x] = (105, 105, 105)   # dim: the map is context, not the subject
-        cv2.polylines(mid, [traj2d[: i + 1]], False, (255, 190, 40), 3, cv2.LINE_AA)
+                mid[y, x] = (int(col[2]), int(col[1]), int(col[0]))
+        # Green = pure VO reference, magenta = this run - the same pairing as the .rrd, drawn
+        # causally so the two are seen to diverge rather than presented as a finished result.
+        # The reference goes UNDER and WIDER. The two paths nearly coincide (35.87 m of pure
+        # VO against 35.64 m with SLAM), so an equal-or-thinner green line is covered pixel
+        # for pixel by the magenta and reads as absent. Wider underneath, it shows as a green
+        # margin wherever they agree and as its own line wherever they part - which is the
+        # only thing the comparison is for.
+        if ref2d is not None:
+            nref = int(np.searchsorted(ref_t, ts[i]))
+            if nref > 1:
+                cv2.polylines(mid, [ref2d[:nref]], False, (90, 230, 90), 5, cv2.LINE_AA)
+        cv2.polylines(mid, [traj2d[: i + 1]], False, (200, 80, 255), 2, cv2.LINE_AA)
         # Loop edges under the trajectory, 1 px, matching the 0.002 radius in the .rrd.
         now = ts[i]
         if slam_edges2d is not None:
             for e, et in zip(slam_edges2d, slam_edge_t):
                 if et <= now:
                     cv2.line(mid, tuple(e[0]), tuple(e[1]), (0, 221, 255), 1, cv2.LINE_AA)
-        # Hollow rings, not filled dots: 28 filled markers along one corridor merge into a
-        # solid line that outranks the trajectory. A ring reads as an annotation ON the
-        # path. Amber, so it is never confused with the red current pose.
+        # Red, matching the .rrd. Filled markers merged into a solid line when they were the
+        # only thing on a grey panel; against two coloured trajectories and a coloured cloud
+        # they read as annotations again, so they follow the .rrd rather than diverging.
         if slam_marks is not None:
             for m, mt in zip(slam_marks, slam_mark_t):
                 if mt <= now:
-                    cv2.circle(mid, tuple(m), 5, (0, 200, 255), 1, cv2.LINE_AA)
+                    cv2.circle(mid, tuple(m), 4, (40, 40, 255), -1, cv2.LINE_AA)
         cv2.circle(mid, tuple(traj2d[0]), 6, (0, 220, 0), -1)
         cv2.circle(mid, tuple(traj2d[i]), 7, (0, 0, 255), -1)
         path_m = np.linalg.norm(np.diff(P[: i + 1], axis=0), axis=1).sum() if i else 0.0
