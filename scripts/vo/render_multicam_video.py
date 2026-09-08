@@ -69,11 +69,19 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--frames", type=int, default=200, help="max composited frames")
     ap.add_argument("--fps", type=float, default=12.0)
+    ap.add_argument("--t-range", default=None, metavar="START:END",
+                    help="seconds from the first pose. --frames then subsamples the WINDOW, "
+                         "so a short window renders at full rate. Same semantics as "
+                         "rerun_multicam.py, and the way to grab a single frame for a look.")
     ap.add_argument("--map-radius", type=float, default=20.0,
                     help="display-only: drop landmarks further than this (m) from the "
                          "trajectory. Low-parallax features triangulate to hundreds of "
                          "metres. 0 = keep all")
     ap.add_argument("--gif", action="store_true", help="also write a .gif")
+    # Orbital view for the 3D panel. The world is X-right, Y-down, Z-forward with up = -Y,
+    # so --azim rotates about the vertical axis: +90 turns the view a quarter turn.
+    ap.add_argument("--azim", type=float, default=-60.0, help="view azimuth (deg)")
+    ap.add_argument("--elev", type=float, default=22.0, help="view elevation (deg)")
     # The rows below mirror scripts/vo/rerun_multicam.py so the mp4 shows the same scene as
     # the .rrd. Rerun cannot export video (only --screenshot-to, a single frame), so the
     # only way to get the scene as an mp4 is to composite it here.
@@ -160,8 +168,17 @@ def main():
         return cam_im[c][k] if abs(cam_ts[c][k] - t) <= tol else None
 
     # Pick the poses to render, and the nearest source frame set for each.
-    step = max(1, len(P) // a.frames)
-    idxs = list(range(0, len(P), step))
+    sel = list(range(len(P)))
+    if a.t_range:
+        lo, hi = (float(x) for x in a.t_range.split(":"))
+        rel = np.asarray(ts) - ts[0]
+        sel = [j for j in sel if lo <= rel[j] <= hi]
+        if not sel:
+            sys.exit("--t-range %s selects no poses (run spans 0..%.1f s)"
+                     % (a.t_range, rel[-1]))
+        print("t-range %.1f..%.1f s -> %d of %d poses" % (lo, hi, len(sel), len(P)))
+    step = max(1, len(sel) // a.frames)
+    idxs = sel[::step]
     print("compositing %d frames from %d poses, %d landmarks" % (len(idxs), len(P), len(lm)))
 
     out = pathlib.Path(a.out) if a.out else odom_bag / "multicam_vo.mp4"
@@ -176,7 +193,7 @@ def main():
     lm_subd = lm_sub * roll if len(lm_sub) else lm_sub
 
     # Fit an orthographic view, framed on the trajectory (the map spreads far past it).
-    sx, sy = view_basis(azim=-60, elev=22)
+    sx, sy = view_basis(azim=a.azim, elev=a.elev)
     tpx, tpy = Pd @ sx, Pd @ sy
     cx3, cy3 = (tpx.max() + tpx.min()) / 2, (tpy.max() + tpy.min()) / 2
     half = max(tpx.max() - tpx.min(), tpy.max() - tpy.min(), 1.0) / 2 * 1.8
@@ -201,13 +218,28 @@ def main():
 
     # Loop closures/edges are drawn in the SAME orthographic projection as the trajectory,
     # so they land on it rather than beside it.
+    # CAUSAL. Everything below is drawn only once it has happened. Logging the whole set
+    # from frame 0 - which is what static=True does in the .rrd, and what this did first -
+    # shows closures at t=60 s while the rig is 3 s into the run, and the dense chain of
+    # markers reads as the trajectory itself while the real one is still a short stub.
+    slam_edge_t = np.zeros(0)
     if a.slam and len(edges):
         slam_edges2d = [to2d(e * roll) for e in edges]
+        if len(sp) and len(spt):
+            # A closure exists from the LATER of its two endpoints: that is when the rig
+            # recognised the place, not when it first saw it.
+            slam_edge_t = np.array([max(spt[int(np.linalg.norm(sp - e[0], axis=1).argmin())],
+                                        spt[int(np.linalg.norm(sp - e[1], axis=1).argmin())])
+                                    for e in edges])
+        else:
+            slam_edge_t = np.full(len(edges), -np.inf)
+    slam_mark_t = np.zeros(0)
     if a.slam and len(lc):
         marks = lc
         if len(sp) and len(spt) and len(lct) == len(lc):
             marks = np.array([sp[int(np.abs(spt - t).argmin())] for t in lct], np.float32)
         slam_marks = to2d(marks * roll)
+        slam_mark_t = np.asarray(lct) if len(lct) == len(marks) else np.full(len(marks), -np.inf)
 
     writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), a.fps,
                              (canvas_w, canvas_h))
@@ -256,16 +288,21 @@ def main():
         mid = np.full((MID_H, canvas_w, 3), 18, np.uint8)
         for x, y in lm2d:
             if 0 <= x < canvas_w and 0 <= y < MID_H:
-                mid[y, x] = (170, 170, 170)
-        cv2.polylines(mid, [traj2d[: i + 1]], False, (255, 190, 40), 2, cv2.LINE_AA)
-        # Loop edges first so the trajectory and markers sit on top. 1 px, matching the
-        # 0.002 radius in the .rrd: with 35 of them anything thicker reads as bars.
+                mid[y, x] = (105, 105, 105)   # dim: the map is context, not the subject
+        cv2.polylines(mid, [traj2d[: i + 1]], False, (255, 190, 40), 3, cv2.LINE_AA)
+        # Loop edges under the trajectory, 1 px, matching the 0.002 radius in the .rrd.
+        now = ts[i]
         if slam_edges2d is not None:
-            for e in slam_edges2d:
-                cv2.line(mid, tuple(e[0]), tuple(e[1]), (0, 221, 255), 1, cv2.LINE_AA)
+            for e, et in zip(slam_edges2d, slam_edge_t):
+                if et <= now:
+                    cv2.line(mid, tuple(e[0]), tuple(e[1]), (0, 221, 255), 1, cv2.LINE_AA)
+        # Hollow rings, not filled dots: 28 filled markers along one corridor merge into a
+        # solid line that outranks the trajectory. A ring reads as an annotation ON the
+        # path. Amber, so it is never confused with the red current pose.
         if slam_marks is not None:
-            for m in slam_marks:
-                cv2.circle(mid, tuple(m), 4, (0, 0, 255), -1, cv2.LINE_AA)   # no labels
+            for m, mt in zip(slam_marks, slam_mark_t):
+                if mt <= now:
+                    cv2.circle(mid, tuple(m), 5, (0, 200, 255), 1, cv2.LINE_AA)
         cv2.circle(mid, tuple(traj2d[0]), 6, (0, 220, 0), -1)
         cv2.circle(mid, tuple(traj2d[i]), 7, (0, 0, 255), -1)
         path_m = np.linalg.norm(np.diff(P[: i + 1], axis=0), axis=1).sum() if i else 0.0
