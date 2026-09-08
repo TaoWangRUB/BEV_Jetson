@@ -406,9 +406,12 @@ python3 -m venv --system-site-packages .venv     # once; needs python3.12-venv
 subsamples the whole run, which on a 57 s log is one pose in five — enough to step straight over a
 0.75 s tracking freeze. `--save` writes an `.rrd` (`.venv/bin/rerun file.rrd`), `--spawn` opens the
 desktop viewer, `--serve` serves it. Budget ~0.3 MB/frame, or ~1.2 s and ~0.45 MB per frame with
-`--panorama --bev-fit-plane --fisheye` all on: render a long run **in `--t-range` chunks**, because
-the whole recording is buffered in memory before the file is written and a 965-frame full-featured
-render has been OOM-killed on a 31 GB laptop.
+`--panorama --bev-fit-plane --fisheye` all on. **A full run renders full-featured now** — run6's
+1484 frames with `--panorama --bev-fit-plane` takes ~6 min, 480 MB, peaking at 20 GB of 31.
+The old advice to chunk with `--t-range` was working around a leak, not a budget: `--bev-fit-plane`
+refits the plane every frame and the remap cache keyed on (height, normal) was unbounded, ~10 MB
+an entry, which is what killed the 965-frame render. Bounded to `--bev-cache-size` (24) since
+2026-09-08. `--t-range` is still the right tool for looking at a window, just no longer mandatory.
 
 For just the 360° stitch, skip Rerun entirely — [scripts/vo/make_panorama.py](scripts/vo/make_panorama.py)
 writes PNGs or an mp4 straight from a raw log or a camera bag:
