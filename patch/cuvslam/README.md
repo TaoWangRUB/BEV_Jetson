@@ -93,3 +93,18 @@ rig. Apply by hand if needed:
 ```bash
 patch -p1 -d third_party/cuVSLAM < patch/cuvslam/0002-frustum-threshold-env.optional.patch
 ```
+
+## 0003-multicam-depth-id-orphans-camera0-partner.patch
+
+**Apply this for any multi-camera rig.** Not a TX2 port patch - it fixes a camera-selection
+bug that silently drops one virtual camera on every Multicamera run, on any platform.
+
+cuvslam2.cpp declares camera 0 a depth camera for every non-RGBD/non-Multisensor run. The
+frustum graph then erases secondary edges landing on camera 0, deletes primaries left with
+no secondaries, and re-adds camera 0 but not its orphan. `MultiSOFGPU` builds `mono_sof_`
+from `primary_cameras()`, so the orphan is never tracked at all.
+
+On the BEV rig this cost cam2+45 entirely: 27.6 features/frame against 302-362 for the other
+seven, in **every run ever recorded**, until 2026-09-08. Verify with
+`scripts/vo/verify_fig_primaries.sh` - it runs cuVSLAM's own logic on our topology in about a
+second, no GPU and no images, and exits non-zero if any virtual camera is dropped.

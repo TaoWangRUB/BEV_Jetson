@@ -1,0 +1,41 @@
+From: TaoWangRUB <37864846+TaoWangRUB@users.noreply.github.com>
+Subject: [PATCH] Multicamera: stop orphaning camera 0's stereo partner
+
+Every non-RGBD / non-Multisensor run declares camera 0 a "depth camera" with
+allow_stereo_track_for_depth = false. FrustumIntersectionGraph then
+
+  1. erases every secondary edge that LANDS on camera 0,
+  2. deletes any primary left with an empty secondary list
+     ("remove primary cameras that have no stereo pairs"),
+  3. re-adds camera 0 itself - but nothing re-adds its orphaned partner.
+
+MultiSOFGPU builds mono_sof_ from primary_cameras(), so that partner never gets a
+mono tracker created: it is never tracked and produces no observations, in any
+mode. Precision does not help - the pruning runs after mode selection.
+
+A surround rig of DISJOINT pairs is maximally exposed, because every virtual
+camera has exactly one partner, so camera 0's partner is always the casualty.
+
+Measured on the BEV 4x IMX296 fisheye rig (8 virtual pinholes, 4 disjoint pairs),
+run6 replay, features per frame:
+
+  before   cam2+45  27.6 mean, 845 of 1299 frames with ZERO
+           other 7  302-362 mean, 0 frames with zero
+  after    cam2+45  325.9 mean, 0 frames with zero
+           all 8    326-356 mean, 0 frames with zero
+
+Confirmed by reordering the camera list: the dead camera moves to the new
+camera 0's partner exactly as this mechanism predicts, and the previously dead
+one recovers fully. scripts/vo/verify_fig_primaries.sh runs cuVSLAM's own
+selection logic standalone (no GPU, no images) and gates on it.
+
+Keeping the edges costs nothing in Multicamera mode - there is no depth camera -
+and camera 0 remains guaranteed-primary either way.
+
+--- a/libs/cuvslam/cuvslam2.cpp
++++ b/libs/cuvslam/cuvslam2.cpp
+@@
+   } else {
+     depth_ids.push_back(static_cast<CameraId>(0));
++    enable_depth_stereo_tracking_fig = true;
+   }
