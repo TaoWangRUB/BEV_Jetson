@@ -11,7 +11,7 @@ and camera frusta. The Points2D on each pane are the real cuVSLAM final landmark
 reprojected into that virtual camera (color keyed by landmark id) - the offline-honest
 stand-in for the tracker's per-frame observations, which only exist while tracking runs.
 """
-import sys, os, argparse, pathlib, numpy as np, cv2, yaml
+import sys, os, argparse, collections, pathlib, numpy as np, cv2, yaml
 import rerun as rr
 import rerun.blueprint as rrb
 from rosbags.highlevel import AnyReader
@@ -367,6 +367,10 @@ def main():
                          "the map is not globally consistent. Overrides --bev-height")
     ap.add_argument("--bev-plane-radius", type=float, default=5.0,
                     help="horizontal radius (m) of landmarks used for the per-frame fit")
+    ap.add_argument("--bev-cache-size", type=int, default=24,
+                    help="how many BEV remap tables to keep (~10 MB each at the default "
+                         "extent/ppm). Unbounded caching is what OOM-killed full-run "
+                         "--bev-fit-plane renders; 24 is ~240 MB and hits on consecutive frames")
     ap.add_argument("--bev-extent", type=float, default=4.0, help="BEV half-extent (m)")
     ap.add_argument("--bev-ppm", type=float, default=70.0, help="BEV pixels per metre")
     ap.add_argument("--bev-max-incidence", type=float, default=75.0,
@@ -672,7 +676,16 @@ def main():
                rr.LineStrips3D([e @ Rz180.T for e in ends], colors=[0xFFDD00FF],
                                radii=0.02, labels=labels), static=True)
     traj = []
-    heights, bev_cache = [], {}
+    heights = []
+    # BOUNDED. Each entry is four cameras' worth of float32 remap tables plus an owner mask -
+    # about 10 MB at the default extent/ppm. --bev-fit-plane refits the plane every frame, so
+    # an unbounded dict keyed on (height, normal) grows without limit: 353 distinct tables over
+    # 400 frames measured, which is ~3.5 GB, and ~13 GB over a full 1484-frame run. That is
+    # what OOM-killed the full-featured render at ~965 frames (README section 3.3) - the file
+    # sink streams fine, this cache was the leak. LRU, because consecutive frames fit nearly
+    # the same plane and hit.
+    bev_cache = collections.OrderedDict()
+    bev_built = [0]   # tables BUILT, which is the honest number once the cache is capped
     last_plane = None
     for n, i in enumerate(idxs):
         rr.set_time("wall", timestamp=ts[i])
@@ -741,13 +754,21 @@ def main():
                 else:
                     h, n_rig = got
                     heights.append(h)
-                    pkey = (round(h, 2), tuple(np.round(n_rig, 3)))
+                    # Coarser than the old (0.01 m, 0.001) key on purpose: that quantisation
+                    # was finer than the fit's own frame-to-frame noise, so nearly every frame
+                    # missed and built a fresh 10 MB table. 5 cm and 0.02 in the normal is well
+                    # inside what the BEV can resolve at 70 px/m.
+                    pkey = (round(h / 0.05), tuple(np.round(n_rig / 0.02).astype(int)))
                     if pkey in bev_cache:
                         tables = bev_cache[pkey]
+                        bev_cache.move_to_end(pkey)
                     else:
                         tables = bev_maps(omni, rig, R_rig_cam1, h, a.bev_extent, a.bev_ppm,
                                           normal=n_rig, max_incidence=a.bev_max_incidence)
                         bev_cache[pkey] = tables
+                        bev_built[0] += 1
+                        while len(bev_cache) > a.bev_cache_size:
+                            bev_cache.popitem(last=False)
             plan = np.zeros((bev_n, bev_n), np.uint8)
             if tables is not None:
                 mx, my, owner = tables
@@ -826,8 +847,10 @@ def main():
                        rr.Points2D(uv, colors=cols, radii=3))
 
     if heights:
-        print("BEV plane: %d distinct (height, tilt) tables over %d frames, h %.2f .. %.2f m"
-              % (len(bev_cache), len(heights), min(heights), max(heights)))
+        # len(bev_cache) would just report the CAP now, which reads as "the plane barely
+        # moved" when it means the opposite. Report builds and cache size separately.
+        print("BEV plane: %d remap tables built over %d frames (cache holds %d), h %.2f .. %.2f m"
+              % (bev_built[0], len(heights), len(bev_cache), min(heights), max(heights)))
     if pano_radii:
         pr = np.array(pano_radii)
         print("panorama sphere radius: %.2f-%.2f m (median %.2f) over %d frames, "
