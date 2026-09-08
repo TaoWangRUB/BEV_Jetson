@@ -226,6 +226,15 @@ def main():
     traj2d = to2d(Pd)
     if a.vo_bag:
         ref2d = to2d(ref_P * roll)
+    # The magenta line must be the trajectory the CLOSURES are anchored to. They are snapped
+    # onto slam_P (the optimised path), so drawing this run's raw /cuvslam/odometry in magenta
+    # instead put every marker beside the line rather than on it. The .rrd draws slam_P for
+    # exactly this reason - and with --vo-bag supplying the clean VO in green, this run's own
+    # SLAM-degraded odometry would be a third line answering a question nobody asked.
+    slam2d = slam_t2 = None
+    if a.slam and len(sp):
+        slam2d = to2d(np.asarray(sp) * roll)
+        slam_t2 = np.asarray(spt) if len(spt) == len(sp) else None
 
     # Bottom row mirrors the .rrd blueprint: BEV on the left third, panorama on the right
     # two thirds. The BEV is square and the panorama is 3.6:1, so each is fitted into its
@@ -319,7 +328,12 @@ def main():
             nref = int(np.searchsorted(ref_t, ts[i]))
             if nref > 1:
                 cv2.polylines(mid, [ref2d[:nref]], False, (90, 230, 90), 5, cv2.LINE_AA)
-        cv2.polylines(mid, [traj2d[: i + 1]], False, (200, 80, 255), 2, cv2.LINE_AA)
+        if slam2d is not None and slam_t2 is not None:
+            nsl = int(np.searchsorted(slam_t2, ts[i]))
+            if nsl > 1:
+                cv2.polylines(mid, [slam2d[:nsl]], False, (200, 80, 255), 2, cv2.LINE_AA)
+        elif ref2d is None:
+            cv2.polylines(mid, [traj2d[: i + 1]], False, (200, 80, 255), 2, cv2.LINE_AA)
         # Loop edges under the trajectory, 1 px, matching the 0.002 radius in the .rrd.
         now = ts[i]
         if slam_edges2d is not None:
