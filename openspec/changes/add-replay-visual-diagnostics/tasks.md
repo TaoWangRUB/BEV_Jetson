@@ -146,6 +146,91 @@
         is absent — the worst step is 1.49 m at t = 46.74 s, in the same saturation window — but
         the set sequence differs (13 Hz vs 20 Hz), so it is not a controlled comparison. Whether
         that is SLAM, the forced export, or simply a different frame sequence is untested.
+  - [~] 1.7l **This rig meets the condition in cuVSLAM issue #136, and we have never been
+        able to see it.** Read from source at `69e2f29`, not inferred:
+
+        A SLAM landmark is born in a staging area and only counts for loop closure once
+        promoted into the map. The promotion test is `lsi_grid.cpp:405-407`:
+
+        ```cpp
+        activate &= !IsLandmarkInAnyFrustum(rig_, cam_ids, cams_from_world, xyz);
+        activate &= !GetLandmarkRelation(id, pose_graph_head);
+        ```
+
+        *Any* frustum is the union over every camera in the rig, and `IsLandmarkInFrustum`
+        has its normalised-coordinate bounds commented out (`lsi_grid.cpp:48-53`), so there
+        is no far plane — distance alone never puts a landmark outside. A stereo pair drops
+        a landmark from the union as soon as the rig turns. **Our eight virtual pinholes
+        close a 360 deg ring, so the only way out is vertically, past the top or bottom of
+        the carve.** That is #136's "full-coverage rig" case exactly.
+
+        Two other drains exist, and both are worse than the one they replace:
+        - tracking loss promotes the WHOLE staging area at once (`lsi_grid.cpp:409-412`) —
+          a mass promotion at the moment the poses backing it are worthless;
+        - a 60 s staging lifetime (`max_staged_landmark_lifetime_ns_ = 60e9`,
+          `lsi_grid.h:177`) force-promotes stale entries.
+
+        **The 60 s drain has never fired in any run we have.** Both SLAM replays are
+        **57.69 s of DATA time** — the clock cuVSLAM keys on is the image stamp, not the
+        0.4x replay's 143 s wall clock. We are 2.3 s under the only reliable drain, by luck,
+        and the run that first exceeds 60 s will behave differently from every run recorded
+        so far.
+
+        **What the existing bags do and do not show** (`scripts/vo/slam_cost_and_map.py`,
+        figure at `datasets/replay_out/slam_cost_and_map.png`):
+
+        | | obs_slam_v6 | obs_slam_v9 | vo_clean_04 (no SLAM) |
+        |---|---|---|---|
+        | data time | 57.69 s | 57.69 s | 57.69 s |
+        | loop closures | 9 | 12 | — |
+        | last closure | data t=39.2 s | data t=39.6 s | — |
+        | silence after | 18.5 s | 18.1 s | — |
+
+        Closures DO fire, so promotion is happening by some route — most likely the vertical
+        escape, since our ring is closed horizontally but not vertically. Then they stop at
+        t≈39.6 s in both runs and never resume.
+
+        **A claim made and withdrawn in the same session:** `/cuvslam/landmarks` grows
+        monotonically to ~54 k with zero thinning events, which looks exactly like #136's
+        "accumulate indefinitely". It is not evidence. `GetFinalLandmarks` returns
+        `impl->final_landmarks` (`cuvslam2.cpp:807-813, 892`), a map that is only ever
+        inserted into and never erased — an odometry track dump whose unbounded growth is by
+        design and which says nothing about the SLAM map's staging.
+
+        **The measurement that would settle it did not exist**: the node read only the
+        `LoopClosure` and `PoseGraph` layers, never `DataLayer::Map`. Now added —
+        `publish_map_landmarks` publishes `/cuvslam/map_landmarks` (promoted landmarks only),
+        the periodic report prints promoted-vs-frame counts and warns on a staging flush, and
+        `timing_csv` writes one row per set. **Still to run**: a replay with the new build, and
+        a log longer than 60 s of data time. Both need the host cuVSLAM build, which does not
+        exist on this machine (`/usr/local/cuda` is an empty stub — no toolkit).
+
+  - [ ] 1.7m **Issue #77 (per-set cost growing with trajectory length) is untestable on the
+        bags we have, and the reason is worth writing down.** #77 plots `track()` climbing
+        ~10 ms -> 50 ms+ against frame index on a 12-camera rig. Neither of our two timing
+        sources can show that:
+        - the node's periodic report prints a 5 s windowed MAXIMUM, which hides a trend;
+        - the interval between recorded messages is floored by the replay rate — 0.4x of a
+          20 Hz log is 125 ms/set, and both SLAM runs sit flat at a 124.6 ms median across
+          all four quarters of the run. A 10->50 ms growth is entirely under that floor.
+
+        **A rank correlation on the overruns is not a substitute.** Spearman rho of
+        (interval excess over the floor) against set index gives +0.284 / +0.273 on the two
+        SLAM runs — and **+0.255 on `vo_clean_04`, which has SLAM off**. The control matches
+        the treatment, so that statistic is measuring noise structure, not cost growth. Do
+        not report it.
+
+        What the bags DO show is a localised burst, not a trend: sets overrunning the floor
+        by >25% run at 0.9-2.6% for deciles 1-5, spike to **14.8 / 39.1 / 17.4%** in deciles
+        6-8, and fall back to 0-1.7% in deciles 9-10. Reproduced in both SLAM runs at the
+        same deciles, and **absent from the no-SLAM control** (flat ~1% throughout). The
+        burst overlaps the loop-closure window but outlasts it — closures end at set ~802,
+        the burst runs to ~922 — so it is not simply "loop closures are expensive" and is
+        not yet attributed.
+
+        `timing_csv` now writes `track_us` per set, which is the actual #77 axis; the plot
+        script takes it with `--timing`. Needs the host build (see 1.7l).
+
   - [ ] 1.7b Publish loop-closure events and the pose graph; add a viewer pane keyed on
         `lc_status`, plus a corrected-trajectory line beside the raw VO one.
   - [ ] 1.7c Measure the cost on the TX2 before believing any of it. `Track()` there is already
@@ -563,6 +648,14 @@ Host, all under gitignored `datasets/`:
 | `datasets/replay_out/obs_20260903_140714/multicam.rrd` | 77 MB — cameras + map only |
 | `datasets/replay_out/obs_20260903_140714/multicam_full.rrd` | 275 MB — with fisheye domes |
 | `datasets/imglog_vio1_30s_bag` | source images for all of the above |
+| `datasets/replay_out/slam_cost_and_map.png` | 1.7l / 1.7m — per-set cost and map growth on the #77 / #136 axes |
+
+Regenerate the last one (reads the bags directly, no ROS environment needed):
+
+```
+python3 scripts/vo/slam_cost_and_map.py
+python3 scripts/vo/slam_cost_and_map.py --timing datasets/replay_out/<run>_timing.csv
+```
 
 Commits on `feat/imx296-synced-vo`: `b513a25` (world-fixed BEV plane, superseded), `581cc64`
 (incidence cap), `a13dc77` (per-pose plane fit), `97877fa` (panorama pane).

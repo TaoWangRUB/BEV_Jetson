@@ -85,6 +85,18 @@ if [[ "${SLAM:-0}" == "1" ]]; then
   LAUNCH_ARGS="${LAUNCH_ARGS} slam_throttling_ms:=${SLAM_THROTTLING_MS:-0}"
   REC_TOPICS="${REC_TOPICS} /cuvslam/slam_odometry /cuvslam/loop_closures"
   REC_TOPICS="${REC_TOPICS} /cuvslam/slam_path /cuvslam/loop_closure_edges"
+  # Per-set timing + promoted-map size, one row per set. This is the measurement cuVSLAM
+  # issues #77 and #136 need and that no bag in datasets/replay_out contains: the periodic
+  # log prints a 5 s windowed maximum, and the interval between recorded messages is floored
+  # by RATE (0.4x of 20 Hz = 125 ms/set), so a cost trend underneath that floor is invisible.
+  # Free to collect - one buffered line per set - so it is on whenever SLAM is.
+  LAUNCH_ARGS="${LAUNCH_ARGS} timing_csv:=${OUT_IN}_timing.csv"
+  # The promoted SLAM map. NOT /cuvslam/landmarks, which is the odometry track dump and only
+  # ever grows. A map that stays near-empty while the pose graph fills is issue #136.
+  if [[ "${MAP_CLOUD:-0}" == "1" ]]; then
+    LAUNCH_ARGS="${LAUNCH_ARGS} publish_map_landmarks:=true"
+    REC_TOPICS="${REC_TOPICS} /cuvslam/map_landmarks"
+  fi
 fi
 
 echo "replay BAG=$BAG_IN RATE=$RATE OUT=$OUT_IN OBS=$OBS QOS=$QOS/$QOS_DEPTH SLAM=${SLAM:-0}"
@@ -124,3 +136,4 @@ ros2 bag info '${OUT_IN}' 2>/dev/null || ls -la '${OUT_IN}'
 echo OUTDIR=${OUT}
 "
 echo "host path: $OUT"
+[[ "${SLAM:-0}" == "1" ]] && echo "per-set timing: ${OUT}_timing.csv  (plot: scripts/vo/slam_cost_and_map.py --timing ${OUT}_timing.csv)"

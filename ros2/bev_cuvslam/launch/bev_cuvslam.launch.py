@@ -29,6 +29,14 @@ def generate_launch_description():
         # resim wants. See add-replay-visual-diagnostics 1.7h.
         DeclareLaunchArgument('slam_max_map_size', default_value='300'),
         DeclareLaunchArgument('slam_throttling_ms', default_value='0'),
+        # The PROMOTED SLAM map, as a cloud. Separate from publish_landmarks, which is the
+        # odometry track dump and says nothing about what loop closure can match against.
+        # See add-replay-visual-diagnostics 1.7l (cuVSLAM issue #136).
+        DeclareLaunchArgument('publish_map_landmarks', default_value='false'),
+        # One row per set: Track() us, callback us, promoted-map size. Empty = off. This is
+        # the only way to see a cost trend - the periodic log prints a windowed maximum, and
+        # a replay's message interval is floored by the replay rate (issue #77).
+        DeclareLaunchArgument('timing_csv', default_value=''),
         DeclareLaunchArgument('image_qos', default_value='sensor_data'),
         DeclareLaunchArgument('image_qos_depth', default_value='10'),
         Node(
@@ -67,6 +75,8 @@ def generate_launch_description():
                 'match_history': 8,
                 'publish_landmarks': LaunchConfiguration('publish_landmarks'),
                 'publish_observations': LaunchConfiguration('publish_observations'),
+                'publish_map_landmarks': LaunchConfiguration('publish_map_landmarks'),
+                'timing_csv': LaunchConfiguration('timing_csv'),
             }],
         ),
     ])

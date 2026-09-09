@@ -135,6 +135,49 @@ class CuvslamMulticamNode : public rclcpp::Node {
     slam_throttling_ms_ = declare_parameter<int>("slam_throttling_ms", 0);
     // 300 poses is the header's real-time figure; 0 is an unlimited graph.
     slam_max_map_size_ = declare_parameter<int>("slam_max_map_size", 300);
+    // THE MAP LAYER, AND WHY THIS RIG HAS TO WATCH IT (cuVSLAM issue #136).
+    //
+    // A SLAM landmark is born in a staging area and only counts for loop closure once it is
+    // promoted into the map. The promotion test is lsi_grid.cpp:405-407:
+    //
+    //     activate &= !IsLandmarkInAnyFrustum(rig_, cam_ids, cams_from_world, xyz);
+    //     activate &= !GetLandmarkRelation(id, pose_graph_head);
+    //
+    // "in ANY frustum" is the union over every camera in the rig, and IsLandmarkInFrustum has
+    // its normalised-coordinate bounds commented out (lsi_grid.cpp:48-53), so there is no far
+    // plane — distance alone never puts a landmark outside. On a stereo pair a landmark leaves
+    // the union as soon as the rig turns. On THIS rig — eight virtual pinholes closed into a
+    // 360 deg ring — the only way out is vertically, past the top or bottom of the carve.
+    // Promotion by that route is the exception here, not the rule.
+    //
+    // Two other drains exist. Tracking loss promotes the whole staging area at once
+    // (pose_graph_head == InvalidKeyFrameId, lsi_grid.cpp:409-412) — a mass promotion at the
+    // exact moment the poses are worthless. And a 60 s staging lifetime
+    // (max_staged_landmark_lifetime_ns_ = 60e9, lsi_grid.h:177) force-promotes stale entries.
+    //
+    // NO RUN IN datasets/replay_out HAS EVER REACHED THAT 60 s. Both SLAM replays are 57.69 s
+    // of DATA time — the clock cuVSLAM keys on is the image stamp, not the slowed replay's
+    // wall clock, which is 143 s. We are 2.3 s under the only reliable drain, by luck.
+    //
+    // None of this is visible without reading DataLayer::Map, which the node did not do. This
+    // parameter turns that on: /cuvslam/map_landmarks carries what has actually been PROMOTED,
+    // against /cuvslam/landmarks (the odometry track dump, which only ever grows and says
+    // nothing about the SLAM map). A map that stays near-empty while the pose graph fills is
+    // #136 on this rig.
+    publish_map_landmarks_ = declare_parameter<bool>("publish_map_landmarks", false);
+    slam_map_read_max_ = declare_parameter<int>("slam_map_read_max", 65536);
+    // Per-set timing + map size, one row per set. Empty = off. See write_timing_row().
+    timing_csv_path_ = declare_parameter<std::string>("timing_csv", "");
+    if (!timing_csv_path_.empty()) {
+      timing_csv_.open(timing_csv_path_, std::ios::out | std::ios::trunc);
+      if (timing_csv_.is_open()) {
+        timing_csv_ << "set,stamp_ns,data_t_s,wall_ns,callback_us,track_us,remap_us,slam_us,"
+                       "map_landmarks,frame_landmarks,lc_events\n";
+        RCLCPP_INFO(get_logger(), "per-set timing -> %s", timing_csv_path_.c_str());
+      } else {
+        RCLCPP_WARN(get_logger(), "could not open timing_csv %s", timing_csv_path_.c_str());
+      }
+    }
     debug_dump_dir_ = declare_parameter<std::string>("cuvslam_debug_dump_dir", "");
     // Saturation gate. See check_exposure(): cuVSLAM has no image-quality input at all, so
     // a blown frame reaches the solver looking like a valid one.
@@ -227,6 +270,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
           "cuvslam/slam_path", rclcpp::QoS(2).transient_local());
       lc_edge_pub_ = create_publisher<geometry_msgs::msg::PoseArray>(
           "cuvslam/loop_closure_edges", rclcpp::QoS(10).transient_local());
+      if (publish_map_landmarks_)
+        map_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("cuvslam/map_landmarks", 10);
     }
     if (publish_landmarks_)
       cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("cuvslam/landmarks", 10);
@@ -347,6 +392,11 @@ class CuvslamMulticamNode : public rclcpp::Node {
       slam_ = std::make_unique<cuvslam::Slam>(rig, primary, sc);
       slam_->EnableReadingData(cuvslam::Slam::DataLayer::LoopClosure, 4096);
       slam_->EnableReadingData(cuvslam::Slam::DataLayer::PoseGraph, 4096);
+      // Map is the PROMOTED landmarks — the ones loop closure can actually match against.
+      // Read it whenever SLAM is on, even without the publisher: the periodic report below
+      // costs one size query and is the only #136 signal we have.
+      slam_->EnableReadingData(cuvslam::Slam::DataLayer::Map,
+                               static_cast<uint32_t>(slam_map_read_max_));
       RCLCPP_INFO(get_logger(), "SLAM ON: pose graph + loop closure over %zu primary cameras "
                   "(max_map_size %d, throttle %d ms, map %s). /cuvslam/slam_odometry carries "
                   "the corrected pose; /cuvslam/odometry stays PURE VO so the section-5 drift "
@@ -513,6 +563,27 @@ class CuvslamMulticamNode : public rclcpp::Node {
     if (slam_)
       RCLCPP_INFO(get_logger(), "  SLAM: %ld loop closures, %ld pose-graph optimisations",
                   lc_events_, pgo_events_);
+    // THE #136 LINE. map_landmarks is what has been promoted out of staging and is therefore
+    // matchable by loop closure; frame_landmarks is what the tracker sees right now. On a
+    // 360 deg rig the promotion test (lsi_grid.cpp:406) is close to unreachable, so the
+    // expected failure is a map that stays flat near zero while the pose graph grows — and
+    // then jumps in one step, either on a tracking loss or at the 60 s staging lifetime.
+    // data_span is the clock cuVSLAM keys on, printed because the 60 s drain is measured on
+    // it and a slowed replay makes the wall clock lie about how close we are.
+    if (slam_) {
+      const double data_span = (last_stamp_ns_ && first_stamp_ns_)
+                                   ? (last_stamp_ns_ - first_stamp_ns_) / 1e9 : 0.0;
+      RCLCPP_INFO(get_logger(),
+                  "  SLAM MAP: %zu promoted landmarks, %zu in this frame; %.1f s of DATA time "
+                  "(60 s staging drain %s)",
+                  map_landmarks_, frame_landmarks_, data_span,
+                  data_span > 60.0 ? "REACHED" : "not yet reached");
+      if (data_span > 20.0 && map_landmarks_ == 0)
+        RCLCPP_WARN(get_logger(), "  SLAM MAP IS EMPTY after %.1f s of data while the pose "
+                    "graph is filling — staged landmarks are not being promoted. This is "
+                    "cuVSLAM issue #136 on a full-coverage rig: nothing is matchable, so "
+                    "loop closure cannot fire.", data_span);
+    }
     worst_skew_ns_ = 0;
     sat_worst_ = 0.0;
     last_report_ = now;
@@ -588,6 +659,9 @@ class CuvslamMulticamNode : public rclcpp::Node {
         tracker_->GetState(st);
         if (st.keyframe) { kf_us_sum_ += track_us_; ++kf_n_; }
         else             { nkf_us_sum_ += track_us_; ++nkf_n_; }
+        // What the tracker is holding THIS frame, as the denominator for the promoted-map
+        // count: a map stuck at zero while this stays healthy is staging, not blindness.
+        frame_landmarks_ = st.landmarks.size();
       } catch (const std::exception&) { state_readable_ = false; }
     }
     if (!est.world_from_rig) {
@@ -649,6 +723,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
     cb_us_sum_ += cb_us;
     cb_us_max_ = std::max(cb_us_max_, cb_us);
     ++cb_n_;
+    if (slam_) read_map_layer(msgs[0]->header.stamp);
+    write_timing_row(now_stamp_ns(msgs[0]->header.stamp), cb_us);
     // Inter-arrival of the sets we actually got, which IS the budget: it already reflects
     // the replay rate, so there is nothing to configure and nothing to assume.
     const int64_t now_ns = rclcpp::Time(msgs[0]->header.stamp).nanoseconds();
@@ -657,6 +733,82 @@ class CuvslamMulticamNode : public rclcpp::Node {
       if (budget_us > 0 && cb_us > budget_us) ++over_budget_;
     }
     last_cb_stamp_ns_ = now_ns;
+  }
+
+  static int64_t now_stamp_ns(const builtin_interfaces::msg::Time& stamp) {
+    return rclcpp::Time(stamp).nanoseconds();
+  }
+
+  // Read DataLayer::Map — the landmarks that have been PROMOTED out of staging and are
+  // therefore matchable by loop closure. This is the measurement cuVSLAM issue #136 turns
+  // on: on a 360 deg rig the promotion test (lsi_grid.cpp:406) asks whether a landmark has
+  // left EVERY camera's frustum, and a closed ring has no such direction except vertically.
+  //
+  // Kept separate from publishing: the count is wanted on every run with SLAM on (it is one
+  // shared_ptr read), while the cloud costs a full copy and is opt-in.
+  void read_map_layer(const builtin_interfaces::msg::Time& stamp) {
+    std::shared_ptr<const cuvslam::Slam::Landmarks> mp;
+    try {
+      mp = slam_->ReadLandmarks(cuvslam::Slam::DataLayer::Map);
+    } catch (const std::exception& e) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "ReadLandmarks(Map) failed: %s", e.what());
+      return;
+    }
+    if (!mp) return;
+    map_landmarks_ = mp->landmarks.size();
+    map_high_water_ = std::max(map_high_water_, map_landmarks_);
+    // A jump of this size in one frame is the mass promotion, not ordinary map growth:
+    // either tracking was lost (lsi_grid.cpp:409-412 promotes the whole staging area) or the
+    // 60 s lifetime expired. Both dump landmarks in at once, and the first does it at the
+    // moment the poses backing them are worthless. Worth a line in the log either way.
+    if (map_prev_ && map_landmarks_ > map_prev_ + 500)
+      RCLCPP_WARN(get_logger(), "SLAM map jumped %zu -> %zu landmarks in one frame — that is a "
+                  "staging flush (tracking loss or the 60 s lifetime), not incremental mapping",
+                  map_prev_, map_landmarks_);
+    map_prev_ = map_landmarks_;
+
+    if (!map_pub_) return;
+    sensor_msgs::msg::PointCloud2 pc;
+    pc.header.stamp = stamp;
+    pc.header.frame_id = odom_frame_;
+    pc.height = 1;
+    pc.is_dense = true;
+    sensor_msgs::PointCloud2Modifier mod(pc);
+    mod.setPointCloud2FieldsByString(1, "xyz");
+    mod.resize(mp->landmarks.size());
+    sensor_msgs::PointCloud2Iterator<float> ix(pc, "x"), iy(pc, "y"), iz(pc, "z");
+    for (const auto& lm : mp->landmarks) {
+      ix[0] = lm.coords[0]; iy[0] = lm.coords[1]; iz[0] = lm.coords[2];
+      ++ix; ++iy; ++iz;
+    }
+    map_pub_->publish(pc);
+  }
+
+  // ONE ROW PER SET, because cuVSLAM issue #77 is a TREND and a 5 s max hides it.
+  //
+  // #77 reports Track() climbing from ~10 ms to 50 ms+ as the trajectory grows on a
+  // 12-camera rig. Our own logs cannot answer that: the periodic report prints a windowed
+  // maximum, and the replay's inter-message interval is floored by the replay rate (0.4x =
+  // 125 ms/set), so a cost that grows underneath that floor is invisible. Both were measured
+  // that way and both hid it.
+  //
+  // The columns are the whole question: track_us against set index is #77, map_landmarks
+  // against set index is #136, and having them on the same row means a cost that grows with
+  // the map can be attributed rather than guessed at.
+  void write_timing_row(int64_t stamp_ns, int64_t cb_us) {
+    if (!timing_csv_.is_open()) return;
+    if (!first_stamp_ns_) first_stamp_ns_ = stamp_ns;
+    last_stamp_ns_ = stamp_ns;
+    timing_csv_ << sets_ << ',' << stamp_ns << ','
+                << (stamp_ns - first_stamp_ns_) / 1e9 << ','
+                << std::chrono::duration_cast<std::chrono::nanoseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch()).count() << ','
+                << cb_us << ',' << track_us_ << ',' << remap_us_ << ',' << slam_us_ << ','
+                << map_landmarks_ << ',' << frame_landmarks_ << ',' << lc_events_ << '\n';
+    // Flushed per row on purpose: every replay wrapper in scripts/vo SIGKILLs the node, so a
+    // buffered tail is a lost tail — and the end of the run is exactly where the trend is.
+    timing_csv_.flush();
   }
 
   void publish_observations(const builtin_interfaces::msg::Time& stamp) {
@@ -1175,6 +1327,16 @@ class CuvslamMulticamNode : public rclcpp::Node {
   bool publish_landmarks_ = false;
   int landmark_stride_ = 3;
   bool publish_observations_ = false;
+  // cuVSLAM #136 (staged landmarks never promoted on a full-coverage rig) and #77
+  // (per-frame cost growing with the map). map_landmarks_ is what DataLayer::Map reports;
+  // frame_landmarks_ is what the tracker holds this frame, as its denominator.
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub_;
+  bool publish_map_landmarks_ = false;
+  int slam_map_read_max_ = 65536;
+  size_t map_landmarks_ = 0, map_prev_ = 0, map_high_water_ = 0, frame_landmarks_ = 0;
+  std::string timing_csv_path_;
+  std::ofstream timing_csv_;
+  int64_t first_stamp_ns_ = 0, last_stamp_ns_ = 0;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_bc_;
 };
 
