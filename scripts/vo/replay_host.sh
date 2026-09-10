@@ -95,6 +95,14 @@ if [[ "${SLAM:-0}" == "1" ]]; then
   # the SLAM keyframe queue backs up past 10, meaning the backend is reporting poses from an
   # increasingly old point on the trajectory. Set CUVSLAM_VERBOSITY=0 to silence.
   LAUNCH_ARGS="${LAUNCH_ARGS} cuvslam_verbosity:=${CUVSLAM_VERBOSITY:-2}"
+  # SLAM_SYNC=1 runs the backend INLINE, which is the only way its cost is measurable
+  # (otherwise loop closure and PGO are on cuVSLAM's own thread and slam_track_us is just
+  # the enqueue). Expect it to be much slower per set - use a slow RATE with it.
+  # Foxy's launch bool coercion rejects "1" outright, so normalise here: every other flag in
+  # this script is 0/1 and making this one the exception is how you get a 4-minute run that
+  # dies at startup.
+  case "${SLAM_SYNC:-0}" in 1|true|TRUE|yes) _sync=true ;; *) _sync=false ;; esac
+  LAUNCH_ARGS="${LAUNCH_ARGS} slam_sync_mode:=${_sync}"
   # The promoted SLAM map. NOT /cuvslam/landmarks, which is the odometry track dump and only
   # ever grows. A map that stays near-empty while the pose graph fills is issue #136.
   if [[ "${MAP_CLOUD:-0}" == "1" ]]; then

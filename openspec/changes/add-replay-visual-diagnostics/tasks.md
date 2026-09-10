@@ -248,8 +248,52 @@
         the burst runs to ~922 — so it is not simply "loop closures are expensive" and is
         not yet attributed.
 
-        **MEASURED 2026-09-10 — we do NOT reproduce #77.** `timing_csv` now writes `track_us`
-        per set; figures at `datasets/replay_out/slam77_full_04.png` and `..._10.png`.
+        **WE DO REPRODUCE #77. The first answer here said we did not, and it was measuring
+        the wrong component — caught by the operator, 2026-09-10.**
+
+        `track_us` times `tracker_->Track()`, which is `cuvslam::Odometry`: the FRONTEND —
+        PnP every frame, plus triangulation and SBA on keyframes. #77's degradation is
+        loop-closure matching and pose-graph optimisation, which are the SLAM BACKEND. With
+        `slam_sync_mode=false` (the library default, and what every run above used) those
+        run on cuVSLAM's OWN worker thread (`async_slam.cpp:142-201` pushes a keyframe and
+        returns), so **no timer in this node could see them**. A frontend-only plot returns
+        "no degradation" no matter how bad the backend gets.
+
+        Worse, the one column that might have caught it was broken: `slam_us` was a running
+        max over the 5 s report window, written per set as though it were a per-set value —
+        154 distinct values across 1773 rows, in repeating runs. Now `slam_track_us`, a true
+        per-set measurement, plus a `pgo_events` column.
+
+        **Re-measured with the backend INLINE** (`SLAM_SYNC=1` → `slam_sync_mode:=true`),
+        full bag at 0.2x, 1772 sets / 512 keyframes / 88.6 s, 404 PGOs, 23 loop closures.
+        Keyframes only, scene held healthy (`frame_landmarks > 300`):
+
+        | landmarks in map | n | **backend** `Slam::Track` | frontend `Odometry::Track` |
+        |---|---|---|---|
+        | 0–10k | 47 | 91.8 ms | 64.2 ms |
+        | 10–20k | 55 | 89.6 ms | 59.2 ms |
+        | 20–30k | 52 | 165.7 ms | 15.6 ms |
+        | 30–40k | 63 | 153.6 ms | 17.2 ms |
+        | 40–50k | 120 | 199.5 ms | 20.1 ms |
+        | 50–60k | 106 | **255.4 ms** | 19.8 ms |
+
+        **Backend grows ~2.8x while the frontend stays flat.** By thirds: 107.8 → 164.7 →
+        264.7 ms. Non-keyframe backend cost is **0.1 ms**, confirming the backend does work
+        only on keyframes — the frontend runs at frame rate, the backend at keyframe rate.
+
+        This is with `slam_max_map_size:=0` (unlimited pose graph), which is the replay
+        default and the configuration most exposed to the growth. The 300-pose cap is the
+        header's real-time answer and would bound it.
+
+        **It also explains the async results.** At 1.0x async, loop closures halved (21 → 11)
+        and the map came out smaller — the backend thread falling behind, which is the same
+        cost showing up as lost work instead of lost time. New in the inline run: the map
+        **prunes** at t≈83 s (65k → 33k), a thinning that never appeared in the async runs.
+
+        Figure: `datasets/replay_out/slam_backend_sync_rate0.2.png`.
+
+        **Retained below, as the record of what the frontend does** — it is a real result,
+        it just does not answer #77:
 
         The raw decile table looks exactly like #77 and is a trap. Keyframe `Track()` goes
         **16.8 ms in the first third to 73.4 ms in the last** — a 4.4x rise — while
@@ -270,11 +314,11 @@
         | 55–70k | 9 | **15.8 ms** |
 
         Flat across a **10x** growth in the map. The 1.0x run agrees independently (30.5 /
-        19.9 / 26.2 / 29.2 ms over 6k -> 45k). The apparent trend is the scene, not the
-        trajectory. Only the 40–55k bin is mildly elevated and stays unattributed.
+        19.9 / 26.2 / 29.2 ms over 6k -> 45k). So the FRONTEND genuinely does not degrade
+        with map size — that part of the analysis survives. What it cannot do is answer #77,
+        which lives in the backend.
 
-        Note this also retires the rank-correlation result above: it was noise, and the
-        properly-controlled measurement says there is no trend to find.
+        Note this also retires the rank-correlation result above: it was noise.
 
   - [x] 1.7n **Host cuVSLAM build on the WSL box — it works, and `/usr/local/cuda` being
         empty was not the blocker it looked like.** `docker-compose.host.yml` already had the
@@ -720,9 +764,13 @@ Host, all under gitignored `datasets/`:
 | `datasets/replay_out/obs_20260903_140714/multicam_full.rrd` | 275 MB — with fisheye domes |
 | `datasets/imglog_vio1_30s_bag` | source images for all of the above |
 | `datasets/replay_out/slam_cost_and_map.png` | 1.7l / 1.7m — what the OLD bags could show (replay-rate floored) |
-| `datasets/replay_out/slam77_full_04.png` | 1.7m — the real per-set `Track()` measurement, full bag at 0.4x |
-| `datasets/replay_out/slam77_full_10.png` | 1.7n — same at 1.0x (20 fps), 3% set loss |
-| `datasets/replay_out/slam_full_{04,10}_timing.csv` | per-set rows behind both figures |
+| `datasets/replay_out/slam_backend_sync_rate0.2.png` | 1.7m — **the #77 answer**: backend inline, cost vs map size |
+| `datasets/replay_out/slam_backend_sync_rate0.2_timing.csv` | per-set rows behind it (`slam_track_us` is real here) |
+| `datasets/replay_out/slam_frontend_async_rate{0.4,1.0}_timing.csv` | the async runs — frontend only; `slam_track_us` is just the enqueue |
+
+Names carry the rate and the regime on purpose: the first pair of figures was called
+`slam77_full_04/10`, nobody could tell that meant 0.4x/1.0x, and both were titled as the
+"#77 axis" while plotting the frontend. They are deleted rather than kept.
 
 Regenerate the last one (reads the bags directly, no ROS environment needed):
 

@@ -171,8 +171,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
     if (!timing_csv_path_.empty()) {
       timing_csv_.open(timing_csv_path_, std::ios::out | std::ios::trunc);
       if (timing_csv_.is_open()) {
-        timing_csv_ << "set,stamp_ns,data_t_s,wall_ns,callback_us,track_us,remap_us,slam_us,"
-                       "map_landmarks,frame_landmarks,lc_events,keyframe\n";
+        timing_csv_ << "set,stamp_ns,data_t_s,wall_ns,callback_us,track_us,remap_us,slam_track_us,"
+                       "map_landmarks,frame_landmarks,lc_events,keyframe,pgo_events\n";
         RCLCPP_INFO(get_logger(), "per-set timing -> %s", timing_csv_path_.c_str());
       } else {
         RCLCPP_WARN(get_logger(), "could not open timing_csv %s", timing_csv_path_.c_str());
@@ -684,8 +684,21 @@ class CuvslamMulticamNode : public rclcpp::Node {
       // reasoning about it produced four wrong answers.
       const auto t_s = std::chrono::steady_clock::now();
       slam_track(msgs[0]->header.stamp);
-      slam_us_ = std::max(slam_us_, std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::steady_clock::now() - t_s).count());
+      // TWO different numbers, and conflating them cost us a wrong conclusion.
+      //
+      // slam_us_ is a running MAX over the 5 s report window (reset in the report). That is
+      // right for "what was the worst stage this window" and USELESS per set — it is a
+      // staircase, so a per-set CSV column fed from it reads as data and is not.
+      // slam_us_set_ is THIS set's cost, which is what a trend needs.
+      //
+      // WHAT THIS DOES AND DOES NOT INCLUDE. With slam_sync_mode false (the default)
+      // Slam::Track converts observations and pushes a keyframe onto a queue
+      // (async_slam.cpp:142-201) and returns; loop-closure matching and pose-graph
+      // optimisation then run on cuVSLAM's OWN worker thread and are not in this number at
+      // all. To time the backend it has to be inline: slam_sync_mode:=true.
+      slam_us_set_ = std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - t_s).count();
+      slam_us_ = std::max(slam_us_, slam_us_set_);
       // The optimised trajectory has to go out on a CADENCE, not only when a loop closes.
       // It was published from publish_loop_closures() alone, so /cuvslam/slam_path always
       // ended at the LAST CLOSURE rather than at the end of the run - 41.6 s of a 54 s run
@@ -810,9 +823,9 @@ class CuvslamMulticamNode : public rclcpp::Node {
                 << (stamp_ns - first_stamp_ns_) / 1e9 << ','
                 << std::chrono::duration_cast<std::chrono::nanoseconds>(
                        std::chrono::steady_clock::now().time_since_epoch()).count() << ','
-                << cb_us << ',' << track_us_ << ',' << remap_us_ << ',' << slam_us_ << ','
+                << cb_us << ',' << track_us_ << ',' << remap_us_ << ',' << slam_us_set_ << ','
                 << map_landmarks_ << ',' << frame_landmarks_ << ',' << lc_events_ << ','
-                << (keyframe_ ? 1 : 0) << '\n';
+                << (keyframe_ ? 1 : 0) << ',' << pgo_events_ << '\n';
     // Flushed per row on purpose: every replay wrapper in scripts/vo SIGKILLs the node, so a
     // buffered tail is a lost tail — and the end of the run is exactly where the trend is.
     timing_csv_.flush();
@@ -1291,6 +1304,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
   int64_t published_ = 0;
   int64_t cb_us_sum_ = 0, cb_us_max_ = 0, cb_n_ = 0, over_budget_ = 0, last_cb_stamp_ns_ = 0;
   int64_t slam_us_ = 0, path_us_ = 0, edges_us_ = 0, lm_us_ = 0, track_us_max_win_ = 0;
+  int64_t slam_us_set_ = 0;   // THIS set's Slam::Track cost; slam_us_ is a windowed max
   int64_t last_unmatched_ = 0;
   int64_t max_skew_ns_ = 1000000, worst_skew_ns_ = 0, sets_ = 0, dropped_sets_ = 0;
   // Pose-health state (check_pose_health). max_speed_mps_ is deliberately far above

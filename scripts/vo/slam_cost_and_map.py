@@ -142,66 +142,80 @@ def style(ax):
 
 
 def figure_timing(csv_path, out):
-    """The per-set CSV from the node — the measurement the bags could not provide.
+    """Per-set cost from the node's CSV, aimed at the right component.
 
-    #77 asks whether track() grows with trajectory length. The trap is that keyframe
-    fraction and scene quality both move over a run, and either will masquerade as a
-    cost trend, so every panel here holds one of them fixed.
+    THE MISTAKE THIS FUNCTION EXISTS TO NOT REPEAT: `track_us` is Odometry::Track — the
+    FRONTEND (PnP on every frame, plus triangulation and SBA on keyframes). Issue #77's
+    degradation is loop-closure matching and pose-graph optimisation, which are the SLAM
+    BACKEND. With slam_sync_mode=false those run on cuVSLAM's own worker thread and no
+    timer here can see them, so a frontend-only plot will say "no degradation" no matter
+    how bad the backend gets. Re-run with SLAM_SYNC=1 to make the backend inline and
+    measurable; this figure labels which regime the CSV came from.
     """
     with open(csv_path) as fh:
-        rows = list(csv.DictReader(fh))[1:]      # drop set 0: GPU warm-up, ~270 ms
+        rows = list(csv.DictReader(fh))[1:]      # drop set 0: GPU warm-up
+    if "slam_track_us" not in rows[0]:
+        sys.exit("CSV predates the per-set backend timing column; re-record it")
     kfr = [r for r in rows if r["keyframe"] == "1"]
-    nkr = [r for r in rows if r["keyframe"] != "1"]
-    ms = lambda r: int(r["track_us"]) / 1000.0
+    be = lambda r: int(r["slam_track_us"]) / 1000.0
+    fe = lambda r: int(r["track_us"]) / 1000.0
     dt = lambda r: float(r["data_t_s"])
+    # If the backend was async, Slam::Track only enqueued and its median is ~milliseconds.
+    inline = statistics.median([be(r) for r in kfr]) > 25.0
+    regime = ("SLAM BACKEND INLINE (sync_mode=true) — loop closure + PGO are measured"
+              if inline else
+              "SLAM BACKEND ASYNC — Slam::Track only ENQUEUES; the backend is NOT measured")
 
-    fig, axes = plt.subplots(2, 2, figsize=(13, 8.5), facecolor=SURFACE)
-    fig.suptitle("cuVSLAM #77 on the 4-fisheye ring rig — per-set Track() cost, "
-                 "measured not inferred", color=INK, fontsize=13, fontweight="bold", y=0.98)
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8.8), facecolor=SURFACE)
+    fig.suptitle("Where cuVSLAM spends time per keyframe, as the map grows",
+                 color=INK, fontsize=13, fontweight="bold", y=0.985)
+    fig.text(0.5, 0.945, regime, color=INK_2, fontsize=9.5, ha="center")
 
-    # A: the #77 axis, split by keyframe. The keyframe path triangulates and runs SBA
-    # where a normal frame only solves PnP; one line over both hides a bimodal
-    # distribution and makes the keyframe cost look like jitter.
+    # A: backend and frontend on one ms axis, keyframes only.
     ax = axes[0][0]; style(ax)
-    for sub, colr, lbl in ((nkr, C_CTRL, "non-keyframe (PnP only)"),
-                           (kfr, C_V6, "keyframe (triangulate + SBA)")):
-        xs = [int(r["set"]) for r in sub]
-        ys = [ms(r) for r in sub]
+    xs = [int(r["set"]) for r in kfr]
+    for ys, colr, lbl in (([be(r) for r in kfr], C_V6, "SLAM backend (loop closure + PGO)"),
+                          ([fe(r) for r in kfr], C_CTRL, "frontend (triangulate + SBA)")):
         ax.plot(xs, ys, color=colr, linewidth=0.5, alpha=0.22)
         ax.plot(xs, rolling(ys, 21), color=colr, linewidth=2.0, label=lbl)
-    ax.set_ylim(0, 180)
     ax.legend(frameon=False, fontsize=8, labelcolor=INK_2, loc="upper left")
-    ax.set_title("A  Track() per set, split by keyframe", color=INK, fontsize=10,
+    ax.set_title("A  Cost of each keyframe through the run", color=INK, fontsize=10,
                  loc="left", fontweight="bold")
-    ax.set_xlabel("set index", color=INK_2, fontsize=9)
-    ax.set_ylabel("milliseconds", color=INK_2, fontsize=9)
+    ax.set_xlabel("set index (time through the run)", color=INK_2, fontsize=9)
+    ax.set_ylabel("milliseconds per keyframe", color=INK_2, fontsize=9)
 
-    # B: THE ATTRIBUTION. Keyframe cost against map size, with the scene held healthy.
-    # Without the frame_landmarks filter this panel shows a rise that is really the
-    # tracking-distress window late in the run, not map size.
+    # B: the attribution — cost against MAP SIZE with the scene held healthy, so a
+    # collapsing scene late in the run cannot masquerade as a map-size effect.
     ax = axes[0][1]; style(ax)
-    bins = [(0, 10000), (10000, 25000), (25000, 40000), (40000, 55000), (55000, 70000)]
     healthy = [r for r in kfr if int(r["frame_landmarks"]) > 300]
-    labels, meds, counts = [], [], []
+    bins = [(0, 10000), (10000, 20000), (20000, 30000), (30000, 40000),
+            (40000, 50000), (50000, 60000)]
+    labs, bmed, fmed, ns = [], [], [], []
     for lo, hi in bins:
-        seg = [ms(r) for r in healthy if lo <= int(r["map_landmarks"]) < hi]
-        if not seg:
+        seg = [r for r in healthy if lo <= int(r["map_landmarks"]) < hi]
+        if len(seg) < 4:
             continue
-        labels.append(f"{lo//1000}-{hi//1000}k")
-        meds.append(statistics.median(seg))
-        counts.append(len(seg))
-    ax.bar(range(len(meds)), meds, 0.62, color=C_V6, linewidth=0)
-    for i, (m, c) in enumerate(zip(meds, counts)):
-        ax.annotate(f"{m:.1f} ms\nn={c}", (i, m), color=INK_2, fontsize=8, ha="center",
-                    xytext=(0, 4), textcoords="offset points")
-    ax.set_xticks(range(len(labels))); ax.set_xticklabels(labels)
-    ax.set_ylim(0, max(meds) * 1.42 if meds else 1)
-    ax.set_title("B  Keyframe Track() vs MAP SIZE, healthy frames only",
+        labs.append(f"{lo//1000}-{hi//1000}k")
+        bmed.append(statistics.median(be(r) for r in seg))
+        fmed.append(statistics.median(fe(r) for r in seg))
+        ns.append(len(seg))
+    w = 0.38
+    ax.bar([i - w/2 for i in range(len(labs))], bmed, w*0.94, color=C_V6,
+           label="SLAM backend", linewidth=0)
+    ax.bar([i + w/2 for i in range(len(labs))], fmed, w*0.94, color=C_CTRL,
+           label="frontend", linewidth=0)
+    for i, (b, n) in enumerate(zip(bmed, ns)):
+        ax.annotate(f"{b:.0f}\nn={n}", (i - w/2, b), color=INK_2, fontsize=7.5,
+                    ha="center", xytext=(0, 3), textcoords="offset points")
+    ax.set_xticks(range(len(labs))); ax.set_xticklabels(labs)
+    ax.set_ylim(0, max(bmed) * 1.32 if bmed else 1)
+    ax.legend(frameon=False, fontsize=8, labelcolor=INK_2, loc="upper left")
+    ax.set_title("B  Same cost, grouped by how big the map already is",
                  color=INK, fontsize=10, loc="left", fontweight="bold")
-    ax.set_xlabel("promoted map landmarks", color=INK_2, fontsize=9)
-    ax.set_ylabel("median Track() (ms)", color=INK_2, fontsize=9)
+    ax.set_xlabel("landmarks already in the SLAM map", color=INK_2, fontsize=9)
+    ax.set_ylabel("median ms per keyframe", color=INK_2, fontsize=9)
 
-    # C: #136 answered. The promoted map, and whether the 60 s drain does anything.
+    # C: the map itself (issue #136).
     ax = axes[1][0]; style(ax)
     ax.plot([dt(r) for r in rows], [int(r["map_landmarks"]) for r in rows],
             color=C_V9, linewidth=2.0)
@@ -209,35 +223,38 @@ def figure_timing(csv_path, out):
     if span > 60:
         ax.axvline(60, color=INK_2, linewidth=1.0, linestyle=(0, (4, 3)))
         ax.text(60.8, max(int(r["map_landmarks"]) for r in rows) * 0.30,
-                "60 s staging drain\nREACHED — and the\ncurve does not step",
+                "60 s staging drain reached\nand the curve does not step:\nlandmarks were "
+                "already being\npromoted normally (#136 absent)",
                 color=INK_2, fontsize=8, va="center", ha="left")
-    ax.set_title("C  Promoted SLAM map (DataLayer::Map) — #136 does not bite here",
-                 color=INK, fontsize=10, loc="left", fontweight="bold")
-    ax.set_xlabel("data time (s)", color=INK_2, fontsize=9)
-    ax.set_ylabel("promoted landmarks", color=INK_2, fontsize=9)
+    ax.set_title("C  How many landmarks are in the SLAM map", color=INK, fontsize=10,
+                 loc="left", fontweight="bold")
+    ax.set_xlabel("recording time (s)", color=INK_2, fontsize=9)
+    ax.set_ylabel("landmarks in the map", color=INK_2, fontsize=9)
 
-    # D: the confound, made visible. This is what actually drives panel A's tail.
+    # D: the confound that fooled the first analysis.
     ax = axes[1][1]; style(ax)
     ax.plot([dt(r) for r in rows], [int(r["frame_landmarks"]) for r in rows],
-            color=C_CTRL, linewidth=1.4)
+            color=C_CTRL, linewidth=1.3)
     ax.axhline(300, color=INK_2, linewidth=1.0, linestyle=(0, (4, 3)))
-    ax.text(1, 315, "the 'healthy tracking' cut used in B", color=INK_2, fontsize=8)
-    ax.set_title("D  Landmarks the tracker holds per frame — the real cause of A's tail",
+    ax.text(1, 318, "frames below this line are excluded from B", color=INK_2, fontsize=8)
+    ax.set_title("D  How well the camera is tracking (features held per frame)",
                  color=INK, fontsize=10, loc="left", fontweight="bold")
-    ax.set_xlabel("data time (s)", color=INK_2, fontsize=9)
-    ax.set_ylabel("frame landmarks", color=INK_2, fontsize=9)
+    ax.set_xlabel("recording time (s)", color=INK_2, fontsize=9)
+    ax.set_ylabel("features tracked", color=INK_2, fontsize=9)
 
-    fig.text(0.5, 0.012,
-             "Track() cost is flat against a 10x growth in map size once the scene is held "
-             "constant (B). The rise in A tracks the collapse in D, not the trajectory.",
-             color=INK_2, fontsize=8.5, ha="center")
-    fig.tight_layout(rect=(0, 0.032, 1, 0.955))
+    if inline and len(bmed) >= 2:
+        fig.text(0.5, 0.012,
+                 f"Backend cost per keyframe grows {bmed[-1]/bmed[0]:.1f}x from the smallest "
+                 f"to the largest map bin, while the frontend stays flat — the growth is in "
+                 f"loop closure and pose-graph optimisation, not in tracking.",
+                 color=INK_2, fontsize=8.5, ha="center")
+    fig.tight_layout(rect=(0, 0.032, 1, 0.935))
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     fig.savefig(out, dpi=150, facecolor=SURFACE)
     print(f"wrote {out}")
-    print(f"  {len(rows)} sets, {len(kfr)} keyframes ({100*len(kfr)/len(rows):.1f}%), "
-          f"{dt(rows[-1]):.1f} s data, map high-water "
-          f"{max(int(r['map_landmarks']) for r in rows)}")
+    print(f"  {len(rows)} sets, {len(kfr)} keyframes, {span:.1f}s, backend "
+          f"{'INLINE' if inline else 'ASYNC (not measured)'}, "
+          f"map high-water {max(int(r['map_landmarks']) for r in rows)}")
 
 
 def main():

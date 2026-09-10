@@ -43,6 +43,14 @@ def generate_launch_description():
         # past 10 the poses and loop closures it reports refer to an increasingly OLD point
         # on the trajectory. That is the backend falling behind the frontend - the #77
         # symptom - and we have never had it switched on. 1=Error 2=Warning 3=Message.
+        # THE ONLY WAY TO TIME THE SLAM BACKEND. With this false (the library default),
+        # Slam::Track converts observations, pushes a keyframe onto a queue and returns —
+        # loop-closure matching and pose-graph optimisation then run on cuVSLAM's own worker
+        # thread, where no timer of ours can see them. Anything measured about "SLAM cost"
+        # with this false is the ENQUEUE, not the optimisation. True runs it inline, which is
+        # far slower per set and needs a correspondingly slow replay, but it is the only
+        # configuration in which the backend's growth with map size is observable.
+        DeclareLaunchArgument('slam_sync_mode', default_value='false'),
         DeclareLaunchArgument('cuvslam_verbosity', default_value='0'),
         DeclareLaunchArgument('image_qos', default_value='sensor_data'),
         DeclareLaunchArgument('image_qos_depth', default_value='10'),
@@ -86,6 +94,8 @@ def generate_launch_description():
                 'timing_csv': LaunchConfiguration('timing_csv'),
                 'cuvslam_verbosity': ParameterValue(
                     LaunchConfiguration('cuvslam_verbosity'), value_type=int),
+                'slam_sync_mode': ParameterValue(
+                    LaunchConfiguration('slam_sync_mode'), value_type=bool),
             }],
         ),
     ])
