@@ -91,6 +91,10 @@ if [[ "${SLAM:-0}" == "1" ]]; then
   # by RATE (0.4x of 20 Hz = 125 ms/set), so a cost trend underneath that floor is invisible.
   # Free to collect - one buffered line per set - so it is on whenever SLAM is.
   LAUNCH_ARGS="${LAUNCH_ARGS} timing_csv:=${OUT_IN}_timing.csv"
+  # cuVSLAM's own Warning level, which is where delay_warning_queue_size lives: it fires when
+  # the SLAM keyframe queue backs up past 10, meaning the backend is reporting poses from an
+  # increasingly old point on the trajectory. Set CUVSLAM_VERBOSITY=0 to silence.
+  LAUNCH_ARGS="${LAUNCH_ARGS} cuvslam_verbosity:=${CUVSLAM_VERBOSITY:-2}"
   # The promoted SLAM map. NOT /cuvslam/landmarks, which is the odometry track dump and only
   # ever grows. A map that stays near-empty while the pose graph fills is issue #136.
   if [[ "${MAP_CLOUD:-0}" == "1" ]]; then

@@ -197,13 +197,33 @@
         inserted into and never erased — an odometry track dump whose unbounded growth is by
         design and which says nothing about the SLAM map's staging.
 
-        **The measurement that would settle it did not exist**: the node read only the
-        `LoopClosure` and `PoseGraph` layers, never `DataLayer::Map`. Now added —
-        `publish_map_landmarks` publishes `/cuvslam/map_landmarks` (promoted landmarks only),
-        the periodic report prints promoted-vs-frame counts and warns on a staging flush, and
-        `timing_csv` writes one row per set. **Still to run**: a replay with the new build, and
-        a log longer than 60 s of data time. Both need the host cuVSLAM build, which does not
-        exist on this machine (`/usr/local/cuda` is an empty stub — no toolkit).
+        **MEASURED 2026-09-10, and the answer is NO — #136 does not bite on this rig.**
+        Host build stood up on the WSL box (see 1.7n) and the FULL 88.86 s bag replayed at
+        0.4x, essentially lossless: 1774 sets received, 1772 poses, 1 dropped, 1 skew-rejected.
+        This is the first run that ever crossed the 60 s staging lifetime.
+
+        | | 0.4x | 1.0x |
+        |---|---|---|
+        | sets of 1774 | 1773 (99.9%) | 1721 (97.0%) |
+        | data time | 88.6 s | 88.6 s |
+        | promoted map landmarks | **62,865** | 58,921 |
+        | loop closures | 21 | 11 |
+        | pose-graph optimisations | 394 | 381 |
+
+        The map is populated and grows **smoothly from the first seconds** — it is not stuck
+        near zero, the `SLAM MAP IS EMPTY` guard never fired, and there were **zero
+        single-frame jumps > 500 landmarks**, so no mass staging flush ever happened. Crossing
+        60 s produces no step at all (58,881 -> 59,002 -> 59,145 across t=59/60/61 s), which
+        means the lifetime drain is not what is doing the work: promotion is happening
+        continuously by the ordinary route.
+
+        **So the earlier reasoning here was right about the condition and wrong about the
+        consequence.** The frustum union really is closed horizontally, but the ±45° carves
+        leave the ring open vertically, and that is evidently enough to drain staging
+        continuously. Meeting #136's stated condition is not sufficient to reproduce it.
+
+        Kept as `[~]` only because one thing remains unchecked: whether a rig with a *wider*
+        vertical carve, or a genuinely enclosed scene, would close that escape route.
 
   - [ ] 1.7m **Issue #77 (per-set cost growing with trajectory length) is untestable on the
         bags we have, and the reason is worth writing down.** #77 plots `track()` climbing
@@ -228,8 +248,59 @@
         the burst runs to ~922 — so it is not simply "loop closures are expensive" and is
         not yet attributed.
 
-        `timing_csv` now writes `track_us` per set, which is the actual #77 axis; the plot
-        script takes it with `--timing`. Needs the host build (see 1.7l).
+        **MEASURED 2026-09-10 — we do NOT reproduce #77.** `timing_csv` now writes `track_us`
+        per set; figures at `datasets/replay_out/slam77_full_04.png` and `..._10.png`.
+
+        The raw decile table looks exactly like #77 and is a trap. Keyframe `Track()` goes
+        **16.8 ms in the first third to 73.4 ms in the last** — a 4.4x rise — while
+        non-keyframe stays flat (26.3 -> 28.8 ms). That is #77's signature.
+
+        It does not survive attribution. Two things move together over a run: map size, and
+        scene quality. `frame_landmarks` collapses from ~480 to ~100 at t≈50 s (the documented
+        exposure/texture window), and keyframe fraction collapses with it (85% -> 5%), so the
+        late deciles are a handful of distressed frames. **Hold the scene healthy
+        (`frame_landmarks > 300`) and bin on map size instead:**
+
+        | promoted map | n | median keyframe `Track()` |
+        |---|---|---|
+        | 0–10k | 47 | 15.9 ms |
+        | 10–25k | 73 | 16.9 ms |
+        | 25–40k | 90 | 16.9 ms |
+        | 40–55k | 221 | 23.4 ms |
+        | 55–70k | 9 | **15.8 ms** |
+
+        Flat across a **10x** growth in the map. The 1.0x run agrees independently (30.5 /
+        19.9 / 26.2 / 29.2 ms over 6k -> 45k). The apparent trend is the scene, not the
+        trajectory. Only the 40–55k bin is mildly elevated and stays unattributed.
+
+        Note this also retires the rank-correlation result above: it was noise, and the
+        properly-controlled measurement says there is no trend to find.
+
+  - [x] 1.7n **Host cuVSLAM build on the WSL box — it works, and `/usr/local/cuda` being
+        empty was not the blocker it looked like.** `docker-compose.host.yml` already had the
+        whole chain; what was missing was a CUDA toolkit to mount. Rather than a multi-GB
+        install, extract one from the `nvidia/cuda:12.6.3-devel-ubuntu24.04` image that was
+        already pulled locally and point `CUDA_HOST_MOUNT` at it:
+
+        ```
+        docker create --name cudaextract nvidia/cuda:12.6.3-devel-ubuntu24.04
+        docker cp cudaextract:/usr/local/cuda-12.6 ~/cuda-12.6 && docker rm cudaextract
+        CUDA_HOST_MOUNT=~/cuda-12.6 docker compose -f docker-compose.host.yml build
+        CUDA_HOST_MOUNT=~/cuda-12.6 docker compose -f docker-compose.host.yml run --rm build-cuvslam-host
+        CUDA_HOST_MOUNT=~/cuda-12.6 docker compose -f docker-compose.host.yml run --rm build-ws-host
+        CUDA_HOST_MOUNT=~/cuda-12.6 SLAM=1 ./scripts/vo/replay_host.sh <bag> 0.4
+        ```
+
+        GPU passthrough under WSL2 works (`--gpus all` sees the RTX 2000 Ada); ROS Foxy's
+        focal apt repo is still live. `build_cuvslam_host.sh` had a **wrong default**: sm_86,
+        from a machine with an RTX A2000. This box is Ada, sm_89. A wrong arch does not fail
+        loudly — CUDA JITs the embedded PTX, so it builds and runs and is merely slower, which
+        is the exact quantity #77 is about. It now asks `nvidia-smi`.
+
+        **20 fps is viable on this host**, contrary to 1.7j's finding on the previous one:
+        1721 of 1774 sets at 1.0x (3% loss) against 1773 at 0.4x. But loop closures halve
+        (21 -> 11) and the map comes out smaller (58.9k vs 62.9k), so 0.4x remains the right
+        default for anything where the SLAM layer is the measurement.
 
   - [ ] 1.7b Publish loop-closure events and the pose graph; add a viewer pane keyed on
         `lc_status`, plus a corrected-trajectory line beside the raw VO one.
@@ -648,7 +719,10 @@ Host, all under gitignored `datasets/`:
 | `datasets/replay_out/obs_20260903_140714/multicam.rrd` | 77 MB — cameras + map only |
 | `datasets/replay_out/obs_20260903_140714/multicam_full.rrd` | 275 MB — with fisheye domes |
 | `datasets/imglog_vio1_30s_bag` | source images for all of the above |
-| `datasets/replay_out/slam_cost_and_map.png` | 1.7l / 1.7m — per-set cost and map growth on the #77 / #136 axes |
+| `datasets/replay_out/slam_cost_and_map.png` | 1.7l / 1.7m — what the OLD bags could show (replay-rate floored) |
+| `datasets/replay_out/slam77_full_04.png` | 1.7m — the real per-set `Track()` measurement, full bag at 0.4x |
+| `datasets/replay_out/slam77_full_10.png` | 1.7n — same at 1.0x (20 fps), 3% set loss |
+| `datasets/replay_out/slam_full_{04,10}_timing.csv` | per-set rows behind both figures |
 
 Regenerate the last one (reads the bags directly, no ROS environment needed):
 

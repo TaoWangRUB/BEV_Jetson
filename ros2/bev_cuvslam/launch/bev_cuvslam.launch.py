@@ -37,6 +37,13 @@ def generate_launch_description():
         # the only way to see a cost trend - the periodic log prints a windowed maximum, and
         # a replay's message interval is floored by the replay rate (issue #77).
         DeclareLaunchArgument('timing_csv', default_value=''),
+        # cuVSLAM's OWN log, off by default (SetVerbosity(0) is the library default).
+        # 2 = Warning, which is the level that surfaces delay_warning_queue_size: SLAM runs
+        # its backend on a background thread fed a keyframe queue, and when that queue grows
+        # past 10 the poses and loop closures it reports refer to an increasingly OLD point
+        # on the trajectory. That is the backend falling behind the frontend - the #77
+        # symptom - and we have never had it switched on. 1=Error 2=Warning 3=Message.
+        DeclareLaunchArgument('cuvslam_verbosity', default_value='0'),
         DeclareLaunchArgument('image_qos', default_value='sensor_data'),
         DeclareLaunchArgument('image_qos_depth', default_value='10'),
         Node(
@@ -77,6 +84,8 @@ def generate_launch_description():
                 'publish_observations': LaunchConfiguration('publish_observations'),
                 'publish_map_landmarks': LaunchConfiguration('publish_map_landmarks'),
                 'timing_csv': LaunchConfiguration('timing_csv'),
+                'cuvslam_verbosity': ParameterValue(
+                    LaunchConfiguration('cuvslam_verbosity'), value_type=int),
             }],
         ),
     ])

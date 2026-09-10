@@ -141,6 +141,105 @@ def style(ax):
     ax.set_axisbelow(True)
 
 
+def figure_timing(csv_path, out):
+    """The per-set CSV from the node — the measurement the bags could not provide.
+
+    #77 asks whether track() grows with trajectory length. The trap is that keyframe
+    fraction and scene quality both move over a run, and either will masquerade as a
+    cost trend, so every panel here holds one of them fixed.
+    """
+    with open(csv_path) as fh:
+        rows = list(csv.DictReader(fh))[1:]      # drop set 0: GPU warm-up, ~270 ms
+    kfr = [r for r in rows if r["keyframe"] == "1"]
+    nkr = [r for r in rows if r["keyframe"] != "1"]
+    ms = lambda r: int(r["track_us"]) / 1000.0
+    dt = lambda r: float(r["data_t_s"])
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8.5), facecolor=SURFACE)
+    fig.suptitle("cuVSLAM #77 on the 4-fisheye ring rig — per-set Track() cost, "
+                 "measured not inferred", color=INK, fontsize=13, fontweight="bold", y=0.98)
+
+    # A: the #77 axis, split by keyframe. The keyframe path triangulates and runs SBA
+    # where a normal frame only solves PnP; one line over both hides a bimodal
+    # distribution and makes the keyframe cost look like jitter.
+    ax = axes[0][0]; style(ax)
+    for sub, colr, lbl in ((nkr, C_CTRL, "non-keyframe (PnP only)"),
+                           (kfr, C_V6, "keyframe (triangulate + SBA)")):
+        xs = [int(r["set"]) for r in sub]
+        ys = [ms(r) for r in sub]
+        ax.plot(xs, ys, color=colr, linewidth=0.5, alpha=0.22)
+        ax.plot(xs, rolling(ys, 21), color=colr, linewidth=2.0, label=lbl)
+    ax.set_ylim(0, 180)
+    ax.legend(frameon=False, fontsize=8, labelcolor=INK_2, loc="upper left")
+    ax.set_title("A  Track() per set, split by keyframe", color=INK, fontsize=10,
+                 loc="left", fontweight="bold")
+    ax.set_xlabel("set index", color=INK_2, fontsize=9)
+    ax.set_ylabel("milliseconds", color=INK_2, fontsize=9)
+
+    # B: THE ATTRIBUTION. Keyframe cost against map size, with the scene held healthy.
+    # Without the frame_landmarks filter this panel shows a rise that is really the
+    # tracking-distress window late in the run, not map size.
+    ax = axes[0][1]; style(ax)
+    bins = [(0, 10000), (10000, 25000), (25000, 40000), (40000, 55000), (55000, 70000)]
+    healthy = [r for r in kfr if int(r["frame_landmarks"]) > 300]
+    labels, meds, counts = [], [], []
+    for lo, hi in bins:
+        seg = [ms(r) for r in healthy if lo <= int(r["map_landmarks"]) < hi]
+        if not seg:
+            continue
+        labels.append(f"{lo//1000}-{hi//1000}k")
+        meds.append(statistics.median(seg))
+        counts.append(len(seg))
+    ax.bar(range(len(meds)), meds, 0.62, color=C_V6, linewidth=0)
+    for i, (m, c) in enumerate(zip(meds, counts)):
+        ax.annotate(f"{m:.1f} ms\nn={c}", (i, m), color=INK_2, fontsize=8, ha="center",
+                    xytext=(0, 4), textcoords="offset points")
+    ax.set_xticks(range(len(labels))); ax.set_xticklabels(labels)
+    ax.set_ylim(0, max(meds) * 1.42 if meds else 1)
+    ax.set_title("B  Keyframe Track() vs MAP SIZE, healthy frames only",
+                 color=INK, fontsize=10, loc="left", fontweight="bold")
+    ax.set_xlabel("promoted map landmarks", color=INK_2, fontsize=9)
+    ax.set_ylabel("median Track() (ms)", color=INK_2, fontsize=9)
+
+    # C: #136 answered. The promoted map, and whether the 60 s drain does anything.
+    ax = axes[1][0]; style(ax)
+    ax.plot([dt(r) for r in rows], [int(r["map_landmarks"]) for r in rows],
+            color=C_V9, linewidth=2.0)
+    span = dt(rows[-1])
+    if span > 60:
+        ax.axvline(60, color=INK_2, linewidth=1.0, linestyle=(0, (4, 3)))
+        ax.text(60.8, max(int(r["map_landmarks"]) for r in rows) * 0.30,
+                "60 s staging drain\nREACHED — and the\ncurve does not step",
+                color=INK_2, fontsize=8, va="center", ha="left")
+    ax.set_title("C  Promoted SLAM map (DataLayer::Map) — #136 does not bite here",
+                 color=INK, fontsize=10, loc="left", fontweight="bold")
+    ax.set_xlabel("data time (s)", color=INK_2, fontsize=9)
+    ax.set_ylabel("promoted landmarks", color=INK_2, fontsize=9)
+
+    # D: the confound, made visible. This is what actually drives panel A's tail.
+    ax = axes[1][1]; style(ax)
+    ax.plot([dt(r) for r in rows], [int(r["frame_landmarks"]) for r in rows],
+            color=C_CTRL, linewidth=1.4)
+    ax.axhline(300, color=INK_2, linewidth=1.0, linestyle=(0, (4, 3)))
+    ax.text(1, 315, "the 'healthy tracking' cut used in B", color=INK_2, fontsize=8)
+    ax.set_title("D  Landmarks the tracker holds per frame — the real cause of A's tail",
+                 color=INK, fontsize=10, loc="left", fontweight="bold")
+    ax.set_xlabel("data time (s)", color=INK_2, fontsize=9)
+    ax.set_ylabel("frame landmarks", color=INK_2, fontsize=9)
+
+    fig.text(0.5, 0.012,
+             "Track() cost is flat against a 10x growth in map size once the scene is held "
+             "constant (B). The rise in A tracks the collapse in D, not the trajectory.",
+             color=INK_2, fontsize=8.5, ha="center")
+    fig.tight_layout(rect=(0, 0.032, 1, 0.955))
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    fig.savefig(out, dpi=150, facecolor=SURFACE)
+    print(f"wrote {out}")
+    print(f"  {len(rows)} sets, {len(kfr)} keyframes ({100*len(kfr)/len(rows):.1f}%), "
+          f"{dt(rows[-1]):.1f} s data, map high-water "
+          f"{max(int(r['map_landmarks']) for r in rows)}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--slam", default="datasets/replay_out/obs_slam_v6")
@@ -149,6 +248,12 @@ def main():
     ap.add_argument("--timing", help="per-set CSV from the node's timing_csv param")
     ap.add_argument("--out", default="datasets/replay_out/slam_cost_and_map.png")
     a = ap.parse_args()
+
+    if a.timing:
+        if not os.path.exists(a.timing):
+            sys.exit(f"no such timing CSV: {a.timing}")
+        figure_timing(a.timing, a.out)
+        return
 
     v6, v9, ctrl = (read_run(p) for p in (a.slam, a.slam2, a.control))
     if v6 is None or ctrl is None:
@@ -161,19 +266,7 @@ def main():
     # ---- A: the #77 axes, with the replay floor drawn so the caveat is visible ----
     ax = axes[0][0]
     style(ax)
-    if a.timing and os.path.exists(a.timing):
-        with open(a.timing) as fh:
-            rows = list(csv.DictReader(fh))
-        idx = [int(r["set"]) for r in rows]
-        trk = [int(r["track_us"]) / 1000.0 for r in rows]
-        ax.plot(idx, trk, color=C_V6, linewidth=0.6, alpha=0.35)
-        ax.plot(idx, rolling(trk, 25), color=C_V6, linewidth=2.0)
-        ax.annotate("Track()", (idx[-1], rolling(trk, 25)[-1]), color=C_V6,
-                    fontsize=9, fontweight="bold", xytext=(-4, 6),
-                    textcoords="offset points", ha="right")
-        ax.set_title("A  Track() per set — the real #77 measurement",
-                     color=INK, fontsize=10, loc="left", fontweight="bold")
-    else:
+    if True:
         for run, colr, lbl in ((v6, C_V6, "SLAM on"), (ctrl, C_CTRL, "SLAM off (control)")):
             d = run["intervals"]
             ax.plot(range(len(d)), d, color=colr, linewidth=0.5, alpha=0.25)
