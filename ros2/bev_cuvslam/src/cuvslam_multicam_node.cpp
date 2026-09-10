@@ -172,7 +172,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
       timing_csv_.open(timing_csv_path_, std::ios::out | std::ios::trunc);
       if (timing_csv_.is_open()) {
         timing_csv_ << "set,stamp_ns,data_t_s,wall_ns,callback_us,track_us,remap_us,slam_us,"
-                       "map_landmarks,frame_landmarks,lc_events\n";
+                       "map_landmarks,frame_landmarks,lc_events,keyframe\n";
         RCLCPP_INFO(get_logger(), "per-set timing -> %s", timing_csv_path_.c_str());
       } else {
         RCLCPP_WARN(get_logger(), "could not open timing_csv %s", timing_csv_path_.c_str());
@@ -662,6 +662,12 @@ class CuvslamMulticamNode : public rclcpp::Node {
         // What the tracker is holding THIS frame, as the denominator for the promoted-map
         // count: a map stuck at zero while this stays healthy is staging, not blindness.
         frame_landmarks_ = st.landmarks.size();
+        // THE FRONTEND/BACKEND SPLIT, per set. Slam::Track() is called every set but only
+        // ENQUEUES work when this is true (async_slam.cpp:142 -> input_queue_.Push at :201),
+        // so the backend runs at the KEYFRAME rate, not the frame rate. Without this column
+        // a Track() cost trend cannot be separated from a shift in keyframe fraction — and
+        // a fraction near 100% is tracking distress, not a busy map.
+        keyframe_ = st.keyframe;
       } catch (const std::exception&) { state_readable_ = false; }
     }
     if (!est.world_from_rig) {
@@ -805,7 +811,8 @@ class CuvslamMulticamNode : public rclcpp::Node {
                 << std::chrono::duration_cast<std::chrono::nanoseconds>(
                        std::chrono::steady_clock::now().time_since_epoch()).count() << ','
                 << cb_us << ',' << track_us_ << ',' << remap_us_ << ',' << slam_us_ << ','
-                << map_landmarks_ << ',' << frame_landmarks_ << ',' << lc_events_ << '\n';
+                << map_landmarks_ << ',' << frame_landmarks_ << ',' << lc_events_ << ','
+                << (keyframe_ ? 1 : 0) << '\n';
     // Flushed per row on purpose: every replay wrapper in scripts/vo SIGKILLs the node, so a
     // buffered tail is a lost tail — and the end of the run is exactly where the trend is.
     timing_csv_.flush();
@@ -1334,6 +1341,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
   bool publish_map_landmarks_ = false;
   int slam_map_read_max_ = 65536;
   size_t map_landmarks_ = 0, map_prev_ = 0, map_high_water_ = 0, frame_landmarks_ = 0;
+  bool keyframe_ = false;
   std::string timing_csv_path_;
   std::ofstream timing_csv_;
   int64_t first_stamp_ns_ = 0, last_stamp_ns_ = 0;
