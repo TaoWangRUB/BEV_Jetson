@@ -320,6 +320,81 @@
 
         Note this also retires the rank-correlation result above: it was noise.
 
+  - [~] 1.7o **Which SLAM parameter actually bounds the backend cost. Answer: not the one
+        named `max_map_size`, and mostly none of them.**
+
+        **First, the budget, because "it grows" is not a fault on its own.** The backend runs
+        once per KEYFRAME, so its budget is the keyframe period, not the frame period. This
+        log gives 512 keyframes over 88.6 s = **5.78 keyframes/s**, so at 20 fps the wall
+        budget is **173 ms per keyframe** (at 0.4x it is 433 ms, at 0.2x 865 ms).
+
+        | | backend | vs 173 ms (20 fps) |
+        |---|---|---|
+        | first third | 107.8 ms | 62% — ok |
+        | middle third | 164.7 ms | 95% — at the edge |
+        | last third | 264.7 ms | **153% — over** |
+
+        So nothing is wrong early; it crosses the budget partway through, and from then on a
+        keyframe costs more than the interval that produces one. That IS the loop-closure
+        halving at 1.0x (21 -> 11) — the same cost showing up as lost work rather than lost
+        time, not a second fault.
+
+        **Is the growth rate itself reasonable?** Measured `cost ~ N^0.72` over 14.6k -> 55k
+        landmarks. On the same data pure `O(N)` predicts 336 ms and `O(log N)` predicts
+        102 ms against a measured 255 ms — so it sits much closer to linear than to
+        logarithmic. A spatially-indexed loop-closure query (cuVSLAM has `LSIGrid` cells for
+        exactly this) should be near-flat in N, and PGO over a capped graph should also be
+        flat. `N^0.72` says something scales with the whole map rather than the
+        neighbourhood. That is the #77 complaint, and it is real.
+
+        **`slam_max_map_size` does NOT help. It caps POSES, not landmarks** ("Maximum number
+        of poses in SLAM pose graph", `cuvslam2.h`). Inline at 0.2x, keyframes, healthy scene:
+
+        | landmarks in map | uncapped | capped at 300 |
+        |---|---|---|
+        | 20–30k | 165.7 ms | 200.3 ms |
+        | 40–50k | 199.5 ms | 205.4 ms |
+        | 50–60k | 255.4 ms | **277.2 ms** |
+
+        Identical or slightly worse. Both runs reach the same ~65k map. The 300-cap is about
+        keeping `GetAllSlamPoses` bounded (1.7h), not about cost.
+
+        **`slam_max_landmarks_distance` — newly exposed, and it is not the fix either.** The
+        library default is 100 m, absurd for an indoor rig on a ~0.1 m virtual baseline where
+        far points are the worst-triangulated ones. At 15 m the inline backend does drop
+        (last third 182 ms vs 265 ms) — **but the map does not shrink** (65.4k vs 65.5k
+        high-water) and PGO events fall 404 -> 297. The cost reduction is close to
+        proportional to the PGO reduction, so it is buying speed by doing less optimisation,
+        not by doing the same work faster.
+
+        **RUN-TO-RUN VARIANCE, measured before reading anything into the above.** Two
+        identical 1.0x runs:
+
+        | config (all 20 fps) | sets of 1774 | map high-water | closures | PGO |
+        |---|---|---|---|---|
+        | baseline | 1721 | 59,457 | 11 | — |
+        | baseline **repeat** | 1667 | 54,856 | 9 | 422 |
+        | `max_landmarks_distance=15` | 1680 | 53,039 | 8 | 396 |
+        | `throttling_time_ms=1000` | **1773** | 65,248 | **4** | 482 |
+
+        The same config gives 11 and 9 closures, so ~±20% is noise — which puts the 15 m
+        bound's 8 **inside the noise band**. It is not an improvement; do not ship it.
+
+        **`slam_throttling_ms=1000` is the one that changes the real-time picture**, and it
+        is the value the header recommends. It is outside the noise band on two axes at once:
+        **1773 of 1774 sets** (against 1667–1721 — essentially lossless at 20 fps) and the
+        largest map of any run, 65.2k. Throttling the minimum interval between loop-closure
+        EVENTS keeps the backend inside the keyframe budget, so the frontend stops starving.
+        The price is 4 closure events instead of 9–11.
+
+        **Where this leaves the rig.** There is no parameter that makes loop closure both
+        frequent and affordable at 20 fps on this log; the knobs trade one for the other. The
+        honest options are (a) `throttling_ms=1000` and accept few but timely closures, which
+        is what the header intends for real-time, or (b) run the SLAM layer slower than the
+        camera, which is what 0.4x does offline. Untested and worth trying next: fewer primary
+        cameras for SLAM (all 8 virtual pinholes are primary today, which is 8 descriptor sets
+        per keyframe to match) and `slam_map_cell_size`, now exposed but never swept.
+
   - [x] 1.7n **Host cuVSLAM build on the WSL box — it works, and `/usr/local/cuda` being
         empty was not the blocker it looked like.** `docker-compose.host.yml` already had the
         whole chain; what was missing was a CUDA toolkit to mount. Rather than a multi-GB
@@ -767,6 +842,8 @@ Host, all under gitignored `datasets/`:
 | `datasets/replay_out/slam_backend_sync_rate0.2.png` | 1.7m — **the #77 answer**: backend inline, cost vs map size |
 | `datasets/replay_out/slam_backend_sync_rate0.2_timing.csv` | per-set rows behind it (`slam_track_us` is real here) |
 | `datasets/replay_out/slam_frontend_async_rate{0.4,1.0}_timing.csv` | the async runs — frontend only; `slam_track_us` is just the enqueue |
+| `datasets/replay_out/slam_backend_sync_{cap300,lmdist15}_timing.csv` | 1.7o — the two map-bounding knobs, inline |
+| `datasets/replay_out/slam_async_rate1.0_{repeat,lmdist15,throttle1000}_timing.csv` | 1.7o — 20 fps sweep + the variance baseline |
 
 Names carry the rate and the regime on purpose: the first pair of figures was called
 `slam77_full_04/10`, nobody could tell that meant 0.4x/1.0x, and both were titled as the

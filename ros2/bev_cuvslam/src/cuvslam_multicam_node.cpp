@@ -381,6 +381,21 @@ class CuvslamMulticamNode : public rclcpp::Node {
       // slows Track() and costs frames, which moves the result more than the threading does.
       sc.sync_mode = declare_parameter<bool>("slam_sync_mode", false);
       sc.enable_reading_internals = true;   // pose graph + loop-closure layers
+      // THE TWO KNOBS THAT BOUND THE MAP ITSELF, as opposed to the pose graph.
+      //
+      // max_landmarks_distance defaults to 100 m. This rig works indoors, where nothing is
+      // 100 m away and anything claiming to be is a bad triangulation from a short baseline
+      // — our virtual pinholes sit ~0.1 m apart, so far points are exactly where the depth
+      // is least trustworthy. Admitting them inflates the map, and the backend cost measured
+      // in 1.7m scales as N^0.72 of it, so this is the cheapest lever on that cost. 0 keeps
+      // the library default.
+      const double lm_dist = declare_parameter<double>("slam_max_landmarks_distance", 0.0);
+      if (lm_dist > 0.0) sc.max_landmarks_distance = static_cast<float>(lm_dist);
+      // map_cell_size defaults to 0, meaning "derive from the camera baseline". Our baseline
+      // is a virtual one from the pinhole carve, not a physical stereo pair, so the derived
+      // cell may not suit the scene. Exposed to be measured, not because a value is known.
+      const double cell = declare_parameter<double>("slam_map_cell_size", 0.0);
+      if (cell > 0.0) sc.map_cell_size = static_cast<float>(cell);
       sc.map_cache_path = slam_map_path_;   // empty = in memory only
       sc.throttling_time_ms = static_cast<uint32_t>(slam_throttling_ms_);
       sc.max_map_size = static_cast<uint32_t>(slam_max_map_size_);

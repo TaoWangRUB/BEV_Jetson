@@ -103,6 +103,8 @@ if [[ "${SLAM:-0}" == "1" ]]; then
   # dies at startup.
   case "${SLAM_SYNC:-0}" in 1|true|TRUE|yes) _sync=true ;; *) _sync=false ;; esac
   LAUNCH_ARGS="${LAUNCH_ARGS} slam_sync_mode:=${_sync}"
+  LAUNCH_ARGS="${LAUNCH_ARGS} slam_max_landmarks_distance:=${SLAM_LM_DIST:-0.0}"
+  LAUNCH_ARGS="${LAUNCH_ARGS} slam_map_cell_size:=${SLAM_CELL:-0.0}"
   # The promoted SLAM map. NOT /cuvslam/landmarks, which is the odometry track dump and only
   # ever grows. A map that stays near-empty while the pose graph fills is issue #136.
   if [[ "${MAP_CLOUD:-0}" == "1" ]]; then

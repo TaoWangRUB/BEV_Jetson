@@ -51,6 +51,11 @@ def generate_launch_description():
         # far slower per set and needs a correspondingly slow replay, but it is the only
         # configuration in which the backend's growth with map size is observable.
         DeclareLaunchArgument('slam_sync_mode', default_value='false'),
+        # Bound the MAP (not the pose graph). 100 m is the library default and is absurd
+        # indoors; far points are also the worst-triangulated ones on a 0.1 m virtual
+        # baseline. 0 = keep the library default. See 1.7o.
+        DeclareLaunchArgument('slam_max_landmarks_distance', default_value='0.0'),
+        DeclareLaunchArgument('slam_map_cell_size', default_value='0.0'),
         DeclareLaunchArgument('cuvslam_verbosity', default_value='0'),
         DeclareLaunchArgument('image_qos', default_value='sensor_data'),
         DeclareLaunchArgument('image_qos_depth', default_value='10'),
@@ -96,6 +101,10 @@ def generate_launch_description():
                     LaunchConfiguration('cuvslam_verbosity'), value_type=int),
                 'slam_sync_mode': ParameterValue(
                     LaunchConfiguration('slam_sync_mode'), value_type=bool),
+                'slam_max_landmarks_distance': ParameterValue(
+                    LaunchConfiguration('slam_max_landmarks_distance'), value_type=float),
+                'slam_map_cell_size': ParameterValue(
+                    LaunchConfiguration('slam_map_cell_size'), value_type=float),
             }],
         ),
     ])
