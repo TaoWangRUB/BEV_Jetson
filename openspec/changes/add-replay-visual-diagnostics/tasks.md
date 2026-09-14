@@ -387,6 +387,34 @@
         EVENTS keeps the backend inside the keyframe budget, so the frontend stops starving.
         The price is 4 closure events instead of 9–11.
 
+        **"But #77 is closed and fixed" — checked, and we already have the fixes.** Our build
+        is `69e2f29`, post-17.0.0, and it contains every upstream commit that touches this:
+
+        | commit | what it does | in our build |
+        |---|---|---|
+        | `b075bd6` | `PoseGraph::Optimize`: BFS subgraph from head keyframe | yes |
+        | `095e8af` | speed up the PGO solver | yes |
+        | `354c135` | guard the LSI-grid frustum test with the near plane | yes |
+        | `175f91a` | guard frustum-graph projection with the near plane | yes |
+
+        Nothing between `69e2f29` and current `main` (`dcc86e3`) touches it either. They are
+        not sufficient because they fix the **pose-graph solve**, and the growth that remains
+        is on the **map-query side** — loop-closure candidate matching against a larger and
+        larger landmark map. The only thing upstream shipped for the async case is
+        `Slam::Config::delay_warning_queue_size` (CHANGELOG, Unreleased), which *warns* that
+        SLAM is behind. Diagnostics, not a fix, and silent below `cuvslam_verbosity 2`.
+
+        Note also `libs/common/thread_safe_queue.h`: `Push` is **unbounded and
+        non-blocking**. So an overloaded backend never back-pressures `Slam::Track()` — it
+        cannot show up as latency, only as a growing queue, staler poses and dropped
+        closures. That is why every async measurement looked healthy.
+
+        One thing NOT verified: whether #77's reporter saw the same component. Their harness
+        is `vslam.Tracker(...)`, and **`Tracker` does not exist in v17.0.0** — neither
+        `libs/cuvslam/tracker.cpp` nor a Python binding — so their exact configuration could
+        not be reconstructed from the tag they cite. Treat "same root cause" as unproven; what
+        is proven is that OUR backend scales as `N^0.72` with the current fixes in place.
+
         **Where this leaves the rig.** There is no parameter that makes loop closure both
         frequent and affordable at 20 fps on this log; the knobs trade one for the other. The
         honest options are (a) `throttling_ms=1000` and accept few but timely closures, which

@@ -490,7 +490,85 @@ exist. Porting them means teaching them the Mei projection; `mei_project()` in
 | [openspec](openspec) | change proposals, designs and task logs |
 | [third_party](third_party) | cuVSLAM, OKVIS2, OpenMAVIS submodules |
 
-## 6. Docs
+## 6. SLAM backend cost — do we hit cuVSLAM #77?
+
+**Yes, partly, and not where it is usually looked for.** Measured on this rig
+(`slam_backend_sync_rate0.2`, full 88.6 s log, 1772 sets, 512 keyframes) against cuVSLAM
+[#77](https://github.com/nvidia-isaac/cuVSLAM/issues/77) and
+[#136](https://github.com/nvidia-isaac/cuVSLAM/issues/136).
+
+**The frontend is fine. The backend is what grows.** `Odometry::Track()` — PnP every frame,
+triangulation and SBA on keyframes — is flat against a 10x growth in the map. `Slam::Track()`
+— loop-closure matching and pose-graph optimisation — is not. Keyframes only, scene held
+constant (`frame_landmarks > 300`):
+
+| landmarks in map | backend | frontend |
+|---|---|---|
+| 10–20k | 90 ms | 59 ms |
+| 20–30k | 166 ms | 16 ms |
+| 40–50k | 200 ms | 20 ms |
+| 50–60k | **255 ms** | 20 ms |
+
+`cost ~ N^0.72`. On the same data `O(N)` predicts 336 ms and `O(log N)` predicts 102 ms —
+so it sits much closer to linear than logarithmic, which is #77's complaint.
+
+**Whether that is a fault depends on the budget, and the budget is the KEYFRAME period, not
+the frame period.** This log yields 5.78 keyframes/s, so 20 fps allows **173 ms per
+keyframe**. The backend runs at 62% of that in the first third, 95% in the middle, and
+**153% in the last** — it crosses partway through. Past that point a keyframe costs more
+than the interval that produces one, and because the SLAM queue is *unbounded and
+non-blocking* (`thread_safe_queue.h`), the overrun never appears as latency. It appears as
+**lost work**: loop closures fell 21 → 11 at 1.0x against 0.4x.
+
+**#136 (staged landmarks never promoted) does NOT occur here.** The promoted map
+(`DataLayer::Map`) reaches 62,865 landmarks and grows smoothly from the first seconds; no
+mass staging flush, and crossing the 60 s staging lifetime produces no step. Our ring closes
+the frustum union horizontally, but the ±45° carves leave it open vertically and that is
+enough to drain staging normally.
+
+### Why it still happens when the fixes are already in
+
+Our build (`69e2f29`, post-17.0.0) **already contains every relevant upstream fix** —
+`b075bd6` BFS-subgraph PGO, `095e8af` PGO solver speedup, `354c135` / `175f91a` near-plane
+guards on the LSI-grid and frustum-graph tests. Nothing newer on `main` touches this.
+
+They are not enough because they fix the **pose-graph solve**, and the growth that remains is
+on the **map-query side** — loop-closure candidate matching against an ever-larger landmark
+map. The only thing upstream shipped for the async case is
+`Slam::Config::delay_warning_queue_size`, which *warns* that SLAM is falling behind. That is
+diagnostics, not a fix, and it is off unless `cuvslam_verbosity >= 2`.
+
+### What to do about it
+
+Measured, including a variance baseline — two *identical* 20 fps runs gave 11 and 9 closures,
+so treat ~±20% as noise:
+
+| config @20 fps | sets of 1774 | closures | verdict |
+|---|---|---|---|
+| baseline | 1721 / 1667 | 11 / 9 | over budget in the last third |
+| `slam_max_map_size:=300` | — | — | **no effect on cost** — caps poses, not landmarks |
+| `slam_max_landmarks_distance:=15` | 1680 | 8 | inside the noise; map did not shrink |
+| `slam_throttling_ms:=1000` | **1773** | 4 | **keeps the pipeline in budget** |
+
+```bash
+# real-time: few but timely closures, frontend never starves
+SLAM=1 SLAM_THROTTLING_MS=1000 ./scripts/vo/replay_host.sh <bag> 1.0
+
+# offline analysis: full closure rate, SLAM slower than the camera
+SLAM=1 ./scripts/vo/replay_host.sh <bag> 0.4
+
+# to MEASURE the backend at all, it must be inline — otherwise you time the enqueue
+SLAM=1 SLAM_SYNC=1 ./scripts/vo/replay_host.sh <bag> 0.2
+python3 scripts/vo/slam_cost_and_map.py --timing datasets/replay_out/<run>_timing.csv --out fig.png
+```
+
+No setting makes loop closure both frequent and affordable at 20 fps on this log — the knobs
+trade one for the other. Best untried lead: **all 8 virtual pinholes are registered as SLAM
+primary cameras**, so every keyframe presents 8 descriptor sets to match. Cutting that should
+reduce per-keyframe cost rather than just reduce the work done. Full workings in
+[openspec/changes/add-replay-visual-diagnostics/tasks.md](openspec/changes/add-replay-visual-diagnostics/tasks.md) §1.7l–1.7o.
+
+## 7. Docs
 
 | doc | covers |
 |---|---|
@@ -501,8 +579,9 @@ exist. Porting them means teaching them the Mei projection; `mei_project()` in
 | [docs/timestamps.md](docs/timestamps.md) | the camera/IMU timestamp contract — the four rules |
 | [docs/extrinsic_calibration.md](docs/extrinsic_calibration.md) | rig extrinsics procedure |
 | [scripts/README.md](scripts/README.md) | index of every script, and where it runs |
+| [README §6](README.md#6-slam-backend-cost--do-we-hit-cuvslam-77) | SLAM backend cost vs map size, and which knobs move it |
 
-## 7. Roadmap
+## 8. Roadmap
 
 - [x] Port cuVSLAM to CUDA 10.2 / C++14, running on the TX2 GPU
 - [x] Host offline VO (`bev-host-cuvslam` + `replay_host.sh`) for bag resim without TX2 OOM
