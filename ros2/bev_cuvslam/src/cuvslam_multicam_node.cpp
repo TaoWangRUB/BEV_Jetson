@@ -399,11 +399,40 @@ class CuvslamMulticamNode : public rclcpp::Node {
       sc.map_cache_path = slam_map_path_;   // empty = in memory only
       sc.throttling_time_ms = static_cast<uint32_t>(slam_throttling_ms_);
       sc.max_map_size = static_cast<uint32_t>(slam_max_map_size_);
-      // Every virtual pinhole is primary, matching MulticameraMode::Precision above
-      // ("all cameras are primary"). Anything narrower would quietly change which views
-      // can close a loop.
-      std::vector<uint8_t> primary(vpin_.size());
-      for (size_t i = 0; i < vpin_.size(); ++i) primary[i] = static_cast<uint8_t>(i);
+      // WHICH CAMERAS SLAM SEES — and this is NOT MulticameraMode.
+      //
+      // Two different knobs that are easy to confuse. `MulticameraMode` (Performance /
+      // Precision / Moderate) is an ODOMETRY config and decides which cameras the tracker
+      // treats as primary. `Slam`'s `primary_cameras` is a separate constructor argument
+      // with no validation against it (`cuvslam2.h:913`). It gates which images SLAM is
+      // handed: `cuvslam2.cpp:1045-1049` and `:1098` copy image contexts for these ids only,
+      // and the library's own comment there is "// TODO: custom primary cameras".
+      //
+      // So narrowing this reduces the descriptor sets the backend extracts and matches per
+      // keyframe WITHOUT touching odometry — `cfg.multicam_mode` stays Precision above, so
+      // the VO figures in section 5 remain comparable. All 8 is the default and what every
+      // measurement to date used; 8 descriptor sets per keyframe is also the leading suspect
+      // for the backend cost in 1.7o.
+      //
+      // Empty = all of them. The pinholes are carved in pairs, so [0,2,4,6] is one per
+      // PHYSICAL camera and still spans the ring at 90 deg.
+      const auto prim_param = declare_parameter<std::vector<int64_t>>(
+          "slam_primary_cameras", std::vector<int64_t>{});
+      std::vector<uint8_t> primary;
+      if (prim_param.empty()) {
+        primary.resize(vpin_.size());
+        for (size_t i = 0; i < vpin_.size(); ++i) primary[i] = static_cast<uint8_t>(i);
+      } else {
+        for (int64_t v : prim_param) {
+          if (v < 0 || static_cast<size_t>(v) >= vpin_.size())
+            throw std::runtime_error("slam_primary_cameras index out of range for " +
+                                     std::to_string(vpin_.size()) + " virtual cameras");
+          primary.push_back(static_cast<uint8_t>(v));
+        }
+        RCLCPP_WARN(get_logger(), "SLAM sees %zu of %zu virtual cameras — loop closure can "
+                    "only match views from these; odometry still uses all of them",
+                    primary.size(), vpin_.size());
+      }
       slam_ = std::make_unique<cuvslam::Slam>(rig, primary, sc);
       slam_->EnableReadingData(cuvslam::Slam::DataLayer::LoopClosure, 4096);
       slam_->EnableReadingData(cuvslam::Slam::DataLayer::PoseGraph, 4096);

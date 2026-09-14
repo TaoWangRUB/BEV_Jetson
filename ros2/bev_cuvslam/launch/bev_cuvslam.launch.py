@@ -8,6 +8,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from typing import List
 
 
 def generate_launch_description():
@@ -56,6 +57,11 @@ def generate_launch_description():
         # baseline. 0 = keep the library default. See 1.7o.
         DeclareLaunchArgument('slam_max_landmarks_distance', default_value='0.0'),
         DeclareLaunchArgument('slam_map_cell_size', default_value='0.0'),
+        # Which virtual cameras SLAM is handed. NOT MulticameraMode - that is an odometry
+        # config; this is Slam's own primary_cameras argument and gates the descriptor sets
+        # the backend matches per keyframe. '[]' = all 8. '[0,2,4,6]' = one per physical
+        # camera, still spanning the ring. See 1.7p.
+        DeclareLaunchArgument('slam_primary_cameras', default_value='[]'),
         DeclareLaunchArgument('cuvslam_verbosity', default_value='0'),
         DeclareLaunchArgument('image_qos', default_value='sensor_data'),
         DeclareLaunchArgument('image_qos_depth', default_value='10'),
@@ -105,6 +111,8 @@ def generate_launch_description():
                     LaunchConfiguration('slam_max_landmarks_distance'), value_type=float),
                 'slam_map_cell_size': ParameterValue(
                     LaunchConfiguration('slam_map_cell_size'), value_type=float),
+                'slam_primary_cameras': ParameterValue(
+                    LaunchConfiguration('slam_primary_cameras'), value_type=List[int]),
             }],
         ),
     ])

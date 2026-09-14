@@ -540,33 +540,47 @@ diagnostics, not a fix, and it is off unless `cuvslam_verbosity >= 2`.
 
 ### What to do about it
 
-Measured, including a variance baseline — two *identical* 20 fps runs gave 11 and 9 closures,
-so treat ~±20% as noise:
+**Give SLAM half the cameras.** `Slam(rig, primary_cameras, cfg)` is a *separate* argument
+from `MulticameraMode` and has no validation against it: it gates which images the backend
+receives (`cuvslam2.cpp:1045-1049`), so it cuts descriptor sets matched per keyframe
+**without touching odometry** — `multicam_mode` stays `Precision` and the VO figures stay
+comparable. The pinholes are carved in pairs, so `[0,2,4,6]` is one per physical camera and
+still spans the ring at 90°.
+
+Every config below was run twice where the result mattered, because two *identical* 20 fps
+runs gave 11 and 9 closures — treat ~±20% as noise:
 
 | config @20 fps | sets of 1774 | closures | verdict |
 |---|---|---|---|
 | baseline | 1721 / 1667 | 11 / 9 | over budget in the last third |
 | `slam_max_map_size:=300` | — | — | **no effect on cost** — caps poses, not landmarks |
 | `slam_max_landmarks_distance:=15` | 1680 | 8 | inside the noise; map did not shrink |
-| `slam_throttling_ms:=1000` | **1773** | 4 | **keeps the pipeline in budget** |
+| `slam_throttling_ms:=1000` | **1773** | 4 | keeps frames, **starves closures** |
+| **`slam_primary_cameras:=[0,2,4,6]`** | 1688 / 1602 | **19 / 15** | **~1.7x the closures** |
+
+Four primaries is the only knob that made the backend cheaper *and* did more useful work —
+backend median 167.5 → 128.9 ms, last third 264.7 → 189.2 ms, and closures 15–19 against a
+9–11 baseline whose band it does not overlap. Throttling did the opposite: it kept the
+frontend fed (1773 of 1774 sets) by cutting closures to 4.
 
 ```bash
-# real-time: few but timely closures, frontend never starves
+# recommended at 20 fps: cheaper backend, more closures, VO untouched
+SLAM=1 SLAM_PRIMARIES='[0,2,4,6]' ./scripts/vo/replay_host.sh <bag> 1.0
+
+# if dropped frames matter more than closures, throttle instead
 SLAM=1 SLAM_THROTTLING_MS=1000 ./scripts/vo/replay_host.sh <bag> 1.0
 
 # offline analysis: full closure rate, SLAM slower than the camera
 SLAM=1 ./scripts/vo/replay_host.sh <bag> 0.4
 
-# to MEASURE the backend at all, it must be inline — otherwise you time the enqueue
+# to MEASURE the backend at all it must be inline — otherwise you time the enqueue
 SLAM=1 SLAM_SYNC=1 ./scripts/vo/replay_host.sh <bag> 0.2
 python3 scripts/vo/slam_cost_and_map.py --timing datasets/replay_out/<run>_timing.csv --out fig.png
 ```
 
-No setting makes loop closure both frequent and affordable at 20 fps on this log — the knobs
-trade one for the other. Best untried lead: **all 8 virtual pinholes are registered as SLAM
-primary cameras**, so every keyframe presents 8 descriptor sets to match. Cutting that should
-reduce per-keyframe cost rather than just reduce the work done. Full workings in
-[openspec/changes/add-replay-visual-diagnostics/tasks.md](openspec/changes/add-replay-visual-diagnostics/tasks.md) §1.7l–1.7o.
+It reduces cost without fixing the scaling — `N^0.72` is still `N^0.72`, the constant is
+smaller. A long enough run will still cross the budget. Full workings in
+[openspec/changes/add-replay-visual-diagnostics/tasks.md](openspec/changes/add-replay-visual-diagnostics/tasks.md) §1.7l–1.7p.
 
 ## 7. Docs
 

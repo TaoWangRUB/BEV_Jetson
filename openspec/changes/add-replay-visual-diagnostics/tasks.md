@@ -423,6 +423,52 @@
         cameras for SLAM (all 8 virtual pinholes are primary today, which is 8 descriptor sets
         per keyframe to match) and `slam_map_cell_size`, now exposed but never swept.
 
+  - [x] 1.7p **Halving SLAM's primary cameras is the one knob that makes the backend cheaper
+        AND does more useful work.** Operator's question — "so, a different mode?" — worth
+        answering precisely, because three separate things get called "mode":
+
+        | knob | what it is | effect |
+        |---|---|---|
+        | `MulticameraMode` | ODOMETRY config (Performance/Precision/Moderate) | picks the tracker's primaries; changes VO |
+        | `Slam::Config::sync_mode` | backend inline vs worker thread | a MEASUREMENT setting; makes nothing faster |
+        | `Slam(rig, primary_cameras, cfg)` | separate ctor arg, no validation against the above | gates which images the backend gets |
+
+        It is the third. `cuvslam2.cpp:1045-1049` and `:1098` copy image contexts for these
+        ids only — the library's own comment there is `// TODO: custom primary cameras` — so
+        narrowing it cuts the descriptor sets matched per keyframe while `cfg.multicam_mode`
+        stays `Precision` and odometry is untouched. Exposed as `slam_primary_cameras`;
+        empty = all 8. The pinholes are carved in pairs, so `[0,2,4,6]` is one per PHYSICAL
+        camera and still spans the ring at 90 deg.
+
+        **Inline at 0.2x, keyframes, healthy scene:**
+
+        | landmarks in map | 8 primaries | 4 primaries |
+        |---|---|---|
+        | 20–30k | 165.7 ms | 129.4 ms |
+        | 40–50k | 199.5 ms | 100.4 ms |
+        | 50–60k | **255.4 ms** | **176.6 ms** |
+        | median, all keyframes | 167.5 ms | 128.9 ms |
+        | last third | 264.7 ms | 189.2 ms |
+        | loop closures | 23 | **26** |
+
+        **At 20 fps, run twice each because the noise band is ~±20%:**
+
+        | config | sets of 1774 | closures |
+        |---|---|---|
+        | baseline | 1721 / 1667 | 11 / 9 |
+        | `slam_primary_cameras:=[0,2,4,6]` | 1688 / 1602 | **19 / 15** |
+
+        The two closure bands do not overlap, so this is real and not the noise that killed
+        the `max_landmarks_distance` result. The mechanism is the expected one: a cheaper
+        keyframe means the backend keeps up instead of dropping work, so MORE closures
+        complete rather than fewer — the opposite of what throttling buys (1773 sets but only
+        4 closures).
+
+        **What it does not do: fix the scaling.** `N^0.72` is still `N^0.72` with a smaller
+        constant, so a long enough run still crosses the budget. Untested: 2 primaries, and
+        whether the four dropped views cost anything in revisit recognition on a log with
+        real loops (this one has none — see 1.7a).
+
   - [x] 1.7n **Host cuVSLAM build on the WSL box — it works, and `/usr/local/cuda` being
         empty was not the blocker it looked like.** `docker-compose.host.yml` already had the
         whole chain; what was missing was a CUDA toolkit to mount. Rather than a multi-GB

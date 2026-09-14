@@ -105,6 +105,8 @@ if [[ "${SLAM:-0}" == "1" ]]; then
   LAUNCH_ARGS="${LAUNCH_ARGS} slam_sync_mode:=${_sync}"
   LAUNCH_ARGS="${LAUNCH_ARGS} slam_max_landmarks_distance:=${SLAM_LM_DIST:-0.0}"
   LAUNCH_ARGS="${LAUNCH_ARGS} slam_map_cell_size:=${SLAM_CELL:-0.0}"
+  # SLAM_PRIMARIES='[0,2,4,6]' hands SLAM one pinhole per physical camera instead of all 8.
+  LAUNCH_ARGS="${LAUNCH_ARGS} slam_primary_cameras:=${SLAM_PRIMARIES:-[]}"
   # The promoted SLAM map. NOT /cuvslam/landmarks, which is the odometry track dump and only
   # ever grows. A map that stays near-empty while the pose graph fills is issue #136.
   if [[ "${MAP_CLOUD:-0}" == "1" ]]; then
