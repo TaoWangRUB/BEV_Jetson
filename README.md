@@ -544,8 +544,24 @@ diagnostics, not a fix, and it is off unless `cuvslam_verbosity >= 2`.
 from `MulticameraMode` and has no validation against it: it gates which images the backend
 receives (`cuvslam2.cpp:1045-1049`), so it cuts descriptor sets matched per keyframe
 **without touching odometry** — `multicam_mode` stays `Precision` and the VO figures stay
-comparable. The pinholes are carved in pairs, so `[0,2,4,6]` is one per physical camera and
-still spans the ring at 90°.
+comparable.
+
+**No viewing direction is lost.** The 8 pinholes are not 8 directions: they are **4 stereo
+pairs**, and the two axes in each pair sit only 1.0–2.4° apart
+([config/rig/virtual_stereo_imx296.yaml](config/rig/virtual_stereo_imx296.yaml)):
+
+| direction | pair | in `[0,2,4,6]` |
+|---|---|---|
+| front | vcam2 + vcam1 | vcam2 |
+| left | vcam0 + vcam5 | vcam0 |
+| right | vcam6 + vcam3 | vcam6 |
+| rear | vcam4 + vcam7 | vcam4 |
+
+So `[0,2,4,6]` keeps one view from **every** direction and drops only the near-co-aligned
+partner. Angular coverage is unchanged (4 × 70° with the same 20° gaps between directions,
+in both configurations) — what goes is the stereo redundancy inside each pair, which at
+1–2° of parallax adds almost no new viewpoint for descriptor matching. That is why halving
+the input cost ~30% and lost nothing.
 
 Every config below was run twice where the result mattered, because two *identical* 20 fps
 runs gave 11 and 9 closures — treat ~±20% as noise:

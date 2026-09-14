@@ -437,8 +437,28 @@
         ids only — the library's own comment there is `// TODO: custom primary cameras` — so
         narrowing it cuts the descriptor sets matched per keyframe while `cfg.multicam_mode`
         stays `Precision` and odometry is untouched. Exposed as `slam_primary_cameras`;
-        empty = all 8. The pinholes are carved in pairs, so `[0,2,4,6]` is one per PHYSICAL
-        camera and still spans the ring at 90 deg.
+        empty = all 8.
+
+        **WHY `[0,2,4,6]` COSTS NO COVERAGE, which is not obvious and was nearly got wrong
+        here.** The 8 pinholes are not 8 directions. `rig_build.hpp:82-93` builds them per
+        physical camera (`vcam0,1` = cam1 -45/+45, `vcam2,3` = cam2, ...), and
+        `virtual_stereo_imx296.yaml` then pairs them ACROSS cameras by minimum axis angle:
+
+        | direction | pair | axes apart |
+        |---|---|---|
+        | front | vcam2 + vcam1 | 2.4 deg |
+        | left | vcam0 + vcam5 | 1.6 deg |
+        | right | vcam6 + vcam3 | 1.2 deg |
+        | rear | vcam4 + vcam7 | 1.0 deg |
+
+        So there are four look directions, each covered by a nearly co-aligned pair.
+        `[0,2,4,6]` takes one from EVERY pair — left, front, rear, right — and is also one
+        per physical camera. Angular coverage is identical to the 8-camera case (4 x 70 deg,
+        with the same 20 deg gaps between directions); what is dropped is the stereo partner,
+        which at 1-2 deg of parallax adds almost no new viewpoint for descriptor matching.
+        That is the mechanism behind the ~30% saving at no measured cost — and it also means
+        a naive "take the first four" (`[0,1,2,3]` = cam1 and cam2 only) would be a very
+        different and much worse choice.
 
         **Inline at 0.2x, keyframes, healthy scene:**
 
