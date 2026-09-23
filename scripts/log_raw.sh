@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # Raw 4-camera image log. RUNS INSIDE the container (docker compose run --rm logonly).
 #
+# THE SPLIT IS NO LONGER NEEDED IF THE USB3 SSD IS ON J3. Measured 2026-09-23, all four
+# cameras at 30 fps onto /ssdlog alone, 120 s:
+#   3513 complete 4-camera sets   99.91%   29.974 Hz   max intra-set skew 1.0 us
+#   writer queue max 0/64, dropped 0, no USB disconnect, fsck clean after 21 GB
+# The queue never held a single frame: 181 MB/s against 354 MB/s of measured write. So on
+# this target prefer `LOG_DIR=/ssdlog` at the full 30 fps over both the split and the
+# drop to 20 fps - both of those exist only because eMMC/SD could not take 190 MB/s.
+# (J3 SuperSpeed needs the j106usb3j3 boot entry AND the rewired cable - see that README.)
+#
 # WHY RAW, AND WHY SPLIT ACROSS TARGETS. Measured on this board 2026-09-02:
 #   ros2 bag record            6-7 fps   38-46 MB/s   <- the writer, not DDS (>=142 MB/s)
 #   raw direct write           29.7 fps  190 MB/s     <- storage-bound, which is where it belongs
@@ -54,6 +63,7 @@
 # Set the trigger with `j106-trigctl.py --port /dev/ttyTHS1 fps 20` and tell the space check
 # about it with TRIGGER_FPS=20 - it cannot read the generator from inside the container.
 #
+#   LOG_DIR=/ssdlog MOTION_SECONDS=120 log_raw.sh          # all four at 30 fps, preferred
 #   LOG_DIRS="/logs,/logs,/sdlog,/ramlog" MOTION_SECONDS=60 log_raw.sh
 #   TRIGGER_FPS=20 LOG_DIR=/logs MOTION_SECONDS=60 log_raw.sh   # all four, one target
 #   LOG_DIR=/ramlog MOTION_SECONDS=10 log_raw.sh          # single target, all four
@@ -130,6 +140,7 @@ for base in "${!SEEN[@]}"; do
   case "$base" in
     /ramlog*) cap=400 ;;
     /sdlog*)  cap=62  ;;
+    /ssdlog*) cap=340 ;;
     /logs*)   cap=136 ;;
     *)        cap=0   ;;
   esac

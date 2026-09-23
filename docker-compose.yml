@@ -41,6 +41,9 @@ x-bev: &bev
     # SD card, outside the repo on purpose - a log directory inside it would end up in
     # git and in the build context. 62.6 MB/s measured, so ~1 camera at 30 fps.
     - /media/nvidia/workspace/logs:/sdlog
+    # USB3 SSD on J3 (auvidea-j106-tx2 README S7). 354 MB/s measured write, so unlike every
+    # other target here it absorbs all four cameras at 30 fps (190 MB/s) on its own.
+    - /media/nvidia/ssd:/ssdlog
 
 services:
   shell:
