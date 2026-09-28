@@ -170,6 +170,15 @@ cannot. These feed it a `log_rig.sh` directory directly through its PyO3 API —
 Build the core once in a checkout (`cargo build --release -p slam-rs-py`, then copy
 `target/release/lib_core.so` to `slam_rs/_core.so`) and point `SLAM_RS_DIR` at it.
 
+**Compare against the right cuVSLAM replay.** Any replay made before `75dac4a` (2026-09-08) is
+missing camera 0's stereo partner, and its teleports are that bug, not the tracker: run6 goes
+from 2 jumps to 0 with the fix, run5 from one 51.8 m/s jump to 0. Take VO from a VO-only replay
+(`OBS=1 replay_host.sh <bag> 0.5`), and SLAM from a separate `SLAM=1 SLAM_PRIMARIES='[0,2,4,6]'`
+replay passed as `--slam-bag`. Even with four primaries (`d407ed9`) the backend outgrows the
+budget late in these runs: at 0.4x `Track()` reached 65–116 ms per set, sets queued, the tail was
+cut off and that bag's VO jumped 18.6 m; at 0.2x it still reached 200+ ms (slam_track peaking at
+1 s), keeping 82 % of run6's sets with one 3.2 m jump. VO-only replays of the same bags: 0 jumps.
+
 | script | runs on | purpose |
 |---|---|---|
 | [slamrs/make_calib.py](slamrs/make_calib.py) | dev | write [config/slamrs/bev_calib_s2.json](../config/slamrs/bev_calib_s2.json): KB4 fitted to the Mei intrinsics (slam-rs has no omni model; its KB4 uses `atan2` so it holds our >180° lenses), rig extrinsics, and the round-2 Kalibr `T_cam_imu` — whose only tracked copy is that JSON |

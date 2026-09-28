@@ -1,7 +1,7 @@
 """slam-rs VIO beside cuVSLAM VO and cuVSLAM SLAM, in one Rerun scene.
 
   .venv/bin/python scripts/slamrs/rerun_compare.py <imglog dir> <slamrs.csv> <cuvslam obs bag dir>
-        [--save out.rrd] [--spawn] [--image-stride 4] [--no-images]
+        [--slam-bag <obs bag dir>] [--save out.rrd] [--spawn] [--image-stride 4] [--no-images]
 
 Everything is drawn in slam-rs's world (gravity-aligned, +Z up, metric from the IMU). cuVSLAM's
 frame is cam1's optical frame at its first pose, so it is brought across through the Kalibr
@@ -15,6 +15,11 @@ T_imu_cam1 in config/slamrs/bev_calib_s2.json - two ways, one per 3D view:
 cuVSLAM VO is /cuvslam/odometry, which deliberately keeps its tracking-loss teleports (README
 3.1); it is split into segments there instead of drawing a chord across them. cuVSLAM SLAM is
 the LAST /cuvslam/slam_path (the most optimised graph), as in vo/rerun_multicam.py.
+
+--slam-bag takes SLAM from a different replay than VO. Use it: a SLAM=1 replay is only
+lossless when slow enough for the backend (README 6) - at 0.4x on run6 it overran, sets queued
+and the VO in THAT bag jumped 18.6 m across the gap. VO should come from a VO-only replay. The
+SLAM bag's frame is tied to the VO bag's at their first common stamp.
 """
 import argparse
 import json
@@ -66,7 +71,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("log", type=Path)
     ap.add_argument("slamrs_csv", type=Path)
-    ap.add_argument("cuvslam_bag", type=Path, help="obs_* bag directory (odometry + slam topics)")
+    ap.add_argument("cuvslam_bag", type=Path, help="obs_* bag directory with /cuvslam/odometry")
+    ap.add_argument("--slam-bag", type=Path, help="SLAM=1 replay to take the SLAM path from (default: cuvslam_bag)")
     ap.add_argument("--calib", type=Path, default=REPO / "config/slamrs/bev_calib_s2.json")
     ap.add_argument("--image-stride", type=int, default=4, help="log every Nth camera set")
     ap.add_argument("--no-images", action="store_true")
@@ -92,7 +98,16 @@ def main():
     tc = od[:, 0].astype(np.int64)
     T_o_c1 = pose(None, od[:, 1:4], od[:, 4:8])
     Pc = od[:, 1:4]
-    slam_path, slam_t, lc, *_ = read_slam(find_bag(a.cuvslam_bag))
+    slam_bag = a.slam_bag or a.cuvslam_bag
+    sdb = next(slam_bag.glob("*.db3"))
+    slam_path, slam_t, lc, *_ = read_slam(find_bag(slam_bag))
+    A_vo_slam = np.eye(4)            # SLAM bag frame -> VO bag frame
+    if slam_bag != a.cuvslam_bag:
+        od2 = read_odom(str(sdb))
+        _, i1, i2 = np.intersect1d(tc, od2[:, 0].astype(np.int64), return_indices=True)
+        A_vo_slam = T_o_c1[i1[0]] @ np.linalg.inv(pose(None, od2[i2[:1], 1:4], od2[i2[:1], 4:8])[0])
+    slam_path = apply(A_vo_slam, slam_path) if len(slam_path) else slam_path
+    lc = apply(A_vo_slam, lc) if len(lc) else lc
 
     t0 = ts[0]
     common, ic, is_ = np.intersect1d(tc, ts, return_indices=True)
@@ -126,6 +141,9 @@ def main():
         f"|a| = 10.33-10.35 m/s^2, and only the along-gravity part of that was removed.",
         "",
         "Colours: **orange** slam-rs VIO, **blue** cuVSLAM VO, **green** cuVSLAM SLAM (optimised path).",
+        "",
+        f"cuVSLAM VO from `{a.cuvslam_bag.name}`, SLAM from `{slam_bag.name}` "
+        f"({len(slam_path)} optimised poses, {len(lc)} loop-closure sites).",
     ]
     print("\n".join(lines))
 
@@ -170,7 +188,7 @@ def main():
 
     # time-varying: heads and plots
     Pc_anch = apply(A_anchor, Pc)
-    slam_od = read_odom(str(db), "/cuvslam/slam_odometry") if len(slam_path) else None
+    slam_od = read_odom(str(sdb), "/cuvslam/slam_odometry") if len(slam_path) else None
     for i in range(len(ts)):
         rr.set_time("time", duration=ts_s[i])
         for view in ("anchored", "sim3"):
@@ -188,7 +206,7 @@ def main():
         if i and v[i - 1] < JUMP_MPS:
             rr.log("plots/speed/cuvslam_vo", rr.Scalars(v[i - 1]))
     if slam_od is not None and len(slam_od):
-        Pl = apply(A_anchor, slam_od[:, 1:4])
+        Pl = apply(A_anchor @ A_vo_slam, slam_od[:, 1:4])
         tl = (slam_od[:, 0].astype(np.int64) - t0) * 1e-9
         for i in range(len(tl)):
             rr.set_time("time", duration=tl[i])
