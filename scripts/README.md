@@ -162,6 +162,22 @@ saturation warning in mind — where the cameras are blown the landmarks are jun
 plane wanders (h 2.1–2.9 m across the t = 45–47 s window, against the 1.36 m measured
 elsewhere).
 
+## slamrs/ — slam-rs (Rust Basalt sqrt VIO) on raw logs
+
+[slam-rs](https://github.com/rerun-io/examples-monorepo/tree/main/packages/slam-rs) runs any
+number of cameras **with** the IMU and needs no camera overlap, which cuVSLAM's multicam mode
+cannot. These feed it a `log_rig.sh` directory directly through its PyO3 API — no RRD, no catalog.
+Build the core once in a checkout (`cargo build --release -p slam-rs-py`, then copy
+`target/release/lib_core.so` to `slam_rs/_core.so`) and point `SLAM_RS_DIR` at it.
+
+| script | runs on | purpose |
+|---|---|---|
+| [slamrs/make_calib.py](slamrs/make_calib.py) | dev | write [config/slamrs/bev_calib_s2.json](../config/slamrs/bev_calib_s2.json): KB4 fitted to the Mei intrinsics (slam-rs has no omni model; its KB4 uses `atan2` so it holds our >180° lenses), rig extrinsics, and the round-2 Kalibr `T_cam_imu` — whose only tracked copy is that JSON |
+| [slamrs/fit_kb4.py](slamrs/fit_kb4.py) | dev | the KB4 fit on its own: residual per camera out to 100° incidence |
+| [slamrs/run_slamrs.py](slamrs/run_slamrs.py) | dev | replay a raw log through `slam_rs.Vio` at half resolution; IMU stamps shifted by Δ from `imu_mpu9250.yaml`; writes one pose row per set. `--dry-run` checks everything but slam-rs |
+| [slamrs/compare.py](slamrs/compare.py) | dev | score it against cuVSLAM's `obs_*` bag: continuity, path length, and a Sim(3) fit whose **scale** is an independent check on cuVSLAM's (IMU vs camera baselines) |
+| [slamrs/handeye.py](slamrs/handeye.py) | dev | cam1↔IMU rotation and time offset from the gyro vs cuVSLAM's rotation — a cross-check on Kalibr (rotation agrees to <1°; the offset is too coarse to use) |
+
 ## bev/ — bird's-eye ground stitch
 
 | script | runs on | purpose |
