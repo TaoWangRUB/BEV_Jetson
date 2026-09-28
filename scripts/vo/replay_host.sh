@@ -32,17 +32,26 @@ if [[ "${SLAM:-0}" == "1" ]]; then _default_rate=0.4; else _default_rate=1.0; fi
 RATE="${2:-${RATE:-$_default_rate}}"
 _pfx=odom; [[ "$OBS" == "1" ]] && _pfx=obs
 OUT="${OUT:-${REPO_ROOT}/datasets/replay_out/${_pfx}_$(date +%Y%m%d_%H%M%S)}"
-COMPOSE=(docker compose -f docker-compose.host.yml)
+# Same replay on the TX2: its compose file, its install tree and its CUDA-10.2 cuVSLAM build.
+# Only short clips fit there (raw_log_to_bag.py --motion --max-frames N): a full ~7 GB bag has
+# been OOM-killed on the board.
+if [[ "$(uname -m)" == "aarch64" ]]; then
+  COMPOSE=(docker compose -f docker-compose.yml)
+  INSTALL=install; CUVSLAM_BUILD=build_tx2gpu; _lib_svc=build-cuvslam; _ws_svc=build-ws
+else
+  COMPOSE=(docker compose -f docker-compose.host.yml)
+  INSTALL=install_host; CUVSLAM_BUILD=build_host; _lib_svc=build-cuvslam-host; _ws_svc=build-ws-host
+fi
 
 [[ -d "$BAG" || -f "$BAG" ]] || { echo "REFUSING: bag not found: $BAG" >&2; exit 1; }
-[[ -f third_party/cuVSLAM/build_host/bin/libcuvslam.so ]] || {
-  echo "REFUSING: host libcuvslam.so missing. Run:" >&2
-  echo "  ${COMPOSE[*]} run --rm build-cuvslam-host" >&2
+[[ -f third_party/cuVSLAM/${CUVSLAM_BUILD}/bin/libcuvslam.so ]] || {
+  echo "REFUSING: libcuvslam.so missing from ${CUVSLAM_BUILD}. Run:" >&2
+  echo "  ${COMPOSE[*]} run --rm ${_lib_svc}" >&2
   exit 1
 }
-[[ -x install_host/bev_cuvslam/lib/bev_cuvslam/cuvslam_multicam_node ]] || {
-  echo "REFUSING: host VO node missing. Run:" >&2
-  echo "  ${COMPOSE[*]} run --rm build-ws-host" >&2
+[[ -x ${INSTALL}/bev_cuvslam/lib/bev_cuvslam/cuvslam_multicam_node ]] || {
+  echo "REFUSING: VO node missing from ${INSTALL}. Run:" >&2
+  echo "  ${COMPOSE[*]} run --rm ${_ws_svc}" >&2
   exit 1
 }
 
@@ -131,9 +140,9 @@ fi
 "${COMPOSE[@]}" run --rm shell bash -lc "
 set -eo pipefail
 source /opt/ros/foxy/setup.bash
-source /workspace/install_host/setup.bash
+source /workspace/${INSTALL}/setup.bash
 set -u
-export LD_LIBRARY_PATH=/workspace/third_party/cuVSLAM/build_host/bin:\${LD_LIBRARY_PATH:-}
+export LD_LIBRARY_PATH=/workspace/third_party/cuVSLAM/${CUVSLAM_BUILD}/bin:\${LD_LIBRARY_PATH:-}
 rm -rf '${OUT_IN}'
 ros2 launch bev_cuvslam bev_cuvslam.launch.py ${LAUNCH_ARGS} > /tmp/vo_host.log 2>&1 &
 VO=\$!
