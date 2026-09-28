@@ -171,6 +171,20 @@ cannot. These feed it a `log_rig.sh` directory directly through its PyO3 API —
 Build the core once in a checkout (`cargo build --release -p slam-rs-py`, then copy
 `target/release/lib_core.so` to `slam_rs/_core.so`) and point `SLAM_RS_DIR` at it.
 
+**On the TX2** (`build_slamrs.sh` with `PYTHON=` a conda-forge 3.12 env; 11 min build) slam-rs
+gives the host's result - same sets tracked, positions within 1-14 mm median - at ~5x the cost.
+Measured 2026-09-28, MAXN, alongside cuVSLAM replaying 20 s clips of the same logs at 20 fps
+(`replay_host.sh` runs on the board too; patch 0003 applied):
+
+| per camera set, median | host | TX2 | TX2 at 20 fps |
+|---|---|---|---|
+| slam-rs VIO, 1 thread (full logs) | 35-45 ms | 184-223 ms | no: offline only, ~5 Hz |
+| slam-rs VIO, 4-6 threads (run6, 500 sets) | - | 148-151 ms | no: ~6.7 Hz, the estimator is one thread |
+| cuVSLAM VO precision, `Track()` | 6-8 ms | 54-73 ms (callback 82-100) | no: 46-58 % of sets kept |
+| cuVSLAM VO performance, `Track()` | 3-4 ms | 24-44 ms (callback 51-69) | borderline: 72-91 % kept |
+
+The modular node's remap is ~26 ms of each TX2 callback; the fused node does it on the GPU.
+
 **Compare against the right cuVSLAM replay.** Any replay made before `75dac4a` (2026-09-08) is
 missing camera 0's stereo partner, and its teleports are that bug, not the tracker: run6 goes
 from 2 jumps to 0 with the fix, run5 from one 51.8 m/s jump to 0. Take VO from a VO-only replay
