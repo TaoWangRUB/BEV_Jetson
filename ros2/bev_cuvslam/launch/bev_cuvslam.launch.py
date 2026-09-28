@@ -59,9 +59,13 @@ def generate_launch_description():
         DeclareLaunchArgument('slam_map_cell_size', default_value='0.0'),
         # Which virtual cameras SLAM is handed. NOT MulticameraMode - that is an odometry
         # config; this is Slam's own primary_cameras argument and gates the descriptor sets
-        # the backend matches per keyframe. '[]' = all 8. '[0,2,4,6]' = one per physical
-        # camera, still spanning the ring. See 1.7p.
-        DeclareLaunchArgument('slam_primary_cameras', default_value='[]'),
+        # the backend matches per keyframe. '[-1]' = all 8. '[0,2,4,6]' = one per physical
+        # camera, still spanning the ring. See 1.7p. '[-1]' = all 8: an empty list '[]' cannot
+        # be typed by Foxy's params-file parser and kills the node at startup.
+        DeclareLaunchArgument('slam_primary_cameras', default_value='[-1]'),
+        # ODOMETRY primaries: precision = all 8 virtual cameras get a mono tracker; performance /
+        # moderate = one per stereo pair (identical on this rig). Changes VO, unlike the above.
+        DeclareLaunchArgument('multicam_mode', default_value='precision'),
         DeclareLaunchArgument('cuvslam_verbosity', default_value='0'),
         DeclareLaunchArgument('image_qos', default_value='sensor_data'),
         DeclareLaunchArgument('image_qos_depth', default_value='10'),
@@ -113,6 +117,7 @@ def generate_launch_description():
                     LaunchConfiguration('slam_map_cell_size'), value_type=float),
                 'slam_primary_cameras': ParameterValue(
                     LaunchConfiguration('slam_primary_cameras'), value_type=List[int]),
+                'multicam_mode': LaunchConfiguration('multicam_mode'),
             }],
         ),
     ])

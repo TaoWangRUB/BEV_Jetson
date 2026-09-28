@@ -106,7 +106,7 @@ if [[ "${SLAM:-0}" == "1" ]]; then
   LAUNCH_ARGS="${LAUNCH_ARGS} slam_max_landmarks_distance:=${SLAM_LM_DIST:-0.0}"
   LAUNCH_ARGS="${LAUNCH_ARGS} slam_map_cell_size:=${SLAM_CELL:-0.0}"
   # SLAM_PRIMARIES='[0,2,4,6]' hands SLAM one pinhole per physical camera instead of all 8.
-  LAUNCH_ARGS="${LAUNCH_ARGS} slam_primary_cameras:=${SLAM_PRIMARIES:-[]}"
+  LAUNCH_ARGS="${LAUNCH_ARGS} slam_primary_cameras:=${SLAM_PRIMARIES:-[-1]}"
   # The promoted SLAM map. NOT /cuvslam/landmarks, which is the odometry track dump and only
   # ever grows. A map that stays near-empty while the pose graph fills is issue #136.
   if [[ "${MAP_CLOUD:-0}" == "1" ]]; then
@@ -115,7 +115,15 @@ if [[ "${SLAM:-0}" == "1" ]]; then
   fi
 fi
 
-echo "replay BAG=$BAG_IN RATE=$RATE OUT=$OUT_IN OBS=$OBS QOS=$QOS/$QOS_DEPTH SLAM=${SLAM:-0}"
+# MULTICAM_MODE=performance tracks one virtual camera per stereo pair instead of all 8
+# (odometry, not SLAM - compare SLAM_PRIMARIES). precision is the default and the reference.
+LAUNCH_ARGS="${LAUNCH_ARGS} multicam_mode:=${MULTICAM_MODE:-precision}"
+# TIMING=1 writes the per-set timing CSV on a VO-only run too (it is always on with SLAM=1).
+if [[ "${TIMING:-0}" == "1" && "${SLAM:-0}" != "1" ]]; then
+  LAUNCH_ARGS="${LAUNCH_ARGS} timing_csv:=${OUT_IN}_timing.csv"
+fi
+
+echo "replay BAG=$BAG_IN RATE=$RATE OUT=$OUT_IN OBS=$OBS QOS=$QOS/$QOS_DEPTH SLAM=${SLAM:-0} MODE=${MULTICAM_MODE:-precision}"
 if [[ "${SLAM:-0}" == "1" ]] && awk "BEGIN{exit !($RATE > 0.6)}"; then
   echo "WARNING: SLAM at ${RATE}x will overrun the per-set budget and DROP frames, which"
   echo "  makes the odometry itself worse - not just the SLAM layer. Use 0.4 or slower."

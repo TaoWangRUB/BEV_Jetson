@@ -598,6 +598,50 @@ It reduces cost without fixing the scaling — `N^0.72` is still `N^0.72`, the c
 smaller. A long enough run will still cross the budget. Full workings in
 [openspec/changes/add-replay-visual-diagnostics/tasks.md](openspec/changes/add-replay-visual-diagnostics/tasks.md) §1.7l–1.7p.
 
+### The odometry side: `multicam_mode`
+
+The frontend has its own knob, and it is the one for the TX2. `MulticameraMode::Precision`
+makes all 8 virtual cameras primary — each gets its own mono tracker — and `Track()` on the
+TX2 measured **87.6 ms** against 50 ms per set at 20 fps. `performance` (or `moderate`, which
+is identical on four disjoint pairs) keeps one primary per stereo pair, `{0,1,2,5}` per
+`scripts/vo/verify_fig_primaries.sh`: every direction is still tracked, the partner lends
+stereo depth.
+
+Host, VO only, 1.0x, nothing else on the GPU, each config run twice:
+
+| | `Track()` mean | p95 | jumps | vs Precision (RMS) |
+|---|---|---|---|---|
+| run6 precision | 15.9 / 16.6 ms | 22.8 / 25.6 ms | 0 / 0 | noise floor 0.41 m |
+| run6 performance | **9.2 / 8.9 ms** | 15.3 / 14.5 ms | 0 / 0 | 0.50 / 0.43 m |
+| run5 precision | 21.4 / 20.5 ms | 27.6 / 26.3 ms | 0 / 0 | noise floor 0.06 m |
+| run5 performance | **12.4 / 12.2 ms** | 16.2 / 15.8 ms | 0 / 0 | 0.17 / 0.27 m |
+
+About **43 % off `Track()`**, trajectory within replay noise, scale unchanged. Scaled naively
+that puts the TX2 near 50 ms — at the budget, not under it; measure there before relying on it.
+Host timings move ~2x with GPU clock state (a Rerun viewer on the same laptop GPU made them
+*faster*), so compare only runs made back to back.
+
+**With SLAM, match the SLAM cameras to the odometry primaries.** In performance mode cameras
+4 and 6 are no longer tracked, so `SLAM_PRIMARIES='[0,2,4,6]'` hands the backend two cameras
+with no features: run5 fell from 21 closures to 3. `[0,1,2,5]` restores them (14 on both runs)
+and neither run jumped. SLAM still overruns the 0.4x budget at keyframes in every config
+(callback p95 340–500 ms):
+
+| SLAM=1, 0.4x | run6 sets / closures / jumps | run5 sets / closures / jumps |
+|---|---|---|
+| precision, `[0,2,4,6]` | 1367 / 12 / 0 | 1410 / 21 / **1** |
+| performance, `[0,2,4,6]` | 1411 / 13 / 0 | 1454 / **3** / 0 |
+| performance, `[0,1,2,5]` | 1334 / 14 / 0 | 1275 / 14 / 0 |
+
+```bash
+MULTICAM_MODE=performance TIMING=1 ./scripts/vo/replay_host.sh <bag> 1.0            # VO only
+MULTICAM_MODE=performance SLAM=1 SLAM_PRIMARIES='[0,1,2,5]' ./scripts/vo/replay_host.sh <bag> 0.4
+python3 scripts/vo/compare_modes.py <ref replay dir> <other replay dir> ...           # cost + shape A/B
+```
+
+`multicam_mode` is a parameter of both nodes (`fused_vo_params.yaml` for the TX2); the default
+stays `precision`, which every earlier figure in this README was measured with.
+
 ## 7. Docs
 
 | doc | covers |

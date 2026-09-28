@@ -83,6 +83,7 @@ cuvslam::Pose load_pose(const YAML::Node& n) {
   return p;
 }
 
+
 }  // namespace
 
 class CuvslamMulticamNode : public rclcpp::Node {
@@ -324,7 +325,9 @@ class CuvslamMulticamNode : public rclcpp::Node {
 
     cuvslam::Odometry::Config cfg = cuvslam::Odometry::GetDefaultConfig();
     cfg.odometry_mode = cuvslam::Odometry::OdometryMode::Multicamera;
-    cfg.multicam_mode = cuvslam::Odometry::MulticameraMode::Precision;
+    multicam_mode_ = declare_parameter<std::string>("multicam_mode", "precision");
+    cfg.multicam_mode = bev_cuvslam::ParseMulticamMode(multicam_mode_);
+    RCLCPP_INFO(get_logger(), "odometry multicam_mode: %s", multicam_mode_.c_str());
     cfg.use_gpu = true;
     // REPRODUCIBILITY, and why this flag is NOT the fix.
     //
@@ -409,17 +412,19 @@ class CuvslamMulticamNode : public rclcpp::Node {
       // and the library's own comment there is "// TODO: custom primary cameras".
       //
       // So narrowing this reduces the descriptor sets the backend extracts and matches per
-      // keyframe WITHOUT touching odometry — `cfg.multicam_mode` stays Precision above, so
+      // keyframe WITHOUT touching odometry — `cfg.multicam_mode` is set independently above, so
       // the VO figures in section 5 remain comparable. All 8 is the default and what every
       // measurement to date used; 8 descriptor sets per keyframe is also the leading suspect
       // for the backend cost in 1.7o.
       //
-      // Empty = all of them. The pinholes are carved in pairs, so [0,2,4,6] is one per
-      // PHYSICAL camera and still spans the ring at 90 deg.
+      // Empty or [-1] = all of them. The pinholes are carved in pairs, so [0,2,4,6] is one per
+      // PHYSICAL camera and still spans the ring at 90 deg. The launch file's default is [-1],
+      // not []: Foxy cannot type an empty YAML list, and a params file carrying one kills the
+      // node at startup with "No parameter value set" - every run, SLAM or not.
       const auto prim_param = declare_parameter<std::vector<int64_t>>(
           "slam_primary_cameras", std::vector<int64_t>{});
       std::vector<uint8_t> primary;
-      if (prim_param.empty()) {
+      if (prim_param.empty() || (prim_param.size() == 1 && prim_param[0] == -1)) {
         primary.resize(vpin_.size());
         for (size_t i = 0; i < vpin_.size(); ++i) primary[i] = static_cast<uint8_t>(i);
       } else {
@@ -429,7 +434,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
                                      std::to_string(vpin_.size()) + " virtual cameras");
           primary.push_back(static_cast<uint8_t>(v));
         }
-        RCLCPP_WARN(get_logger(), "SLAM sees %zu of %zu virtual cameras — loop closure can "
+        RCLCPP_WARN(get_logger(), "SLAM primaries: SLAM sees %zu of %zu virtual cameras — loop closure can "
                     "only match views from these; odometry still uses all of them",
                     primary.size(), vpin_.size());
       }
@@ -1327,7 +1332,7 @@ class CuvslamMulticamNode : public rclcpp::Node {
     return m;
   }
 
-  std::string calib_dir_, rig_path_, odom_frame_, base_frame_;
+  std::string calib_dir_, rig_path_, odom_frame_, base_frame_, multicam_mode_;
   std::vector<std::string> cams_, topics_;
   std::unique_ptr<cuvslam::Odometry> tracker_;
   std::array<rclcpp::Subscription<Img>::SharedPtr, 4> subs_;

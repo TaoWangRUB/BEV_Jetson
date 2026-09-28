@@ -224,7 +224,11 @@ class FusedNode : public rclcpp::Node {
 
     cuvslam::Odometry::Config cfg = cuvslam::Odometry::GetDefaultConfig();
     cfg.odometry_mode = cuvslam::Odometry::OdometryMode::Multicamera;
-    cfg.multicam_mode = cuvslam::Odometry::MulticameraMode::Precision;
+    // precision = all 8 virtual cameras tracked (87.6 ms Track() on the TX2); performance =
+    // one per stereo pair. See ParseMulticamMode in rig_build.hpp.
+    const std::string mode = declare_parameter<std::string>("multicam_mode", "precision");
+    cfg.multicam_mode = bev_cuvslam::ParseMulticamMode(mode);
+    RCLCPP_INFO(get_logger(), "odometry multicam_mode: %s", mode.c_str());
     cfg.use_gpu = true;
     tracker_ = std::make_unique<cuvslam::Odometry>(rig, cfg);
   }
