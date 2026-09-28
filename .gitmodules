@@ -12,3 +12,12 @@
 [submodule "third_party/okvis2"]
 	path = third_party/okvis2
 	url = https://github.com/smartroboticslab/okvis2.git
+[submodule "third_party/rerun-examples"]
+	path = third_party/rerun-examples
+	url = https://github.com/rerun-io/examples-monorepo.git
+	# Only packages/slam-rs is used (scripts/slamrs/). A submodule, not a copy: upstream
+	# carries no licence, and this repo is public. The monorepo is ~400 MB, so check out
+	# just the package: git -C third_party/rerun-examples sparse-checkout set packages/slam-rs
+	# (git >= 2.25). The build writes target/ and slam_rs/_core.so inside it, hence dirty.
+	shallow = true
+	ignore = dirty

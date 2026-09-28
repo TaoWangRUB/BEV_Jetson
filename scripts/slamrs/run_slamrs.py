@@ -16,8 +16,8 @@ import numpy as np
 import os
 
 REPO = Path(__file__).resolve().parents[2]
-# checkout of rerun-io/examples-monorepo packages/slam-rs, with slam_rs/_core.so built (see README)
-SLAMRS = Path(os.environ.get("SLAM_RS_DIR", REPO / "third_party/slam-rs"))
+# the third_party/rerun-examples submodule, with slam_rs/_core.so built by build_slamrs.sh
+SLAMRS = Path(os.environ.get("SLAM_RS_DIR", REPO / "third_party/rerun-examples/packages/slam-rs"))
 SCALE = 2
 IMU_LAG_NS = 3_731_525  # config/calib/imu_mpu9250.yaml timeshift_cam_imu (t_imu = t_cam + shift), DLPF 184 Hz
 SET_TOL_NS = 1_000_000
