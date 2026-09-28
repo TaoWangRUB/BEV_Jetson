@@ -61,6 +61,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--max-sets", type=int, default=0)
     ap.add_argument("--profile", default="fast")
+    ap.add_argument("--threads", type=int, default=1,
+                    help="CPU frontend worker threads (the estimator is always one thread)")
     ap.add_argument("--calib", type=Path, default=REPO / "config/slamrs/bev_calib_s2.json")
     ap.add_argument("--config", type=Path, default=REPO / "config/slamrs/bev_vio_config.json")
     a = ap.parse_args()
@@ -90,7 +92,7 @@ def main():
 
     calib = _core.Calibration.from_json(a.calib.read_text())
     cfg = _core.VioConfig.from_json(a.config.read_text())
-    vio = _core.Vio(calib, cfg)
+    vio = _core.Vio(calib, cfg, threads=a.threads)
     ii = 0
     rows, t0 = [], time.perf_counter()
     for n, (t, offs) in enumerate(sets):
