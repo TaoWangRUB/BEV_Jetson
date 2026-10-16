@@ -34,7 +34,7 @@ and camera 0 remains guaranteed-primary either way.
 
 --- a/libs/cuvslam/cuvslam2.cpp
 +++ b/libs/cuvslam/cuvslam2.cpp
-@@
+@@ -511,3 +511,4 @@ Odometry::Odometry(const Rig& rig, const Config& cfg) {
    } else {
      depth_ids.push_back(static_cast<CameraId>(0));
 +    enable_depth_stereo_tracking_fig = true;

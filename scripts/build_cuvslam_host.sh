@@ -43,8 +43,14 @@ if ! command -v g++-11 >/dev/null; then
   exit 1
 fi
 
-# Ampere laptop (RTX A2000) = sm_86. Override with CMAKE_CUDA_ARCHITECTURES=...
-ARCHS="${CMAKE_CUDA_ARCHITECTURES:-86}"
+# ASK THE GPU, do not assume. This defaulted to 86 (Ampere, RTX A2000) and the machine it
+# now runs on is an RTX 2000 Ada = sm_89. A wrong arch does not fail loudly: CUDA falls back
+# to JIT-ing the embedded PTX, so the build succeeds, the run works, and the only symptom is
+# that it is slower than it should be -- which is exactly the thing we are trying to measure
+# for issue #77. nvidia-smi reports "8.9"; strip the dot. Falls back to 86 if unavailable.
+_detected="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
+             | head -1 | tr -d '. ' || true)"
+ARCHS="${CMAKE_CUDA_ARCHITECTURES:-${_detected:-86}}"
 # Multicamera (visual) VO does not need cuNLS; keep the first host bring-up lean.
 USE_CUNLS="${USE_CUNLS:-OFF}"
 HOST_CC="${HOST_CC:-gcc-11}"

@@ -146,6 +146,375 @@
         is absent — the worst step is 1.49 m at t = 46.74 s, in the same saturation window — but
         the set sequence differs (13 Hz vs 20 Hz), so it is not a controlled comparison. Whether
         that is SLAM, the forced export, or simply a different frame sequence is untested.
+  - [~] 1.7l **This rig meets the condition in cuVSLAM issue #136, and we have never been
+        able to see it.** Read from source at `69e2f29`, not inferred:
+
+        A SLAM landmark is born in a staging area and only counts for loop closure once
+        promoted into the map. The promotion test is `lsi_grid.cpp:405-407`:
+
+        ```cpp
+        activate &= !IsLandmarkInAnyFrustum(rig_, cam_ids, cams_from_world, xyz);
+        activate &= !GetLandmarkRelation(id, pose_graph_head);
+        ```
+
+        *Any* frustum is the union over every camera in the rig, and `IsLandmarkInFrustum`
+        has its normalised-coordinate bounds commented out (`lsi_grid.cpp:48-53`), so there
+        is no far plane — distance alone never puts a landmark outside. A stereo pair drops
+        a landmark from the union as soon as the rig turns. **Our eight virtual pinholes
+        close a 360 deg ring, so the only way out is vertically, past the top or bottom of
+        the carve.** That is #136's "full-coverage rig" case exactly.
+
+        Two other drains exist, and both are worse than the one they replace:
+        - tracking loss promotes the WHOLE staging area at once (`lsi_grid.cpp:409-412`) —
+          a mass promotion at the moment the poses backing it are worthless;
+        - a 60 s staging lifetime (`max_staged_landmark_lifetime_ns_ = 60e9`,
+          `lsi_grid.h:177`) force-promotes stale entries.
+
+        **The 60 s drain has never fired in any run we have.** Both SLAM replays are
+        **57.69 s of DATA time** — the clock cuVSLAM keys on is the image stamp, not the
+        0.4x replay's 143 s wall clock. We are 2.3 s under the only reliable drain, by luck,
+        and the run that first exceeds 60 s will behave differently from every run recorded
+        so far.
+
+        **What the existing bags do and do not show** (`scripts/vo/slam_cost_and_map.py`,
+        figure at `datasets/replay_out/slam_cost_and_map.png`):
+
+        | | obs_slam_v6 | obs_slam_v9 | vo_clean_04 (no SLAM) |
+        |---|---|---|---|
+        | data time | 57.69 s | 57.69 s | 57.69 s |
+        | loop closures | 9 | 12 | — |
+        | last closure | data t=39.2 s | data t=39.6 s | — |
+        | silence after | 18.5 s | 18.1 s | — |
+
+        Closures DO fire, so promotion is happening by some route — most likely the vertical
+        escape, since our ring is closed horizontally but not vertically. Then they stop at
+        t≈39.6 s in both runs and never resume.
+
+        **A claim made and withdrawn in the same session:** `/cuvslam/landmarks` grows
+        monotonically to ~54 k with zero thinning events, which looks exactly like #136's
+        "accumulate indefinitely". It is not evidence. `GetFinalLandmarks` returns
+        `impl->final_landmarks` (`cuvslam2.cpp:807-813, 892`), a map that is only ever
+        inserted into and never erased — an odometry track dump whose unbounded growth is by
+        design and which says nothing about the SLAM map's staging.
+
+        **MEASURED 2026-09-10, and the answer is NO — #136 does not bite on this rig.**
+        Host build stood up on the WSL box (see 1.7n) and the FULL 88.86 s bag replayed at
+        0.4x, essentially lossless: 1774 sets received, 1772 poses, 1 dropped, 1 skew-rejected.
+        This is the first run that ever crossed the 60 s staging lifetime.
+
+        | | 0.4x | 1.0x |
+        |---|---|---|
+        | sets of 1774 | 1773 (99.9%) | 1721 (97.0%) |
+        | data time | 88.6 s | 88.6 s |
+        | promoted map landmarks | **62,865** | 58,921 |
+        | loop closures | 21 | 11 |
+        | pose-graph optimisations | 394 | 381 |
+
+        The map is populated and grows **smoothly from the first seconds** — it is not stuck
+        near zero, the `SLAM MAP IS EMPTY` guard never fired, and there were **zero
+        single-frame jumps > 500 landmarks**, so no mass staging flush ever happened. Crossing
+        60 s produces no step at all (58,881 -> 59,002 -> 59,145 across t=59/60/61 s), which
+        means the lifetime drain is not what is doing the work: promotion is happening
+        continuously by the ordinary route.
+
+        **So the earlier reasoning here was right about the condition and wrong about the
+        consequence.** The frustum union really is closed horizontally, but the ±45° carves
+        leave the ring open vertically, and that is evidently enough to drain staging
+        continuously. Meeting #136's stated condition is not sufficient to reproduce it.
+
+        Kept as `[~]` only because one thing remains unchecked: whether a rig with a *wider*
+        vertical carve, or a genuinely enclosed scene, would close that escape route.
+
+  - [ ] 1.7m **Issue #77 (per-set cost growing with trajectory length) is untestable on the
+        bags we have, and the reason is worth writing down.** #77 plots `track()` climbing
+        ~10 ms -> 50 ms+ against frame index on a 12-camera rig. Neither of our two timing
+        sources can show that:
+        - the node's periodic report prints a 5 s windowed MAXIMUM, which hides a trend;
+        - the interval between recorded messages is floored by the replay rate — 0.4x of a
+          20 Hz log is 125 ms/set, and both SLAM runs sit flat at a 124.6 ms median across
+          all four quarters of the run. A 10->50 ms growth is entirely under that floor.
+
+        **A rank correlation on the overruns is not a substitute.** Spearman rho of
+        (interval excess over the floor) against set index gives +0.284 / +0.273 on the two
+        SLAM runs — and **+0.255 on `vo_clean_04`, which has SLAM off**. The control matches
+        the treatment, so that statistic is measuring noise structure, not cost growth. Do
+        not report it.
+
+        What the bags DO show is a localised burst, not a trend: sets overrunning the floor
+        by >25% run at 0.9-2.6% for deciles 1-5, spike to **14.8 / 39.1 / 17.4%** in deciles
+        6-8, and fall back to 0-1.7% in deciles 9-10. Reproduced in both SLAM runs at the
+        same deciles, and **absent from the no-SLAM control** (flat ~1% throughout). The
+        burst overlaps the loop-closure window but outlasts it — closures end at set ~802,
+        the burst runs to ~922 — so it is not simply "loop closures are expensive" and is
+        not yet attributed.
+
+        **WE DO REPRODUCE #77. The first answer here said we did not, and it was measuring
+        the wrong component — caught by the operator, 2026-09-10.**
+
+        `track_us` times `tracker_->Track()`, which is `cuvslam::Odometry`: the FRONTEND —
+        PnP every frame, plus triangulation and SBA on keyframes. #77's degradation is
+        loop-closure matching and pose-graph optimisation, which are the SLAM BACKEND. With
+        `slam_sync_mode=false` (the library default, and what every run above used) those
+        run on cuVSLAM's OWN worker thread (`async_slam.cpp:142-201` pushes a keyframe and
+        returns), so **no timer in this node could see them**. A frontend-only plot returns
+        "no degradation" no matter how bad the backend gets.
+
+        Worse, the one column that might have caught it was broken: `slam_us` was a running
+        max over the 5 s report window, written per set as though it were a per-set value —
+        154 distinct values across 1773 rows, in repeating runs. Now `slam_track_us`, a true
+        per-set measurement, plus a `pgo_events` column.
+
+        **Re-measured with the backend INLINE** (`SLAM_SYNC=1` → `slam_sync_mode:=true`),
+        full bag at 0.2x, 1772 sets / 512 keyframes / 88.6 s, 404 PGOs, 23 loop closures.
+        Keyframes only, scene held healthy (`frame_landmarks > 300`):
+
+        | landmarks in map | n | **backend** `Slam::Track` | frontend `Odometry::Track` |
+        |---|---|---|---|
+        | 0–10k | 47 | 91.8 ms | 64.2 ms |
+        | 10–20k | 55 | 89.6 ms | 59.2 ms |
+        | 20–30k | 52 | 165.7 ms | 15.6 ms |
+        | 30–40k | 63 | 153.6 ms | 17.2 ms |
+        | 40–50k | 120 | 199.5 ms | 20.1 ms |
+        | 50–60k | 106 | **255.4 ms** | 19.8 ms |
+
+        **Backend grows ~2.8x while the frontend stays flat.** By thirds: 107.8 → 164.7 →
+        264.7 ms. Non-keyframe backend cost is **0.1 ms**, confirming the backend does work
+        only on keyframes — the frontend runs at frame rate, the backend at keyframe rate.
+
+        This is with `slam_max_map_size:=0` (unlimited pose graph), which is the replay
+        default and the configuration most exposed to the growth. The 300-pose cap is the
+        header's real-time answer and would bound it.
+
+        **It also explains the async results.** At 1.0x async, loop closures halved (21 → 11)
+        and the map came out smaller — the backend thread falling behind, which is the same
+        cost showing up as lost work instead of lost time. New in the inline run: the map
+        **prunes** at t≈83 s (65k → 33k), a thinning that never appeared in the async runs.
+
+        Figure: `datasets/replay_out/slam_backend_sync_rate0.2.png`.
+
+        **Retained below, as the record of what the frontend does** — it is a real result,
+        it just does not answer #77:
+
+        The raw decile table looks exactly like #77 and is a trap. Keyframe `Track()` goes
+        **16.8 ms in the first third to 73.4 ms in the last** — a 4.4x rise — while
+        non-keyframe stays flat (26.3 -> 28.8 ms). That is #77's signature.
+
+        It does not survive attribution. Two things move together over a run: map size, and
+        scene quality. `frame_landmarks` collapses from ~480 to ~100 at t≈50 s (the documented
+        exposure/texture window), and keyframe fraction collapses with it (85% -> 5%), so the
+        late deciles are a handful of distressed frames. **Hold the scene healthy
+        (`frame_landmarks > 300`) and bin on map size instead:**
+
+        | promoted map | n | median keyframe `Track()` |
+        |---|---|---|
+        | 0–10k | 47 | 15.9 ms |
+        | 10–25k | 73 | 16.9 ms |
+        | 25–40k | 90 | 16.9 ms |
+        | 40–55k | 221 | 23.4 ms |
+        | 55–70k | 9 | **15.8 ms** |
+
+        Flat across a **10x** growth in the map. The 1.0x run agrees independently (30.5 /
+        19.9 / 26.2 / 29.2 ms over 6k -> 45k). So the FRONTEND genuinely does not degrade
+        with map size — that part of the analysis survives. What it cannot do is answer #77,
+        which lives in the backend.
+
+        Note this also retires the rank-correlation result above: it was noise.
+
+  - [~] 1.7o **Which SLAM parameter actually bounds the backend cost. Answer: not the one
+        named `max_map_size`, and mostly none of them.**
+
+        **First, the budget, because "it grows" is not a fault on its own.** The backend runs
+        once per KEYFRAME, so its budget is the keyframe period, not the frame period. This
+        log gives 512 keyframes over 88.6 s = **5.78 keyframes/s**, so at 20 fps the wall
+        budget is **173 ms per keyframe** (at 0.4x it is 433 ms, at 0.2x 865 ms).
+
+        | | backend | vs 173 ms (20 fps) |
+        |---|---|---|
+        | first third | 107.8 ms | 62% — ok |
+        | middle third | 164.7 ms | 95% — at the edge |
+        | last third | 264.7 ms | **153% — over** |
+
+        So nothing is wrong early; it crosses the budget partway through, and from then on a
+        keyframe costs more than the interval that produces one. That IS the loop-closure
+        halving at 1.0x (21 -> 11) — the same cost showing up as lost work rather than lost
+        time, not a second fault.
+
+        **Is the growth rate itself reasonable?** Measured `cost ~ N^0.72` over 14.6k -> 55k
+        landmarks. On the same data pure `O(N)` predicts 336 ms and `O(log N)` predicts
+        102 ms against a measured 255 ms — so it sits much closer to linear than to
+        logarithmic. A spatially-indexed loop-closure query (cuVSLAM has `LSIGrid` cells for
+        exactly this) should be near-flat in N, and PGO over a capped graph should also be
+        flat. `N^0.72` says something scales with the whole map rather than the
+        neighbourhood. That is the #77 complaint, and it is real.
+
+        **`slam_max_map_size` does NOT help. It caps POSES, not landmarks** ("Maximum number
+        of poses in SLAM pose graph", `cuvslam2.h`). Inline at 0.2x, keyframes, healthy scene:
+
+        | landmarks in map | uncapped | capped at 300 |
+        |---|---|---|
+        | 20–30k | 165.7 ms | 200.3 ms |
+        | 40–50k | 199.5 ms | 205.4 ms |
+        | 50–60k | 255.4 ms | **277.2 ms** |
+
+        Identical or slightly worse. Both runs reach the same ~65k map. The 300-cap is about
+        keeping `GetAllSlamPoses` bounded (1.7h), not about cost.
+
+        **`slam_max_landmarks_distance` — newly exposed, and it is not the fix either.** The
+        library default is 100 m, absurd for an indoor rig on a ~0.1 m virtual baseline where
+        far points are the worst-triangulated ones. At 15 m the inline backend does drop
+        (last third 182 ms vs 265 ms) — **but the map does not shrink** (65.4k vs 65.5k
+        high-water) and PGO events fall 404 -> 297. The cost reduction is close to
+        proportional to the PGO reduction, so it is buying speed by doing less optimisation,
+        not by doing the same work faster.
+
+        **RUN-TO-RUN VARIANCE, measured before reading anything into the above.** Two
+        identical 1.0x runs:
+
+        | config (all 20 fps) | sets of 1774 | map high-water | closures | PGO |
+        |---|---|---|---|---|
+        | baseline | 1721 | 59,457 | 11 | — |
+        | baseline **repeat** | 1667 | 54,856 | 9 | 422 |
+        | `max_landmarks_distance=15` | 1680 | 53,039 | 8 | 396 |
+        | `throttling_time_ms=1000` | **1773** | 65,248 | **4** | 482 |
+
+        The same config gives 11 and 9 closures, so ~±20% is noise — which puts the 15 m
+        bound's 8 **inside the noise band**. It is not an improvement; do not ship it.
+
+        **`slam_throttling_ms=1000` is the one that changes the real-time picture**, and it
+        is the value the header recommends. It is outside the noise band on two axes at once:
+        **1773 of 1774 sets** (against 1667–1721 — essentially lossless at 20 fps) and the
+        largest map of any run, 65.2k. Throttling the minimum interval between loop-closure
+        EVENTS keeps the backend inside the keyframe budget, so the frontend stops starving.
+        The price is 4 closure events instead of 9–11.
+
+        **"But #77 is closed and fixed" — checked, and we already have the fixes.** Our build
+        is `69e2f29`, post-17.0.0, and it contains every upstream commit that touches this:
+
+        | commit | what it does | in our build |
+        |---|---|---|
+        | `b075bd6` | `PoseGraph::Optimize`: BFS subgraph from head keyframe | yes |
+        | `095e8af` | speed up the PGO solver | yes |
+        | `354c135` | guard the LSI-grid frustum test with the near plane | yes |
+        | `175f91a` | guard frustum-graph projection with the near plane | yes |
+
+        Nothing between `69e2f29` and current `main` (`dcc86e3`) touches it either. They are
+        not sufficient because they fix the **pose-graph solve**, and the growth that remains
+        is on the **map-query side** — loop-closure candidate matching against a larger and
+        larger landmark map. The only thing upstream shipped for the async case is
+        `Slam::Config::delay_warning_queue_size` (CHANGELOG, Unreleased), which *warns* that
+        SLAM is behind. Diagnostics, not a fix, and silent below `cuvslam_verbosity 2`.
+
+        Note also `libs/common/thread_safe_queue.h`: `Push` is **unbounded and
+        non-blocking**. So an overloaded backend never back-pressures `Slam::Track()` — it
+        cannot show up as latency, only as a growing queue, staler poses and dropped
+        closures. That is why every async measurement looked healthy.
+
+        One thing NOT verified: whether #77's reporter saw the same component. Their harness
+        is `vslam.Tracker(...)`, and **`Tracker` does not exist in v17.0.0** — neither
+        `libs/cuvslam/tracker.cpp` nor a Python binding — so their exact configuration could
+        not be reconstructed from the tag they cite. Treat "same root cause" as unproven; what
+        is proven is that OUR backend scales as `N^0.72` with the current fixes in place.
+
+        **Where this leaves the rig.** There is no parameter that makes loop closure both
+        frequent and affordable at 20 fps on this log; the knobs trade one for the other. The
+        honest options are (a) `throttling_ms=1000` and accept few but timely closures, which
+        is what the header intends for real-time, or (b) run the SLAM layer slower than the
+        camera, which is what 0.4x does offline. Untested and worth trying next: fewer primary
+        cameras for SLAM (all 8 virtual pinholes are primary today, which is 8 descriptor sets
+        per keyframe to match) and `slam_map_cell_size`, now exposed but never swept.
+
+  - [x] 1.7p **Halving SLAM's primary cameras is the one knob that makes the backend cheaper
+        AND does more useful work.** Operator's question — "so, a different mode?" — worth
+        answering precisely, because three separate things get called "mode":
+
+        | knob | what it is | effect |
+        |---|---|---|
+        | `MulticameraMode` | ODOMETRY config (Performance/Precision/Moderate) | picks the tracker's primaries; changes VO |
+        | `Slam::Config::sync_mode` | backend inline vs worker thread | a MEASUREMENT setting; makes nothing faster |
+        | `Slam(rig, primary_cameras, cfg)` | separate ctor arg, no validation against the above | gates which images the backend gets |
+
+        It is the third. `cuvslam2.cpp:1045-1049` and `:1098` copy image contexts for these
+        ids only — the library's own comment there is `// TODO: custom primary cameras` — so
+        narrowing it cuts the descriptor sets matched per keyframe while `cfg.multicam_mode`
+        stays `Precision` and odometry is untouched. Exposed as `slam_primary_cameras`;
+        empty = all 8.
+
+        **WHY `[0,2,4,6]` COSTS NO COVERAGE, which is not obvious and was nearly got wrong
+        here.** The 8 pinholes are not 8 directions. `rig_build.hpp:82-93` builds them per
+        physical camera (`vcam0,1` = cam1 -45/+45, `vcam2,3` = cam2, ...), and
+        `virtual_stereo_imx296.yaml` then pairs them ACROSS cameras by minimum axis angle:
+
+        | direction | pair | axes apart |
+        |---|---|---|
+        | front | vcam2 + vcam1 | 2.4 deg |
+        | left | vcam0 + vcam5 | 1.6 deg |
+        | right | vcam6 + vcam3 | 1.2 deg |
+        | rear | vcam4 + vcam7 | 1.0 deg |
+
+        So there are four look directions, each covered by a nearly co-aligned pair.
+        `[0,2,4,6]` takes one from EVERY pair — left, front, rear, right — and is also one
+        per physical camera. Angular coverage is identical to the 8-camera case (4 x 70 deg,
+        with the same 20 deg gaps between directions); what is dropped is the stereo partner,
+        which at 1-2 deg of parallax adds almost no new viewpoint for descriptor matching.
+        That is the mechanism behind the ~30% saving at no measured cost — and it also means
+        a naive "take the first four" (`[0,1,2,3]` = cam1 and cam2 only) would be a very
+        different and much worse choice.
+
+        **Inline at 0.2x, keyframes, healthy scene:**
+
+        | landmarks in map | 8 primaries | 4 primaries |
+        |---|---|---|
+        | 20–30k | 165.7 ms | 129.4 ms |
+        | 40–50k | 199.5 ms | 100.4 ms |
+        | 50–60k | **255.4 ms** | **176.6 ms** |
+        | median, all keyframes | 167.5 ms | 128.9 ms |
+        | last third | 264.7 ms | 189.2 ms |
+        | loop closures | 23 | **26** |
+
+        **At 20 fps, run twice each because the noise band is ~±20%:**
+
+        | config | sets of 1774 | closures |
+        |---|---|---|
+        | baseline | 1721 / 1667 | 11 / 9 |
+        | `slam_primary_cameras:=[0,2,4,6]` | 1688 / 1602 | **19 / 15** |
+
+        The two closure bands do not overlap, so this is real and not the noise that killed
+        the `max_landmarks_distance` result. The mechanism is the expected one: a cheaper
+        keyframe means the backend keeps up instead of dropping work, so MORE closures
+        complete rather than fewer — the opposite of what throttling buys (1773 sets but only
+        4 closures).
+
+        **What it does not do: fix the scaling.** `N^0.72` is still `N^0.72` with a smaller
+        constant, so a long enough run still crosses the budget. Untested: 2 primaries, and
+        whether the four dropped views cost anything in revisit recognition on a log with
+        real loops (this one has none — see 1.7a).
+
+  - [x] 1.7n **Host cuVSLAM build on the WSL box — it works, and `/usr/local/cuda` being
+        empty was not the blocker it looked like.** `docker-compose.host.yml` already had the
+        whole chain; what was missing was a CUDA toolkit to mount. Rather than a multi-GB
+        install, extract one from the `nvidia/cuda:12.6.3-devel-ubuntu24.04` image that was
+        already pulled locally and point `CUDA_HOST_MOUNT` at it:
+
+        ```
+        docker create --name cudaextract nvidia/cuda:12.6.3-devel-ubuntu24.04
+        docker cp cudaextract:/usr/local/cuda-12.6 ~/cuda-12.6 && docker rm cudaextract
+        CUDA_HOST_MOUNT=~/cuda-12.6 docker compose -f docker-compose.host.yml build
+        CUDA_HOST_MOUNT=~/cuda-12.6 docker compose -f docker-compose.host.yml run --rm build-cuvslam-host
+        CUDA_HOST_MOUNT=~/cuda-12.6 docker compose -f docker-compose.host.yml run --rm build-ws-host
+        CUDA_HOST_MOUNT=~/cuda-12.6 SLAM=1 ./scripts/vo/replay_host.sh <bag> 0.4
+        ```
+
+        GPU passthrough under WSL2 works (`--gpus all` sees the RTX 2000 Ada); ROS Foxy's
+        focal apt repo is still live. `build_cuvslam_host.sh` had a **wrong default**: sm_86,
+        from a machine with an RTX A2000. This box is Ada, sm_89. A wrong arch does not fail
+        loudly — CUDA JITs the embedded PTX, so it builds and runs and is merely slower, which
+        is the exact quantity #77 is about. It now asks `nvidia-smi`.
+
+        **20 fps is viable on this host**, contrary to 1.7j's finding on the previous one:
+        1721 of 1774 sets at 1.0x (3% loss) against 1773 at 0.4x. But loop closures halve
+        (21 -> 11) and the map comes out smaller (58.9k vs 62.9k), so 0.4x remains the right
+        default for anything where the SLAM layer is the measurement.
+
   - [ ] 1.7b Publish loop-closure events and the pose graph; add a viewer pane keyed on
         `lc_status`, plus a corrected-trajectory line beside the raw VO one.
   - [ ] 1.7c Measure the cost on the TX2 before believing any of it. `Track()` there is already
@@ -563,6 +932,23 @@ Host, all under gitignored `datasets/`:
 | `datasets/replay_out/obs_20260903_140714/multicam.rrd` | 77 MB — cameras + map only |
 | `datasets/replay_out/obs_20260903_140714/multicam_full.rrd` | 275 MB — with fisheye domes |
 | `datasets/imglog_vio1_30s_bag` | source images for all of the above |
+| `datasets/replay_out/slam_cost_and_map.png` | 1.7l / 1.7m — what the OLD bags could show (replay-rate floored) |
+| `datasets/replay_out/slam_backend_sync_rate0.2.png` | 1.7m — **the #77 answer**: backend inline, cost vs map size |
+| `datasets/replay_out/slam_backend_sync_rate0.2_timing.csv` | per-set rows behind it (`slam_track_us` is real here) |
+| `datasets/replay_out/slam_frontend_async_rate{0.4,1.0}_timing.csv` | the async runs — frontend only; `slam_track_us` is just the enqueue |
+| `datasets/replay_out/slam_backend_sync_{cap300,lmdist15}_timing.csv` | 1.7o — the two map-bounding knobs, inline |
+| `datasets/replay_out/slam_async_rate1.0_{repeat,lmdist15,throttle1000}_timing.csv` | 1.7o — 20 fps sweep + the variance baseline |
+
+Names carry the rate and the regime on purpose: the first pair of figures was called
+`slam77_full_04/10`, nobody could tell that meant 0.4x/1.0x, and both were titled as the
+"#77 axis" while plotting the frontend. They are deleted rather than kept.
+
+Regenerate the last one (reads the bags directly, no ROS environment needed):
+
+```
+python3 scripts/vo/slam_cost_and_map.py
+python3 scripts/vo/slam_cost_and_map.py --timing datasets/replay_out/<run>_timing.csv
+```
 
 Commits on `feat/imx296-synced-vo`: `b513a25` (world-fixed BEV plane, superseded), `581cc64`
 (incidence cap), `a13dc77` (per-pose plane fit), `97877fa` (panorama pane).

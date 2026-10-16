@@ -490,7 +490,159 @@ exist. Porting them means teaching them the Mei projection; `mei_project()` in
 | [openspec](openspec) | change proposals, designs and task logs |
 | [third_party](third_party) | cuVSLAM, OKVIS2, OpenMAVIS submodules |
 
-## 6. Docs
+## 6. SLAM backend cost — do we hit cuVSLAM #77?
+
+**Yes, partly, and not where it is usually looked for.** Measured on this rig
+(`slam_backend_sync_rate0.2`, full 88.6 s log, 1772 sets, 512 keyframes) against cuVSLAM
+[#77](https://github.com/nvidia-isaac/cuVSLAM/issues/77) and
+[#136](https://github.com/nvidia-isaac/cuVSLAM/issues/136).
+
+**The frontend is fine. The backend is what grows.** `Odometry::Track()` — PnP every frame,
+triangulation and SBA on keyframes — is flat against a 10x growth in the map. `Slam::Track()`
+— loop-closure matching and pose-graph optimisation — is not. Keyframes only, scene held
+constant (`frame_landmarks > 300`):
+
+| landmarks in map | backend | frontend |
+|---|---|---|
+| 10–20k | 90 ms | 59 ms |
+| 20–30k | 166 ms | 16 ms |
+| 40–50k | 200 ms | 20 ms |
+| 50–60k | **255 ms** | 20 ms |
+
+`cost ~ N^0.72`. On the same data `O(N)` predicts 336 ms and `O(log N)` predicts 102 ms —
+so it sits much closer to linear than logarithmic, which is #77's complaint.
+
+**Whether that is a fault depends on the budget, and the budget is the KEYFRAME period, not
+the frame period.** This log yields 5.78 keyframes/s, so 20 fps allows **173 ms per
+keyframe**. The backend runs at 62% of that in the first third, 95% in the middle, and
+**153% in the last** — it crosses partway through. Past that point a keyframe costs more
+than the interval that produces one, and because the SLAM queue is *unbounded and
+non-blocking* (`thread_safe_queue.h`), the overrun never appears as latency. It appears as
+**lost work**: loop closures fell 21 → 11 at 1.0x against 0.4x.
+
+**#136 (staged landmarks never promoted) does NOT occur here.** The promoted map
+(`DataLayer::Map`) reaches 62,865 landmarks and grows smoothly from the first seconds; no
+mass staging flush, and crossing the 60 s staging lifetime produces no step. Our ring closes
+the frustum union horizontally, but the ±45° carves leave it open vertically and that is
+enough to drain staging normally.
+
+### Why it still happens when the fixes are already in
+
+Our build (`69e2f29`, post-17.0.0) **already contains every relevant upstream fix** —
+`b075bd6` BFS-subgraph PGO, `095e8af` PGO solver speedup, `354c135` / `175f91a` near-plane
+guards on the LSI-grid and frustum-graph tests. Nothing newer on `main` touches this.
+
+They are not enough because they fix the **pose-graph solve**, and the growth that remains is
+on the **map-query side** — loop-closure candidate matching against an ever-larger landmark
+map. The only thing upstream shipped for the async case is
+`Slam::Config::delay_warning_queue_size`, which *warns* that SLAM is falling behind. That is
+diagnostics, not a fix, and it is off unless `cuvslam_verbosity >= 2`.
+
+### What to do about it
+
+**Give SLAM half the cameras.** `Slam(rig, primary_cameras, cfg)` is a *separate* argument
+from `MulticameraMode` and has no validation against it: it gates which images the backend
+receives (`cuvslam2.cpp:1045-1049`), so it cuts descriptor sets matched per keyframe
+**without touching odometry** — `multicam_mode` stays `Precision` and the VO figures stay
+comparable.
+
+**No viewing direction is lost.** The 8 pinholes are not 8 directions: they are **4 stereo
+pairs**, and the two axes in each pair sit only 1.0–2.4° apart
+([config/rig/virtual_stereo_imx296.yaml](config/rig/virtual_stereo_imx296.yaml)):
+
+| direction | pair | in `[0,2,4,6]` |
+|---|---|---|
+| front | vcam2 + vcam1 | vcam2 |
+| left | vcam0 + vcam5 | vcam0 |
+| right | vcam6 + vcam3 | vcam6 |
+| rear | vcam4 + vcam7 | vcam4 |
+
+So `[0,2,4,6]` keeps one view from **every** direction and drops only the near-co-aligned
+partner. Angular coverage is unchanged (4 × 70° with the same 20° gaps between directions,
+in both configurations) — what goes is the stereo redundancy inside each pair, which at
+1–2° of parallax adds almost no new viewpoint for descriptor matching. That is why halving
+the input cost ~30% and lost nothing.
+
+Every config below was run twice where the result mattered, because two *identical* 20 fps
+runs gave 11 and 9 closures — treat ~±20% as noise:
+
+| config @20 fps | sets of 1774 | closures | verdict |
+|---|---|---|---|
+| baseline | 1721 / 1667 | 11 / 9 | over budget in the last third |
+| `slam_max_map_size:=300` | — | — | **no effect on cost** — caps poses, not landmarks |
+| `slam_max_landmarks_distance:=15` | 1680 | 8 | inside the noise; map did not shrink |
+| `slam_throttling_ms:=1000` | **1773** | 4 | keeps frames, **starves closures** |
+| **`slam_primary_cameras:=[0,2,4,6]`** | 1688 / 1602 | **19 / 15** | **~1.7x the closures** |
+
+Four primaries is the only knob that made the backend cheaper *and* did more useful work —
+backend median 167.5 → 128.9 ms, last third 264.7 → 189.2 ms, and closures 15–19 against a
+9–11 baseline whose band it does not overlap. Throttling did the opposite: it kept the
+frontend fed (1773 of 1774 sets) by cutting closures to 4.
+
+```bash
+# recommended at 20 fps: cheaper backend, more closures, VO untouched
+SLAM=1 SLAM_PRIMARIES='[0,2,4,6]' ./scripts/vo/replay_host.sh <bag> 1.0
+
+# if dropped frames matter more than closures, throttle instead
+SLAM=1 SLAM_THROTTLING_MS=1000 ./scripts/vo/replay_host.sh <bag> 1.0
+
+# offline analysis: full closure rate, SLAM slower than the camera
+SLAM=1 ./scripts/vo/replay_host.sh <bag> 0.4
+
+# to MEASURE the backend at all it must be inline — otherwise you time the enqueue
+SLAM=1 SLAM_SYNC=1 ./scripts/vo/replay_host.sh <bag> 0.2
+python3 scripts/vo/slam_cost_and_map.py --timing datasets/replay_out/<run>_timing.csv --out fig.png
+```
+
+It reduces cost without fixing the scaling — `N^0.72` is still `N^0.72`, the constant is
+smaller. A long enough run will still cross the budget. Full workings in
+[openspec/changes/add-replay-visual-diagnostics/tasks.md](openspec/changes/add-replay-visual-diagnostics/tasks.md) §1.7l–1.7p.
+
+### The odometry side: `multicam_mode`
+
+The frontend has its own knob, and it is the one for the TX2. `MulticameraMode::Precision`
+makes all 8 virtual cameras primary — each gets its own mono tracker — and `Track()` on the
+TX2 measured **87.6 ms** against 50 ms per set at 20 fps. `performance` (or `moderate`, which
+is identical on four disjoint pairs) keeps one primary per stereo pair, `{0,1,2,5}` per
+`scripts/vo/verify_fig_primaries.sh`: every direction is still tracked, the partner lends
+stereo depth.
+
+Host, VO only, 1.0x, nothing else on the GPU, each config run twice:
+
+| | `Track()` mean | p95 | jumps | vs Precision (RMS) |
+|---|---|---|---|---|
+| run6 precision | 15.9 / 16.6 ms | 22.8 / 25.6 ms | 0 / 0 | noise floor 0.41 m |
+| run6 performance | **9.2 / 8.9 ms** | 15.3 / 14.5 ms | 0 / 0 | 0.50 / 0.43 m |
+| run5 precision | 21.4 / 20.5 ms | 27.6 / 26.3 ms | 0 / 0 | noise floor 0.06 m |
+| run5 performance | **12.4 / 12.2 ms** | 16.2 / 15.8 ms | 0 / 0 | 0.17 / 0.27 m |
+
+About **43 % off `Track()`**, trajectory within replay noise, scale unchanged. Scaled naively
+that puts the TX2 near 50 ms — at the budget, not under it; measure there before relying on it.
+Host timings move ~2x with GPU clock state (a Rerun viewer on the same laptop GPU made them
+*faster*), so compare only runs made back to back.
+
+**With SLAM, match the SLAM cameras to the odometry primaries.** In performance mode cameras
+4 and 6 are no longer tracked, so `SLAM_PRIMARIES='[0,2,4,6]'` hands the backend two cameras
+with no features: run5 fell from 21 closures to 3. `[0,1,2,5]` restores them (14 on both runs)
+and neither run jumped. SLAM still overruns the 0.4x budget at keyframes in every config
+(callback p95 340–500 ms):
+
+| SLAM=1, 0.4x | run6 sets / closures / jumps | run5 sets / closures / jumps |
+|---|---|---|
+| precision, `[0,2,4,6]` | 1367 / 12 / 0 | 1410 / 21 / **1** |
+| performance, `[0,2,4,6]` | 1411 / 13 / 0 | 1454 / **3** / 0 |
+| performance, `[0,1,2,5]` | 1334 / 14 / 0 | 1275 / 14 / 0 |
+
+```bash
+MULTICAM_MODE=performance TIMING=1 ./scripts/vo/replay_host.sh <bag> 1.0            # VO only
+MULTICAM_MODE=performance SLAM=1 SLAM_PRIMARIES='[0,1,2,5]' ./scripts/vo/replay_host.sh <bag> 0.4
+python3 scripts/vo/compare_modes.py <ref replay dir> <other replay dir> ...           # cost + shape A/B
+```
+
+`multicam_mode` is a parameter of both nodes (`fused_vo_params.yaml` for the TX2); the default
+stays `precision`, which every earlier figure in this README was measured with.
+
+## 7. Docs
 
 | doc | covers |
 |---|---|
@@ -501,8 +653,9 @@ exist. Porting them means teaching them the Mei projection; `mei_project()` in
 | [docs/timestamps.md](docs/timestamps.md) | the camera/IMU timestamp contract — the four rules |
 | [docs/extrinsic_calibration.md](docs/extrinsic_calibration.md) | rig extrinsics procedure |
 | [scripts/README.md](scripts/README.md) | index of every script, and where it runs |
+| [README §6](README.md#6-slam-backend-cost--do-we-hit-cuvslam-77) | SLAM backend cost vs map size, and which knobs move it |
 
-## 7. Roadmap
+## 8. Roadmap
 
 - [x] Port cuVSLAM to CUDA 10.2 / C++14, running on the TX2 GPU
 - [x] Host offline VO (`bev-host-cuvslam` + `replay_host.sh`) for bag resim without TX2 OOM

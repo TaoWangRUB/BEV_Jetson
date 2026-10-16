@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cmath>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,18 @@
 #include "cuvslam/cuvslam2.h"
 
 namespace bev_cuvslam {
+
+// MulticameraMode is an ODOMETRY setting: which virtual cameras get their own mono tracker.
+// On this rig's four disjoint pairs, Performance and Moderate both keep one camera per pair
+// (verify_fig_primaries.sh prints which), so every direction is still tracked while the mono
+// SOF runs on 4 cameras instead of 8. Precision stays the default - it is what every figure in
+// this project was measured with.
+inline cuvslam::Odometry::MulticameraMode ParseMulticamMode(const std::string& s) {
+  if (s == "precision") return cuvslam::Odometry::MulticameraMode::Precision;
+  if (s == "performance") return cuvslam::Odometry::MulticameraMode::Performance;
+  if (s == "moderate") return cuvslam::Odometry::MulticameraMode::Moderate;
+  throw std::runtime_error("multicam_mode must be precision, performance or moderate, got '" + s + "'");
+}
 
 cv::Matx44d load_matrix4(const YAML::Node& n) {
   cv::Matx44d M;

@@ -32,17 +32,26 @@ if [[ "${SLAM:-0}" == "1" ]]; then _default_rate=0.4; else _default_rate=1.0; fi
 RATE="${2:-${RATE:-$_default_rate}}"
 _pfx=odom; [[ "$OBS" == "1" ]] && _pfx=obs
 OUT="${OUT:-${REPO_ROOT}/datasets/replay_out/${_pfx}_$(date +%Y%m%d_%H%M%S)}"
-COMPOSE=(docker compose -f docker-compose.host.yml)
+# Same replay on the TX2: its compose file, its install tree and its CUDA-10.2 cuVSLAM build.
+# Only short clips fit there (raw_log_to_bag.py --motion --max-frames N): a full ~7 GB bag has
+# been OOM-killed on the board.
+if [[ "$(uname -m)" == "aarch64" ]]; then
+  COMPOSE=(docker compose -f docker-compose.yml)
+  INSTALL=install; CUVSLAM_BUILD=build_tx2gpu; _lib_svc=build-cuvslam; _ws_svc=build-ws
+else
+  COMPOSE=(docker compose -f docker-compose.host.yml)
+  INSTALL=install_host; CUVSLAM_BUILD=build_host; _lib_svc=build-cuvslam-host; _ws_svc=build-ws-host
+fi
 
 [[ -d "$BAG" || -f "$BAG" ]] || { echo "REFUSING: bag not found: $BAG" >&2; exit 1; }
-[[ -f third_party/cuVSLAM/build_host/bin/libcuvslam.so ]] || {
-  echo "REFUSING: host libcuvslam.so missing. Run:" >&2
-  echo "  ${COMPOSE[*]} run --rm build-cuvslam-host" >&2
+[[ -f third_party/cuVSLAM/${CUVSLAM_BUILD}/bin/libcuvslam.so ]] || {
+  echo "REFUSING: libcuvslam.so missing from ${CUVSLAM_BUILD}. Run:" >&2
+  echo "  ${COMPOSE[*]} run --rm ${_lib_svc}" >&2
   exit 1
 }
-[[ -x install_host/bev_cuvslam/lib/bev_cuvslam/cuvslam_multicam_node ]] || {
-  echo "REFUSING: host VO node missing. Run:" >&2
-  echo "  ${COMPOSE[*]} run --rm build-ws-host" >&2
+[[ -x ${INSTALL}/bev_cuvslam/lib/bev_cuvslam/cuvslam_multicam_node ]] || {
+  echo "REFUSING: VO node missing from ${INSTALL}. Run:" >&2
+  echo "  ${COMPOSE[*]} run --rm ${_ws_svc}" >&2
   exit 1
 }
 
@@ -85,9 +94,45 @@ if [[ "${SLAM:-0}" == "1" ]]; then
   LAUNCH_ARGS="${LAUNCH_ARGS} slam_throttling_ms:=${SLAM_THROTTLING_MS:-0}"
   REC_TOPICS="${REC_TOPICS} /cuvslam/slam_odometry /cuvslam/loop_closures"
   REC_TOPICS="${REC_TOPICS} /cuvslam/slam_path /cuvslam/loop_closure_edges"
+  # Per-set timing + promoted-map size, one row per set. This is the measurement cuVSLAM
+  # issues #77 and #136 need and that no bag in datasets/replay_out contains: the periodic
+  # log prints a 5 s windowed maximum, and the interval between recorded messages is floored
+  # by RATE (0.4x of 20 Hz = 125 ms/set), so a cost trend underneath that floor is invisible.
+  # Free to collect - one buffered line per set - so it is on whenever SLAM is.
+  LAUNCH_ARGS="${LAUNCH_ARGS} timing_csv:=${OUT_IN}_timing.csv"
+  # cuVSLAM's own Warning level, which is where delay_warning_queue_size lives: it fires when
+  # the SLAM keyframe queue backs up past 10, meaning the backend is reporting poses from an
+  # increasingly old point on the trajectory. Set CUVSLAM_VERBOSITY=0 to silence.
+  LAUNCH_ARGS="${LAUNCH_ARGS} cuvslam_verbosity:=${CUVSLAM_VERBOSITY:-2}"
+  # SLAM_SYNC=1 runs the backend INLINE, which is the only way its cost is measurable
+  # (otherwise loop closure and PGO are on cuVSLAM's own thread and slam_track_us is just
+  # the enqueue). Expect it to be much slower per set - use a slow RATE with it.
+  # Foxy's launch bool coercion rejects "1" outright, so normalise here: every other flag in
+  # this script is 0/1 and making this one the exception is how you get a 4-minute run that
+  # dies at startup.
+  case "${SLAM_SYNC:-0}" in 1|true|TRUE|yes) _sync=true ;; *) _sync=false ;; esac
+  LAUNCH_ARGS="${LAUNCH_ARGS} slam_sync_mode:=${_sync}"
+  LAUNCH_ARGS="${LAUNCH_ARGS} slam_max_landmarks_distance:=${SLAM_LM_DIST:-0.0}"
+  LAUNCH_ARGS="${LAUNCH_ARGS} slam_map_cell_size:=${SLAM_CELL:-0.0}"
+  # SLAM_PRIMARIES='[0,2,4,6]' hands SLAM one pinhole per physical camera instead of all 8.
+  LAUNCH_ARGS="${LAUNCH_ARGS} slam_primary_cameras:=${SLAM_PRIMARIES:-[-1]}"
+  # The promoted SLAM map. NOT /cuvslam/landmarks, which is the odometry track dump and only
+  # ever grows. A map that stays near-empty while the pose graph fills is issue #136.
+  if [[ "${MAP_CLOUD:-0}" == "1" ]]; then
+    LAUNCH_ARGS="${LAUNCH_ARGS} publish_map_landmarks:=true"
+    REC_TOPICS="${REC_TOPICS} /cuvslam/map_landmarks"
+  fi
 fi
 
-echo "replay BAG=$BAG_IN RATE=$RATE OUT=$OUT_IN OBS=$OBS QOS=$QOS/$QOS_DEPTH SLAM=${SLAM:-0}"
+# MULTICAM_MODE=performance tracks one virtual camera per stereo pair instead of all 8
+# (odometry, not SLAM - compare SLAM_PRIMARIES). precision is the default and the reference.
+LAUNCH_ARGS="${LAUNCH_ARGS} multicam_mode:=${MULTICAM_MODE:-precision}"
+# TIMING=1 writes the per-set timing CSV on a VO-only run too (it is always on with SLAM=1).
+if [[ "${TIMING:-0}" == "1" && "${SLAM:-0}" != "1" ]]; then
+  LAUNCH_ARGS="${LAUNCH_ARGS} timing_csv:=${OUT_IN}_timing.csv"
+fi
+
+echo "replay BAG=$BAG_IN RATE=$RATE OUT=$OUT_IN OBS=$OBS QOS=$QOS/$QOS_DEPTH SLAM=${SLAM:-0} MODE=${MULTICAM_MODE:-precision}"
 if [[ "${SLAM:-0}" == "1" ]] && awk "BEGIN{exit !($RATE > 0.6)}"; then
   echo "WARNING: SLAM at ${RATE}x will overrun the per-set budget and DROP frames, which"
   echo "  makes the odometry itself worse - not just the SLAM layer. Use 0.4 or slower."
@@ -95,9 +140,9 @@ fi
 "${COMPOSE[@]}" run --rm shell bash -lc "
 set -eo pipefail
 source /opt/ros/foxy/setup.bash
-source /workspace/install_host/setup.bash
+source /workspace/${INSTALL}/setup.bash
 set -u
-export LD_LIBRARY_PATH=/workspace/third_party/cuVSLAM/build_host/bin:\${LD_LIBRARY_PATH:-}
+export LD_LIBRARY_PATH=/workspace/third_party/cuVSLAM/${CUVSLAM_BUILD}/bin:\${LD_LIBRARY_PATH:-}
 rm -rf '${OUT_IN}'
 ros2 launch bev_cuvslam bev_cuvslam.launch.py ${LAUNCH_ARGS} > /tmp/vo_host.log 2>&1 &
 VO=\$!
@@ -124,3 +169,4 @@ ros2 bag info '${OUT_IN}' 2>/dev/null || ls -la '${OUT_IN}'
 echo OUTDIR=${OUT}
 "
 echo "host path: $OUT"
+[[ "${SLAM:-0}" == "1" ]] && echo "per-set timing: ${OUT}_timing.csv  (plot: scripts/vo/slam_cost_and_map.py --timing ${OUT}_timing.csv)"

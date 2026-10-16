@@ -100,7 +100,8 @@ See [docs/extrinsic_calibration.md](../docs/extrinsic_calibration.md) for the fu
 | [vo/bench_remap.cpp](vo/bench_remap.cpp) | TX2 | measure the virtual-pinhole remap against virtual and source resolution, standalone (no cameras, no ROS). Answers "should we lower the resolution" with a number: both axes are bad trades (task 4.5b) |
 | [vo/verify_rig_build.sh](vo/verify_rig_build.sh) | dev | re-run cuVSLAM's frustum test on the poses the C++ actually emits — run it **before** a board session, or a bad rig file reads as a wiring bug |
 | [vo/check_rig_poses.py](vo/check_rig_poses.py) | dev | sanity-check the rig poses fed to cuVSLAM |
-| [vo/verify_fig_primaries.sh](vo/verify_fig_primaries.sh) | dev | **does cuVSLAM actually track all 8 virtual cameras?** Runs the library's own frustum-graph selection on our topology - no GPU, no images, ~1 s. cuVSLAM declares camera 0 a depth camera on every Multicamera run and silently drops its stereo partner; on a ring of disjoint pairs that is one camera lost in every run. Needs patch/cuvslam/0003 |
+| [vo/compare_modes.py](vo/compare_modes.py) | dev | A/B VO replays of one bag: `Track()` cost from the `_timing.csv` (`TIMING=1`), continuity, SE(3) shape difference against a reference, and scale against a slam-rs run. Include a same-config repeat - replays are not reproducible |
+| [vo/verify_fig_primaries.sh](vo/verify_fig_primaries.sh) | dev | **does cuVSLAM actually track all 8 virtual cameras?** Runs the library's own frustum-graph selection on our topology - no GPU, no images, ~1 s. Also prints which primaries `performance` / `moderate` would keep (one per pair: 0 1 2 5). cuVSLAM declares camera 0 a depth camera on every Multicamera run and silently drops its stereo partner; on a ring of disjoint pairs that is one camera lost in every run. Needs patch/cuvslam/0003 |
 | [vo/audit_frames.py](vo/audit_frames.py) | dev | **did every frame get tracked?** Closes a ledger between a camera bag and a replay's `/cuvslam/odometry`: an upper bound computed from the bag alone (nearest partner per cam1 frame vs the skew gate), against the poses actually published. Reports duplicates and splits losses into startup / shutdown / **mid-run** - only mid-run is a real loss |
 | `docker compose run --rm logonly` | TX2 | **raw 4-camera image log, no ROS/DDS in the path.** Prefer [log_rig.sh](log_rig.sh) for cameras+IMU+range. See README §3.2 for rates |
 | [docker_publish.sh](docker_publish.sh) | TX2 | push `cuvslam-foxy:tx2` to Docker Hub as `wtlove876/cuvslam-foxy:tx2` plus a dated tag |
@@ -161,6 +162,45 @@ Budget roughly **1.2 s and 0.45 MB per frame** with all three on: a 965-frame ru
 saturation warning in mind — where the cameras are blown the landmarks are junk, so the fitted
 plane wanders (h 2.1–2.9 m across the t = 45–47 s window, against the 1.36 m measured
 elsewhere).
+
+## slamrs/ — slam-rs (Rust Basalt sqrt VIO) on raw logs
+
+[slam-rs](https://github.com/rerun-io/examples-monorepo/tree/main/packages/slam-rs) runs any
+number of cameras **with** the IMU and needs no camera overlap, which cuVSLAM's multicam mode
+cannot. These feed it a `log_rig.sh` directory directly through its PyO3 API — no RRD, no catalog.
+Build the core once in a checkout (`cargo build --release -p slam-rs-py`, then copy
+`target/release/lib_core.so` to `slam_rs/_core.so`) and point `SLAM_RS_DIR` at it.
+
+**On the TX2** (`build_slamrs.sh` with `PYTHON=` a conda-forge 3.12 env; 11 min build) slam-rs
+gives the host's result - same sets tracked, positions within 1-14 mm median - at ~5x the cost.
+Measured 2026-09-28, MAXN, alongside cuVSLAM replaying 20 s clips of the same logs at 20 fps
+(`replay_host.sh` runs on the board too; patch 0003 applied):
+
+| per camera set, median | host | TX2 | TX2 at 20 fps |
+|---|---|---|---|
+| slam-rs VIO, 1 thread (full logs) | 35-45 ms | 184-223 ms | no: offline only, ~5 Hz |
+| slam-rs VIO, 4-6 threads (run6, 500 sets) | - | 148-151 ms | no: ~6.7 Hz, the estimator is one thread |
+| cuVSLAM VO precision, `Track()` | 6-8 ms | 54-73 ms (callback 82-100) | no: 46-58 % of sets kept |
+| cuVSLAM VO performance, `Track()` | 3-4 ms | 24-44 ms (callback 51-69) | borderline: 72-91 % kept |
+
+The modular node's remap is ~26 ms of each TX2 callback; the fused node does it on the GPU.
+
+**Compare against the right cuVSLAM replay.** Any replay made before `75dac4a` (2026-09-08) is
+missing camera 0's stereo partner, and its teleports are that bug, not the tracker: run6 goes
+from 2 jumps to 0 with the fix, run5 from one 51.8 m/s jump to 0. Take VO from a VO-only replay
+(`OBS=1 replay_host.sh <bag> 0.5`), and SLAM from a separate `SLAM=1 SLAM_PRIMARIES='[0,2,4,6]'`
+replay passed as `--slam-bag`. A SLAM replay that overruns its per-set budget drops sets, and the
+widened gaps make the VO itself jump - README section 6 has the configs that avoid it. Check the
+node log says what you asked for ("SLAM ON: ... over 4 primary cameras", "odometry multicam_mode"):
+a launch argument the installed `install_host/` does not declare is dropped silently.
+
+| script | runs on | purpose |
+|---|---|---|
+| [slamrs/make_calib.py](slamrs/make_calib.py) | dev | write [config/slamrs/bev_calib_s2.json](../config/slamrs/bev_calib_s2.json): KB4 fitted to the Mei intrinsics (slam-rs has no omni model; its KB4 uses `atan2` so it holds our >180° lenses), rig extrinsics, and the round-2 Kalibr `T_cam_imu` — whose only tracked copy is that JSON |
+| [slamrs/fit_kb4.py](slamrs/fit_kb4.py) | dev | the KB4 fit on its own: residual per camera out to 100° incidence |
+| [slamrs/run_slamrs.py](slamrs/run_slamrs.py) | dev | replay a raw log through `slam_rs.Vio` at half resolution; IMU stamps shifted by Δ from `imu_mpu9250.yaml`; writes one pose row per set. `--dry-run` checks everything but slam-rs |
+| [slamrs/compare.py](slamrs/compare.py) | dev | score it against cuVSLAM's `obs_*` bag: continuity, path length, and a Sim(3) fit whose **scale** is an independent check on cuVSLAM's (IMU vs camera baselines) |
+| [slamrs/handeye.py](slamrs/handeye.py) | dev | cam1↔IMU rotation and time offset from the gyro vs cuVSLAM's rotation — a cross-check on Kalibr (rotation agrees to <1°; the offset is too coarse to use) |
 
 ## bev/ — bird's-eye ground stitch
 

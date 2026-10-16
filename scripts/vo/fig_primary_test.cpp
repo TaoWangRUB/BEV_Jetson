@@ -58,6 +58,28 @@ int main(int argc, char** argv) {
   allow.depth_ids = {0};
   allow.allow_stereo_track_for_depth = true;
   report("WITH allow_stereo_track_for_depth=true", allow);
+  // The other two modes, on the configuration the patched tree builds. Performance and
+  // Moderate auto-select primaries; a camera that is not primary gets no mono tracker of its
+  // own and only lends stereo depth to its partner, so what matters is that every pair keeps
+  // exactly one primary - a pair with none is a blind direction.
+  for (auto m : {MulticameraMode::Performance, MulticameraMode::Moderate}) {
+    FigSettings s = as_shipped;
+    s.mode = m;
+    s.allow_stereo_track_for_depth = patched;
+    const char* name = m == MulticameraMode::Performance ? "Performance" : "Moderate";
+    char label[128];
+    snprintf(label, sizeof label, "%s (depth_ids={0}, allow_stereo_track_for_depth=%d)", name, (int)patched);
+    report(label, s);
+    FrustumIntersectionGraph fig(graph, s);
+    std::vector<bool> prim(8, false);
+    for (CameraId c : fig.primary_cameras()) prim[c] = true;
+    for (int p = 0; p < 4; ++p) {
+      const int a = pairs[p][0], b = pairs[p][1];
+      printf("  pair %s / %s: %s\n", NAMES[a], NAMES[b],
+             prim[a] && prim[b] ? "both primary" : prim[a] || prim[b] ? "one primary" : "** NO PRIMARY - blind **");
+    }
+  }
+
   // GATE on the configuration this cuVSLAM tree will actually build.
   FigSettings effective = as_shipped;
   effective.allow_stereo_track_for_depth = patched;

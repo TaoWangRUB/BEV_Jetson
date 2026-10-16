@@ -21,6 +21,10 @@
     # frames the sensor delivers and already carry it (3R.16).
     rig_extrinsics: config/rig/rig_extrinsics_imx296.yaml
     virtual_stereo: config/rig/virtual_stereo_imx296.yaml
+    # Odometry primaries. precision = all 8 virtual cameras get a mono tracker (Track() 87.6 ms
+    # here, over the 50 ms budget at 20 fps); performance = one per stereo pair, all four
+    # directions still tracked. Measured on the host in scripts/README.md (slamrs/ section).
+    multicam_mode: precision
     cameras: [cam1, cam2, cam3, cam4]
     # PHYSICAL CARRIER PORTS, resolved to Argus sensor-ids at runtime from each /dev/video
     # node's i2c name (4.7). This replaces the old `sensor_ids: [0,1,2,3]`, which assumed
