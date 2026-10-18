@@ -1,0 +1,48 @@
+{
+  "_comment": "slam-rs loop-closure backend (openspec/changes/add-slamrs-loop-closure/design.md). Gates follow cuVSLAM's LoopClosureSolverTwoStepsEasy; matching constants follow Basalt's mapper.",
+  "features": {
+    "orb_features": 600,
+    "orb_fast_threshold": 12,
+    "assoc_px": 4.0,
+    "min_bearing_z": 0.2,
+    "theta_max_deg": 98.0
+  },
+  "retrieval": {
+    "min_separation_s": 10.0,
+    "spatial_radius_m": 3.0,
+    "bow_num_bits": 16,
+    "bow_min_score": 0.04,
+    "bow_top_k": 5,
+    "max_candidates": 3
+  },
+  "verify": {
+    "hamming_max": 70,
+    "ratio_test": 1.2,
+    "min_pair_matches": 12,
+    "ransac_thresh_norm": 0.006,
+    "ransac_iters": 300,
+    "min_landmarks": 40,
+    "ratio_lo_at": 40,
+    "ratio_hi_at": 200,
+    "ratio_lo": 0.5,
+    "ratio_hi": 0.3,
+    "consistency_tol_m": 0.02,
+    "consistency_tol_deg": 0.2,
+    "base_sigma_t_m": 0.05,
+    "base_sigma_yaw_deg": 1.0,
+    "cov_scale_max": 100.0,
+    "seed": 0
+  },
+  "graph": {
+    "seq_sigma_t0_m": 0.02,
+    "seq_sigma_t_per_m": 0.05,
+    "seq_sigma_yaw0_deg": 0.2,
+    "seq_sigma_yaw_per_m_deg": 1.0,
+    "huber_m": 0.1,
+    "edge_check_sigma": 3.0,
+    "max_nodes": 0
+  },
+  "backend": {
+    "throttle_s": 2.0
+  }
+}

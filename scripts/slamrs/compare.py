@@ -7,7 +7,11 @@ No ground truth exists, so this reports what CAN disagree:
     slam-rs scale comes from the IMU, cuVSLAM's from the camera baselines; the ratio is the
     independent scale cross-check README section 8 is missing.
 
-  python3 scripts/slamrs/compare.py <cuvslam obs bag .db3> [slamrs.csv]
+  python3 scripts/slamrs/compare.py <cuvslam obs bag .db3> [slamrs.csv] [lc dir] [tape_metres.txt]
+
+With a run_slamrs_lc.py output directory it also scores the loop-closed trajectory: path length,
+first-to-last distance, and each accepted edge's keyframe separation in the VIO and after closure.
+A tape_metres.txt (the measured return-to-start distance) is printed beside both when given.
 """
 import json
 import sys
@@ -72,12 +76,39 @@ def window_scale(tc, pc, ts, ps, window_s=1.0, min_move=0.3):
     return np.array(r)
 
 
-def main(bag, csv=None):
+def loop_closure_report(csv, lc_dir, tape=None):
+    """Spec 'The effect is measurable': VIO vs loop-closed, per trajectory and per edge."""
+    s = np.genfromtxt(csv, delimiter=",", names=True)
+    l = np.genfromtxt(Path(lc_dir) / "slamrs_lc.csv", delimiter=",", names=True)
+    trk = s["status"] == 1
+    ps = slamrs_cam1(s)[trk]
+    pl = slamrs_cam1(l)[l["status"] == 1]
+    print("--- loop closure ---")
+    summary("VIO", s["t_ns"][trk].astype(np.int64), ps)
+    summary("closed", l["t_ns"][l["status"] == 1].astype(np.int64), pl)
+    if tape is not None:
+        print(f"tape: measured return-to-start {float(open(tape).read().split()[0]):.3f} m")
+    try:
+        ed = np.genfromtxt(Path(lc_dir) / "loop_edges.csv", delimiter=",", names=True, dtype=None, encoding="utf-8", ndmin=1)
+    except (ValueError, IndexError):
+        ed = []
+    print(f"accepted loop edges: {len(ed)}")
+    for e in ed:
+        print(f"  kf {int(e['cur']):4d} -> {int(e['cand']):4d} {e['route']:10s} inliers {int(e['inliers'])}/{int(e['tracked'])} "
+              f"ratio {float(e['ratio']):.2f}  separation VIO {float(e['sep_vio_m']):.3f} m -> closed {float(e['sep_lc_m']):.3f} m")
+    d = np.linalg.norm(pl[: len(ps)] - ps[: len(pl)], axis=1) if len(pl) and len(ps) else np.zeros(0)
+    if len(d):
+        print(f"closed vs VIO position difference: median {np.median(d):.3f} m, max {d.max():.3f} m")
+
+
+def main(bag, csv=None, lc_dir=None, tape=None):
     od = read_odom(bag)
     tc, pc = od[:, 0].astype(np.int64), od[:, 1:4]
     jc = summary("cuVSLAM", tc, pc)
     if csv is None:
         return
+    if lc_dir is not None:
+        loop_closure_report(csv, lc_dir, tape)
     s = np.genfromtxt(csv, delimiter=",", names=True)
     ts = s["t_ns"].astype(np.int64)
     trk = s["status"] == 1
