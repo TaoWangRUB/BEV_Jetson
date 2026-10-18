@@ -38,7 +38,7 @@ class LoopClosureBackend:
         t0 = time.perf_counter()
         kf.index = len(self.keyframes)
         kf.features = extract(kf, self.rig, self.orb, self.hashbow, self.cfg["features"])
-        kf.images = None                           # consumed; the features are what we keep
+        # images are kept: KLT verification tracks the stored landmark appearance (1.6 MB/keyframe)
         self.keyframes.append(kf)
         self.graph.add_node(kf.t_ns, kf.T_vio)
         self.retriever.add(kf.index, kf, kf.features)
@@ -57,8 +57,8 @@ class LoopClosureBackend:
         for ci, route, score in cands:
             kc = self.keyframes[ci]
             T_guess = inv(kf.T_vio) @ kc.T_vio          # odometry's T_cur_from_cand
-            h = verify(ci, kf.index, route, kc.features, kf.features, self.rig, T_guess,
-                       self.cfg["verify"], self.min_z)
+            h = verify(ci, kf.index, route, kc, kf, self.rig, T_guess,
+                       self.cfg["verify"], self.min_z, neighbours=self._in_sight(ci, kf))
             h.score = score
             self.hypotheses.append(h)
             if h.accepted:
@@ -73,6 +73,23 @@ class LoopClosureBackend:
         row["optimize_ms"] = (time.perf_counter() - t_ver) * 1e3
         self.timings.append(row)
         return accepted
+
+    def _in_sight(self, ci, kf):
+        """Keyframes near the candidate (by VIO pose and index) that are also old enough with
+        respect to the current keyframe; their landmarks are expressed in the candidate's frame
+        through the VIO relative pose, which is locally consistent."""
+        c = self.cfg["verify"]
+        kc = self.keyframes[ci]
+        min_sep = int(float(self.cfg["retrieval"]["min_separation_s"]) * 1e9)
+        out = []
+        for k in range(max(0, ci - int(c["neighbour_max_kf"])), min(len(self.keyframes), ci + int(c["neighbour_max_kf"]) + 1)):
+            kn = self.keyframes[k]
+            if k == ci or kf.t_ns - kn.t_ns < min_sep:
+                continue
+            if np.linalg.norm(kn.T_vio[:3, 3] - kc.T_vio[:3, 3]) > float(c["neighbour_radius_m"]):
+                continue
+            out.append((kn, inv(kc.T_vio) @ kn.T_vio))
+        return out
 
     def _accept(self, h):
         e = self.graph.add_loop_edge(h.cur, h.cand, h.T_cur_from_cand, h.sigma_t, h.sigma_yaw)

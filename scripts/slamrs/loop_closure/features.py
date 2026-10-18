@@ -13,15 +13,16 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
-from scipy.spatial import cKDTree
 
 
 @dataclass
 class CamFeatures:
-    kp: np.ndarray        # (n, 2) pixels
+    kp: np.ndarray        # (n, 2) detected keypoints, pixels
     desc: np.ndarray      # (n, 32) uint8
     bearing: np.ndarray   # (n, 3) unit, camera frame
-    lm: np.ndarray        # (n,) index into the keyframe's landmark arrays, -1 if none
+    lm_kp: np.ndarray     # (m, 2) projections of the keyframe's landmarks into this camera
+    lm_desc: np.ndarray   # (m, 32) ORB descriptors computed at those projections
+    lm_idx: np.ndarray    # (m,) index into the keyframe's landmark arrays
 
 
 @dataclass
@@ -29,7 +30,7 @@ class KeyframeFeatures:
     cams: list            # CamFeatures per camera
     lm_pos_rig: np.ndarray  # landmarks in the keyframe's own rig (IMU) frame, (m, 3)
     bow: dict             # word -> normalised weight
-    n_assoc: int          # keypoints with a landmark, all cameras
+    n_assoc: int          # landmark projections with a descriptor, all cameras
 
 
 class HashBow:
@@ -73,41 +74,67 @@ def make_orb(cfg):
     return cv2.ORB_create(nfeatures=int(cfg["orb_features"]), fastThreshold=int(cfg["orb_fast_threshold"]))
 
 
+_EMPTY = dict(kp=np.zeros((0, 2)), desc=np.zeros((0, 32), np.uint8), bearing=np.zeros((0, 3)),
+              lm_kp=np.zeros((0, 2)), lm_desc=np.zeros((0, 32), np.uint8), lm_idx=np.zeros(0, np.int64))
+
+
+def describe_at(orb, im, uv):
+    """ORB descriptors at given pixel positions (cuVSLAM stores a patch per landmark; this is the
+    descriptor equivalent). Returns (indices into uv that got a descriptor, descriptors)."""
+    if len(uv) == 0:
+        return np.zeros(0, np.int64), np.zeros((0, 32), np.uint8)
+    kps = [cv2.KeyPoint(float(u), float(v), 31.0, 0.0) for u, v in uv]   # angle 0: see extract()
+    for n, k in enumerate(kps):
+        k.class_id = n
+    kps2, desc = orb.compute(im, kps)             # drops points too close to the border
+    if desc is None or len(kps2) == 0:
+        return np.zeros(0, np.int64), np.zeros((0, 32), np.uint8)
+    idx = np.array([k.class_id for k in kps2], dtype=np.int64)
+    o = np.argsort(idx, kind="stable")
+    return idx[o], desc[o]
+
+
 def extract(kf, rig, orb, hashbow, cfg):
-    """ORB on each camera, landmark association, bearings and the bag of words for one keyframe."""
+    """ORB on each camera, descriptors at the landmark projections, bearings and the bag of words."""
     T_imu_world = np.linalg.inv(kf.T_vio)
     lm_rig = (T_imu_world[:3, :3] @ kf.lm_pos.T).T + T_imu_world[:3, 3] if len(kf.lm_pos) else np.zeros((0, 3))
     cams, descs, n_assoc = [], [], 0
     for k, (cam, im) in enumerate(zip(rig.cams, kf.images)):
-        kps, desc = orb.detectAndCompute(im, None)
-        if desc is None or len(kps) == 0:
-            cams.append(CamFeatures(np.zeros((0, 2)), np.zeros((0, 32), np.uint8), np.zeros((0, 3)), np.zeros(0, np.int64)))
-            continue
-        kp = np.array([p.pt for p in kps], dtype=np.float64)
-        order = np.lexsort((kp[:, 0], kp[:, 1]))        # deterministic order independent of ORB's
-        kp, desc = kp[order], desc[order]
-        bearing = cam.unproject(kp)
-        lm = -np.ones(len(kp), np.int64)
+        f = dict(_EMPTY)
+        # Descriptors are computed UNROTATED on both sides (angle 0): the landmark side has no
+        # corner orientation to rotate by, and on a ground rig roll is constant, so rotation
+        # invariance buys nothing and would only make the two sides disagree.
+        kps = orb.detect(im, None)
+        for p in kps:
+            p.angle = 0.0
+        kps, desc = orb.compute(im, kps) if kps else ([], None)
+        if desc is not None and len(kps):
+            kp = np.array([p.pt for p in kps], dtype=np.float64)
+            order = np.lexsort((kp[:, 0], kp[:, 1]))        # deterministic order independent of ORB's
+            f["kp"], f["desc"] = kp[order], desc[order]
+            f["bearing"] = cam.unproject(f["kp"])
+            descs.append(f["desc"])
         if len(lm_rig):
-            Tci = rig.T_cam_imu[k]
-            P = (Tci[:3, :3] @ lm_rig.T).T + Tci[:3, 3]
-            uv, ok = cam.project(P)
-            ok &= P[:, 2] > -0.05
-            if ok.any():
+            if kf.lm_obs is not None and k in kf.lm_obs:
+                # the frontend's own observation of each landmark at keyframe time: the exact corner
+                ids, uv_obs = kf.lm_obs[k]
+                pos = {int(i): n for n, i in enumerate(kf.lm_ids)}
+                min_age = int(cfg.get("min_landmark_age", 1))
+                sel = np.array([n for n, i in enumerate(ids) if int(i) in pos and kf.lm_age[pos[int(i)]] >= min_age],
+                               dtype=np.int64)
+                idx = np.array([pos[int(ids[n])] for n in sel], dtype=np.int64)
+                uv = uv_obs[sel] if len(sel) else np.zeros((0, 2))
+            else:
+                # no observations recorded (synthetic records): fall back to the projection
+                Tci = rig.T_cam_imu[k]
+                P = (Tci[:3, :3] @ lm_rig.T).T + Tci[:3, 3]
+                uv_all, ok = cam.project(P)
+                ok &= P[:, 2] > -0.05
                 idx = np.nonzero(ok)[0]
-                tree = cKDTree(uv[idx])
-                d, j = tree.query(kp, distance_upper_bound=float(cfg["assoc_px"]))
-                hit = np.isfinite(d)
-                lm[hit] = idx[j[hit]]
-                # one landmark per keypoint, and one keypoint per landmark: keep the nearest
-                for l in np.unique(lm[hit]):
-                    members = np.nonzero(lm == l)[0]
-                    if len(members) > 1:
-                        best = members[np.argmin(d[members])]
-                        lm[members] = -1
-                        lm[best] = l
-        n_assoc += int((lm >= 0).sum())
-        cams.append(CamFeatures(kp, desc, bearing, lm))
-        descs.append(desc)
+                uv = uv_all[idx]
+            got, d = describe_at(orb, im, uv)
+            f["lm_kp"], f["lm_desc"], f["lm_idx"] = uv[got], d, idx[got]
+            n_assoc += len(got)
+        cams.append(CamFeatures(**f))
     bow = hashbow.bow(np.concatenate(descs) if descs else np.zeros((0, 32), np.uint8))
     return KeyframeFeatures(cams, lm_rig, bow, n_assoc)

@@ -244,9 +244,12 @@ a launch argument the installed `install_host/` does not declare is dropped sile
 **Loop closure (`run_slamrs_lc.py`).** slam-rs is pure odometry — upstream states "mapper output is
 not" supported — so the backend lives beside it in Python and never touches the VIO's output. It is
 cuVSLAM's backend design on slam-rs's keyframes: retrieve earlier keyframes by pose radius and by a
-hash bag-of-words over ORB from all four cameras (older than `min_separation_s` only), give the
-candidate's ORB keypoints depth from the VIO landmarks that project onto them, match across all 16
-camera pairs (Hamming ≤ 70, ratio 1.2, mutual — Basalt's mapper constants), solve a multi-camera
+hash bag-of-words over ORB from all four cameras (older than `min_separation_s` only); project the
+candidate's landmarks (and its neighbours') into the current cameras with the pose guess and track
+their stored appearance — the frontend's own observation at keyframe time — with Lucas-Kanade from
+there, forward-backward checked and NCC-gated (cuVSLAM's correspondence step; ORB descriptors on these
+raw fisheyes are near-random across keyframes, Hamming 80 vs 122 random, so descriptor matching is
+only the fallback for an appearance candidate without a usable guess); solve a multi-camera
 PnP-RANSAC on the best pair, refine jointly, and accept only through cuVSLAM's gates (≥ 40 landmarks,
 inlier ratio ≥ lerp(0.5 @ 40 → 0.3 @ 200), refined pose consistent with the first). An accepted edge
 goes into a 4-DoF pose graph (position + yaw; roll and pitch stay the VIO's) with a Huber kernel and
@@ -254,6 +257,30 @@ is solved at once; edges whose residual exceeds 3σ afterwards are dropped and t
 Everything is seeded and synchronous, so the same log gives the same bytes — the property
 cuVSLAM's replay lacks (README §6). `compare.py <bag> <vio csv> <lc dir>` scores it;
 `rerun_compare.py --lc-dir` draws the closed path in purple with its edges.
+
+**Measured 2026-10-18 on the Mac (CPU lane, one thread), run5 and run6** — the only revisits
+these logs hold are the near ones, so this verifies the pipeline, not the benefit (that needs the
+closed-circuit log of `openspec/changes/add-slamrs-loop-closure` task 7):
+
+| | run5 | run6 |
+|---|---|---|
+| keyframes / hypotheses / accepted | 251 / 600 / 3 | 243 / 574 / 3 |
+| accepted edges (inliers / tracked, ratio) | 40/63 .63, 51/92 .55, 145/238 .61 | 40/63 .63, 47/74 .63, 94/183 .51 |
+| accepted pose vs odometry guess | 0.26–0.42 m, 4.5–5.4° | 0.13–0.33 m, 2.5–5.0° |
+| edge separation, VIO → closed | 0.31→0.07, 0.18→0.38, 0.47→0.13 m | 0.25→0.19, 0.22→0.13, 0.20→0.17 m |
+| first-to-last distance, VIO → closed | 0.53 → 0.18 m | 0.33 → 0.10 m |
+| closed vs VIO position | median 0.15 m, max 0.49 m | median 0.18 m, max 0.45 m |
+| VIO vs cuVSLAM, Sim(3) RMS (the noise floor) | 0.64 m | 0.78 m |
+| per keyframe: features / verify (median, p95) | 26 ms / 224, 358 ms | 21 ms / 239, 414 ms |
+| per accepted closure: pose-graph solve | 0.81–0.94 s | 0.76–1.01 s |
+
+Rejections are what the gates are for: run5's 600 hypotheses were 345 with no track at all, 134
+with no pair reaching a RANSAC solution, 111 under the 40-landmark floor, 7 inconsistent between the
+two steps. The pure-VIO csv is byte-identical with and without the backend (every column but the
+wall-clock `track_ms`), and two replays of run6 gave byte-identical hypotheses, edges and corrected
+trajectories. Verification cost is the KLT over three candidates and their keyframes in
+sight; the 1 s solve is SciPy with finite-difference Jacobians on ~250 nodes and is the first thing
+to replace (analytic Jacobian or GTSAM) before the backend goes near a thread.
 
 ## bev/ — bird's-eye ground stitch
 
