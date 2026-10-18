@@ -237,6 +237,23 @@ a launch argument the installed `install_host/` does not declare is dropped sile
 | [slamrs/compare_lanes.py](slamrs/compare_lanes.py) | dev | A/B two `run_slamrs.py` outputs of one log (CPU vs GPU lane, or two builds): sets tracked, position disagreement raw and rigid-aligned, path length, `track_ms` / `fe_ms` / `est_ms` medians and the speed ratio |
 | [slamrs/compare.py](slamrs/compare.py) | dev | score it against cuVSLAM's `obs_*` bag: continuity, path length, and a Sim(3) fit whose **scale** is an independent check on cuVSLAM's (IMU vs camera baselines) |
 | [slamrs/handeye.py](slamrs/handeye.py) | dev | cam1↔IMU rotation and time offset from the gyro vs cuVSLAM's rotation — a cross-check on Kalibr (rotation agrees to <1°; the offset is too coarse to use) |
+| [slamrs/run_slamrs_lc.py](slamrs/run_slamrs_lc.py) | dev | the same replay with the **loop-closing backend** beside the VIO: writes the pure-VIO csv plus `slamrs_lc.csv` (corrected frames), `keyframes_lc.csv`, `loop_edges.csv`, `hypotheses.csv` (every candidate and why it was rejected), `timings.csv`. `--keyframes-out` also exports each keyframe's frames, pose and landmarks |
+| [slamrs/loop_closure/](slamrs/loop_closure/) | dev | the backend: KB4 + rig (`camera.py`), keyframes from the VIO's snapshots (`keyframes.py`), ORB + landmark association + hash bag-of-words (`features.py`), spatial/appearance retrieval (`retrieval.py`), cuVSLAM's two-step PnP gates (`verify.py`), the 4-DoF pose graph (`posegraph.py`), `LoopClosureBackend.on_keyframe` (`backend.py`). Parameters in [config/slamrs/bev_lc_config.json](../config/slamrs/bev_lc_config.json); design in `openspec/changes/add-slamrs-loop-closure/design.md` |
+| [slamrs/test_loop_closure.py](slamrs/test_loop_closure.py) | dev | synthetic tests on the real KB4 + extrinsics: model round trip, HashBow, the verifier recovers an injected loop pose and rejects a look-alike, determinism, the graph removes injected drift, the time gate |
+
+**Loop closure (`run_slamrs_lc.py`).** slam-rs is pure odometry — upstream states "mapper output is
+not" supported — so the backend lives beside it in Python and never touches the VIO's output. It is
+cuVSLAM's backend design on slam-rs's keyframes: retrieve earlier keyframes by pose radius and by a
+hash bag-of-words over ORB from all four cameras (older than `min_separation_s` only), give the
+candidate's ORB keypoints depth from the VIO landmarks that project onto them, match across all 16
+camera pairs (Hamming ≤ 70, ratio 1.2, mutual — Basalt's mapper constants), solve a multi-camera
+PnP-RANSAC on the best pair, refine jointly, and accept only through cuVSLAM's gates (≥ 40 landmarks,
+inlier ratio ≥ lerp(0.5 @ 40 → 0.3 @ 200), refined pose consistent with the first). An accepted edge
+goes into a 4-DoF pose graph (position + yaw; roll and pitch stay the VIO's) with a Huber kernel and
+is solved at once; edges whose residual exceeds 3σ afterwards are dropped and the graph re-solved.
+Everything is seeded and synchronous, so the same log gives the same bytes — the property
+cuVSLAM's replay lacks (README §6). `compare.py <bag> <vio csv> <lc dir>` scores it;
+`rerun_compare.py --lc-dir` draws the closed path in purple with its edges.
 
 ## bev/ — bird's-eye ground stitch
 
