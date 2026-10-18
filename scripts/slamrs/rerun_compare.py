@@ -107,7 +107,10 @@ def main():
                       np.stack([kf["lc_qx"], kf["lc_qy"], kf["lc_qz"], kf["lc_qw"]], -1)) @ T_imu_c1)[:, :3, 3]
         try:
             ed = np.genfromtxt(a.lc_dir / "loop_edges.csv", delimiter=",", names=True, dtype=None, encoding="utf-8", ndmin=1)
-            edges_lc = [[kf_c1[int(e["cur"])], kf_c1[int(e["cand"])]] for e in ed]
+            # (time the closure was accepted, current keyframe pos, candidate keyframe pos, label)
+            edges_lc = sorted(
+                (int(e["t_cur_ns"]), kf_c1[int(e["cur"])], kf_c1[int(e["cand"])],
+                 f"LC kf{int(e['cur'])}->kf{int(e['cand'])} {int(e['inliers'])}/{int(e['tracked'])}") for e in ed)
         except (ValueError, IndexError):
             edges_lc = []
         n_edges = len(edges_lc)
@@ -194,7 +197,7 @@ def main():
     for view in ("anchored", "sim3"):
         rr.log(view, rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
     for key, name, col in (("slamrs", "slam-rs VIO", C_SLAMRS), ("cuvslam_vo", "cuVSLAM VO", C_VO),
-                           ("cuvslam_slam", "cuVSLAM SLAM", C_SLAM)):
+                           ("cuvslam_slam", "cuVSLAM SLAM", C_SLAM), ("slamrs_lc", "slam-rs loop-closed", C_LC)):
         rr.log(f"plots/z/{key}", rr.SeriesLines(colors=[col], names=name), static=True)
         rr.log(f"plots/speed/{key}", rr.SeriesLines(colors=[col], names=name), static=True)
     rr.log("plots/slamrs/landmarks", rr.SeriesLines(colors=[C_SLAMRS], names="landmarks"), static=True)
@@ -213,8 +216,7 @@ def main():
         if Pl_lc is not None:
             rr.log(f"{view}/slamrs_lc", rr.LineStrips3D(segments(Pl_lc, (tl_lc - t0) * 1e-9), colors=[C_LC], radii=0.012),
                    static=True)
-            if edges_lc:
-                rr.log(f"{view}/slamrs_lc_edges", rr.LineStrips3D(edges_lc, colors=[C_LC], radii=0.02), static=True)
+            # the edges and their markers are logged on the timeline below, when each closure happens
         rr.log(f"{view}/start", rr.Points3D([Ps[0]], colors=[0xFFFFFFFF], radii=0.08, labels=["start"]), static=True)
 
     # time-varying: heads and plots
@@ -242,6 +244,27 @@ def main():
         for i in range(len(tl)):
             rr.set_time("time", duration=tl[i])
             rr.log("plots/z/cuvslam_slam", rr.Scalars(Pl[i, 2]))
+    if Pl_lc is not None:
+        # purple head along the loop-closed path, and its height / speed traces
+        tl_s = (tl_lc - t0) * 1e-9
+        vl = np.linalg.norm(np.diff(Pl_lc, axis=0), axis=1) / np.maximum(np.diff(tl_s), 1e-9)
+        for i in range(len(tl_s)):
+            rr.set_time("time", duration=tl_s[i])
+            for view in ("anchored", "sim3"):
+                rr.log(f"{view}/head_lc", rr.Points3D([Pl_lc[i]], colors=[C_LC], radii=0.06))
+            rr.log("plots/z/slamrs_lc", rr.Scalars(Pl_lc[i, 2]))
+            if i and vl[i - 1] < JUMP_MPS:
+                rr.log("plots/speed/slamrs_lc", rr.Scalars(vl[i - 1]))
+        # each accepted closure appears when it happened: a labelled marker on both keyframes and
+        # the edge between them; everything accepted so far stays visible from then on
+        for n, (t_acc, p_cur, p_cand, label) in enumerate(edges_lc):
+            rr.set_time("time", duration=(t_acc - t0) * 1e-9)
+            so_far = edges_lc[: n + 1]
+            for view in ("anchored", "sim3"):
+                rr.log(f"{view}/slamrs_lc_edges", rr.LineStrips3D([[e[1], e[2]] for e in so_far], colors=[C_LC], radii=0.02))
+                rr.log(f"{view}/slamrs_lc_closures",
+                       rr.Points3D([e[1] for e in so_far] + [e[2] for e in so_far], colors=[C_LC], radii=0.05,
+                                   labels=[e[3] for e in so_far] + [""] * len(so_far)))
 
     if not a.no_images:
         geo = dict(line.split() for line in open(a.log / "geometry.txt"))
