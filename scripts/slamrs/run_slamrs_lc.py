@@ -89,7 +89,7 @@ def main():
         rows.append([t, int(r.status), *r.world_from_rig, *r.velocity, *r.accel_bias, *r.gyro_bias, nobs, nlm, dt_ms])
         poses.append((t, pose7_to_T(r.world_from_rig)))
         if backend is not None or a.keyframes_out:
-            for kf in tracker.update(t, ims, snap):
+            for kf in tracker.update(t, ims, snap, vio.flow_frame()):
                 n_kf += 1
                 if a.keyframes_out:
                     export_keyframe(a.keyframes_out, kf)

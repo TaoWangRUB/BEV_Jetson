@@ -41,15 +41,15 @@ class Hypothesis:
     pair_counts: dict = field(default_factory=dict)
     guess_diff_m: float = 0.0
     guess_diff_deg: float = 0.0
+    method: str = ""
 
 
 def match_pair(fa, fb, cfg):
-    """Mutual Hamming matches a->b restricted to a's landmark-associated keypoints.
-    Returns (ia, ib) index arrays."""
-    sel = np.nonzero(fa.lm >= 0)[0]
-    if len(sel) < 2 or len(fb.desc) < 2:
+    """Mutual Hamming matches from a's landmark descriptors to b's detected keypoints.
+    Returns (landmark indices into a's keyframe landmarks, keypoint indices into b)."""
+    if len(fa.lm_desc) < 2 or len(fb.desc) < 2:
         return np.zeros(0, np.int64), np.zeros(0, np.int64)
-    da, db = fa.desc[sel], fb.desc[: len(fb.desc)]
+    da, db = fa.lm_desc, fb.desc
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
     hmax, ratio = int(cfg["hamming_max"]), float(cfg["ratio_test"])
 
@@ -68,10 +68,84 @@ def match_pair(fa, fb, cfg):
     ia, ib = [], []
     for qa, tb in ab.items():
         if ba.get(tb) == qa:
-            ia.append(sel[qa])
+            ia.append(fa.lm_idx[qa])
             ib.append(tb)
     o = np.argsort(ia, kind="stable")
     return np.asarray(ia, np.int64)[o], np.asarray(ib, np.int64)[o]
+
+
+def _ncc(a, b):
+    a = a.astype(np.float64).ravel() - a.mean()
+    b = b.astype(np.float64).ravel() - b.mean()
+    d = np.linalg.norm(a) * np.linalg.norm(b)
+    return float(a @ b / d) if d > 1e-6 else -1.0
+
+
+def klt_pairs(src, cur, T_cur_from_src, rig, cfg, min_z):
+    """cuVSLAM's correspondence step: project the source keyframe's landmarks into the current
+    cameras with the pose guess, track their stored appearance from the source image with
+    Lucas-Kanade starting at the prediction, keep tracks that pass an NCC check. Returns
+    [(i, j, P (n,3) in the source rig frame, bearings (n,3) in current camera j)].
+
+    Why not descriptors: on these raw fisheye frames ORB descriptors of the same corner two
+    keyframes apart are nearly as far apart as random ones (run5: Hamming 80 vs 122), and the
+    detector misses most tracked corners. Tracking a patch from a predicted position needs no
+    detector and no descriptor, only a guess within the pyramid's reach.
+    """
+    out = []
+    if src.lm_obs is None or src.images is None or cur.images is None or len(src.lm_ids) == 0:
+        return out
+    fs = src.features
+    win, lev = int(cfg["klt_win"]), int(cfg["klt_levels"])
+    half = int(cfg["klt_patch"]) // 2
+    ncc_min, max_err = float(cfg["klt_ncc_min"]), float(cfg["klt_max_err"])
+    pos = {int(i): n for n, i in enumerate(src.lm_ids)}
+    min_age = int(cfg.get("min_landmark_age", 1))
+    for i, (ids, uv_s) in src.lm_obs.items():
+        sel = [(n, pos[int(k)]) for n, k in enumerate(ids) if int(k) in pos and src.lm_age[pos[int(k)]] >= min_age]
+        if len(sel) < 3:
+            continue
+        n_obs = np.array([s[0] for s in sel]); l_idx = np.array([s[1] for s in sel])
+        P_src = fs.lm_pos_rig[l_idx]
+        P_cur = P_src @ T_cur_from_src[:3, :3].T + T_cur_from_src[:3, 3]
+        for j, cam in enumerate(rig.cams):
+            Tc = rig.T_cam_imu[j]
+            Pc = P_cur @ Tc[:3, :3].T + Tc[:3, 3]
+            uv_pred, ok = cam.project(Pc)
+            ok &= Pc[:, 2] > 0.02
+            if ok.sum() < 3:
+                continue
+            k_idx = np.nonzero(ok)[0]
+            p0 = uv_s[n_obs[k_idx]].astype(np.float32).reshape(-1, 1, 2)
+            p1 = uv_pred[k_idx].astype(np.float32).reshape(-1, 1, 2).copy()
+            p1, st, err = cv2.calcOpticalFlowPyrLK(
+                src.images[i], cur.images[j], p0, p1, winSize=(win, win), maxLevel=lev,
+                criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+                flags=cv2.OPTFLOW_USE_INITIAL_FLOW)
+            # forward-backward check (Basalt's frontend does the same): track back to the source
+            # and keep only tracks that return to where they started
+            p0b = p0.copy()
+            p0b, stb, _ = cv2.calcOpticalFlowPyrLK(
+                cur.images[j], src.images[i], p1, p0b, winSize=(win, win), maxLevel=lev,
+                criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+                flags=cv2.OPTFLOW_USE_INITIAL_FLOW)
+            fb = np.linalg.norm(p0b.reshape(-1, 2) - p0.reshape(-1, 2), axis=1)
+            p1 = p1.reshape(-1, 2); st = (st.ravel() == 1) & (stb.ravel() == 1) & (fb <= float(cfg["klt_fb_max_px"]))
+            err = err.ravel()
+            keep = []
+            for n in np.nonzero(st & (err < max_err))[0]:
+                x0, y0 = p0[n, 0]; x1, y1 = p1[n]
+                if not (half <= x1 < cam.width - half and half <= y1 < cam.height - half):
+                    continue
+                pa = cv2.getRectSubPix(src.images[i], (2 * half + 1, 2 * half + 1), (float(x0), float(y0)))
+                pb = cv2.getRectSubPix(cur.images[j], (2 * half + 1, 2 * half + 1), (float(x1), float(y1)))
+                if _ncc(pa, pb) >= ncc_min:
+                    keep.append(n)
+            if len(keep) < 3:
+                continue
+            keep = np.array(keep)
+            out.append((i, j, P_src[k_idx[keep]], cam.unproject(p1[keep])))
+    return out
 
 
 def _normalised(b, min_z):
@@ -137,26 +211,46 @@ def _lerp_inv(a, b, v):
     return float(np.clip((v - a) / (b - a), 0.0, 1.0))
 
 
-def verify(cand_idx, cur_idx, route, fc, fk, rig, T_guess, cfg, min_z):
-    """fc: candidate KeyframeFeatures (has the 3D landmarks), fk: current KeyframeFeatures.
-    T_guess: odometry's T_cur_from_cand."""
+def verify(cand_idx, cur_idx, route, cand, cur, rig, T_guess, cfg, min_z, neighbours=()):
+    """cand, cur: KeyframeRecords (with .features and .images) or bare KeyframeFeatures.
+    T_guess: odometry's T_cur_from_cand. neighbours: [(record or features, T_cand_from_nb)] -
+    the keyframes in sight of the candidate, whose landmarks join step 2 (cuVSLAM fetches every
+    landmark near the guess, then picks the single keyframe owning most of them for step 1).
+
+    Correspondences come from KLT tracking of the stored landmark appearance (klt_pairs) when
+    images and observations are available, else from ORB descriptor matching (match_pair)."""
     h = Hypothesis(cand_idx, cur_idx, route)
     P_all, B_all, cam_all, counts = [], [], [], {}
     pairs = []
-    for i, fa in enumerate(fc.cams):
-        for j, fb in enumerate(fk.cams):
-            ia, ib = match_pair(fa, fb, cfg)
-            if len(ia) == 0:
-                continue
-            counts[(i, j)] = int(len(ia))
-            P = fc.lm_pos_rig[fa.lm[ia]]
-            B = fb.bearing[ib]
+    fk = getattr(cur, "features", cur)
+    sources = [(cand, np.eye(4), True)] + [(nb, T, False) for nb, T in neighbours]
+    for s, T_cand_from_src, own in sources:
+        fs = getattr(s, "features", s)
+        found = []
+        if getattr(s, "images", None) is not None and getattr(cur, "images", None) is not None \
+                and getattr(s, "lm_obs", None) is not None:
+            # guess for this source: T_cur_from_src = T_cur_from_cand @ T_cand_from_src
+            found = klt_pairs(s, cur, T_guess @ T_cand_from_src, rig, cfg, min_z)
+            h.method = "klt"
+        else:
+            h.method = "orb"
+            for i, fa in enumerate(fs.cams):
+                for j, fb in enumerate(fk.cams):
+                    ia, ib = match_pair(fa, fb, cfg)
+                    if len(ia):
+                        found.append((i, j, fs.lm_pos_rig[ia], fb.bearing[ib]))
+        for i, j, P_src, B in found:
+            if own:
+                counts[(i, j)] = int(len(P_src))
+            P = P_src @ T_cand_from_src[:3, :3].T + T_cand_from_src[:3, 3]
+            # step 1 may start from any source keyframe's pair: cuVSLAM picks the keyframe
+            # owning most of the fetched landmarks, which need not be the candidate itself
             pairs.append((i, j, P, B))
             P_all.append(P)
             B_all.append(B)
-            cam_all.append(np.full(len(ia), j, np.int64))
+            cam_all.append(np.full(len(P), j, np.int64))
     h.pair_counts = {f"{i + 1}-{j + 1}": n for (i, j), n in sorted(counts.items())}
-    h.tracked = int(sum(counts.values()))
+    h.tracked = int(sum(len(p) for p in P_all))
     if h.tracked == 0:
         h.reason = "no_matches"
         return h

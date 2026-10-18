@@ -30,12 +30,14 @@ idea is taken; retrieval and verification follow cuVSLAM, the production design.
   Appearance: a bag-of-words over ORB descriptors from all four cameras (recovers revisits after
   the drift exceeds the radius, and revisits from a different heading because the ring sees every
   direction). Candidates younger than a configurable interval are never considered.
-- **Geometric verification that follows cuVSLAM's gates.** ORB matches between the candidate
-  keyframe and the current one, unprojected through the KB4 model to bearings; the candidate
-  keyframe's VIO landmarks give the matched points their depth; a multi-camera PnP with RANSAC
-  solves the relative pose; two-step refinement; acceptance requires a landmark floor, an inlier
-  ratio that scales with the count, and agreement between the two steps. A rejected hypothesis
-  leaves no trace in the graph.
+- **Geometric verification that follows cuVSLAM's method and gates.** The candidate's landmarks
+  (and its neighbours') are projected into the current cameras with the pose guess and their
+  stored appearance is tracked there with Lucas-Kanade, forward-backward checked and NCC-gated —
+  cuVSLAM's correspondence step, which needs no descriptor (ORB descriptors proved near-random
+  across keyframes on these raw fisheyes; they remain the fallback for appearance candidates);
+  bearings come from the KB4 model; a multi-camera PnP with RANSAC solves the relative pose;
+  two-step refinement; acceptance requires a landmark floor, an inlier ratio that scales with the
+  count, and agreement between the two steps. A rejected hypothesis leaves no trace in the graph.
 - **A pose graph with VIO factors.** Keyframe nodes; sequential edges carry the VIO relative pose;
   roll and pitch are held to the VIO's gravity-aligned estimate (observable from the IMU, so the
   correction is 4-DoF: position and yaw, as VINS-Mono argues); loop edges carry the verified

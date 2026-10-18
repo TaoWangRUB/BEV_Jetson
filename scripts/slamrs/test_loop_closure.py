@@ -69,9 +69,12 @@ def _synth_keyframe(rng, T_world_rig, points_world, desc, assoc=True):
         ok &= P[:, 2] > 0.1
         idx = np.nonzero(ok)[0]
         uv_n = uv[idx] + rng.normal(scale=0.3, size=(len(idx), 2))
-        cams.append(CamFeatures(uv_n, desc[idx], cam.unproject(uv_n),
-                                idx.astype(np.int64) if assoc else -np.ones(len(idx), np.int64)))
-    return KeyframeFeatures(cams, P_rig, {}, int(sum((c.lm >= 0).sum() for c in cams)))
+        if assoc:   # the candidate side: descriptors at the landmark projections
+            cams.append(CamFeatures(uv_n, desc[idx], cam.unproject(uv_n), uv[idx], desc[idx], idx.astype(np.int64)))
+        else:       # the current side: detections only
+            cams.append(CamFeatures(uv_n, desc[idx], cam.unproject(uv_n), np.zeros((0, 2)),
+                                    np.zeros((0, 32), np.uint8), np.zeros(0, np.int64)))
+    return KeyframeFeatures(cams, P_rig, {}, int(sum(len(c.lm_idx) for c in cams)))
 
 
 def _scene(rng, n=1500):
