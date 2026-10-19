@@ -174,7 +174,7 @@ def test_posegraph_closes_drift():
 
 def test_retrieval_time_gate_and_radius():
     hb = HashBow(16, 0)
-    r = Retriever(hb, CFG["retrieval"])
+    r = Retriever(hb, dict(CFG["retrieval"], min_path_m=0.0))
 
     class KF:
         def __init__(self, t, p):
@@ -190,6 +190,15 @@ def test_retrieval_time_gate_and_radius():
     assert [x[0] for x in c] == [0], c
     r.add(3, KF(40 * 10 ** 9, [20, 0, 0]), F())            # far from everything
     assert r.candidates(3, F()) == []
+    # the travelled-path gate (D1b): standing still is old enough and close, but no path lies
+    # between the keyframes; going away and coming back does
+    r2 = Retriever(HashBow(16, 0), dict(CFG["retrieval"], min_path_m=2.0))
+    r2.add(0, KF(0, [20, 0, 0]), F())
+    r2.add(1, KF(20 * 10 ** 9, [20.01, 0, 0]), F())
+    assert r2.candidates(1, F()) == [], r2.candidates(1, F())
+    r2.add(2, KF(30 * 10 ** 9, [23, 0, 0]), F())           # away: 3 m out ...
+    r2.add(3, KF(45 * 10 ** 9, [20.02, 0, 0]), F())        # ... and back: path 6 m, distance 2 cm
+    assert sorted(x[0] for x in r2.candidates(3, F())) == [0, 1], r2.candidates(3, F())   # nearest first
 
 
 def test_backend_throttle_and_bad_edge_drop(tmp_path=None):
@@ -198,7 +207,9 @@ def test_backend_throttle_and_bad_edge_drop(tmp_path=None):
     from loop_closure.keyframes import KeyframeRecord
     rng = np.random.RandomState(4)
     out = Path(tmp_path or tempfile.mkdtemp())
-    be = LoopClosureBackend(RIG, CFG, out, log=lambda *a: None)
+    cfg = json.loads(json.dumps(CFG))
+    cfg["backend"]["throttle_s"] = 2.0                     # the throttle itself is under test; default is off
+    be = LoopClosureBackend(RIG, cfg, out, log=lambda *a: None)
     truth = _square_lap()
     vio = _drifted(truth, yaw_rate=0.004, scale=1.05)
 

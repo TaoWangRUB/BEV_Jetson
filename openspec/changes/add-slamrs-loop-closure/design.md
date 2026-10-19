@@ -71,6 +71,19 @@ descriptor fallback never ran, so ORB — which only serves that route — is be
 descriptor; the switch is kept for the circuit log, where drift beyond the radius is the case
 the route exists for, and then on the rectified virtual pinholes rather than the raw fisheyes.
 
+*D1b (2026-10-19).* **No post-closure throttle offline; a travelled-path gate instead.** cuVSLAM's
+`throttling_time_ms` exists to bound an online backend's cost. Copied here as `throttle_s` = 2 s it
+was the largest single loss of closures on run5/run6: of the 111 / 110 keyframes with an older
+keyframe within 1 m, 50 / 47 were never verified because a closure had just been accepted. With the
+throttle off, accepted edges went 9 → 32 / 33 and the opposite-heading ones (the corridor walked
+out and back, > 120° between the passes) 4 → 12 / 19, with no edge dropped and the global figures
+unchanged. It also multiplied the trivial edges: a rig standing still at the end of a log closes
+against every keyframe it made at the same spot (12 / 4 edges under 5 cm apart) — correct, and
+constraining nothing. So `throttle_s` is 0 by default and retrieval requires `min_path_m` (2 m) of
+travelled path between the two keyframes: a revisit is a return to a place, not a pause at one.
+The throttle stays as the knob for an online build; the cost it bounds is real (verification
+57 → 84 s per log with it off).
+
 **D2. Correspondences are KLT tracks of the stored landmark appearance, exactly as cuVSLAM does
 it; ORB descriptors are only the fallback.** The first version matched ORB descriptors between
 keyframes with depth from the VIO landmarks, and the real data overturned it: on these raw
@@ -147,7 +160,8 @@ reported, not hidden.
 
 **D6. Bounded, incremental in structure, synchronous in execution.**
 `LoopClosureBackend.on_keyframe(kf)` does retrieve → verify → (accept → optimise). Throttle:
-no verification within `throttle_s` (default 2 s) of an accepted closure. Node cap: beyond
+no verification within `throttle_s` of an accepted closure — 0 by default offline (D1b), cuVSLAM's
+value for an online build. Node cap: beyond
 `max_nodes` the oldest keyframes without loop edges are merged into their successor (cuVSLAM's
 `ReduceKeyframes`). Executed in the replay loop here; the interface is what a thread would call.
 

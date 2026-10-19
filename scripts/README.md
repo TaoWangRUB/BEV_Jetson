@@ -268,24 +268,33 @@ verifies the pipeline, not the benefit (that needs the closed-circuit log of
 builds, so its edges differ), the second the 2026-10-19 review's changes: observed landmarks in
 the keyframe records, ORB off, the radius set to the tracker's reach, the analytic Jacobian.
 
-| run5 / run6 | 10-18 design | after the review |
+| run5 / run6 | 10-18 design | after the review (defaults now) |
 |---|---|---|
-| keyframes / hypotheses / accepted | 251 / 603 / 3, 243 / 574 / 3 | 251 / 162 / **9**, 243 / 166 / **9** |
-| hypotheses with no track at all | 349 / 377 | 12 / 40 |
+| keyframes / hypotheses / accepted | 251 / 603 / 3, 243 / 574 / 3 | 251 / 266 / **20**, 243 / 242 / **29** |
+| accepted from the opposite heading (> 120°) | 0 / 0 | 12 / 19 |
+| hypotheses with no track at all | 349 / 377 | 11 / 28 |
 | landmarks per keyframe, median | ~45 / ~55 | 165 / 220 |
-| accepted edges: inliers / tracked | 40–125 / 63–239 | 43–602 / 58–1031 |
-| first-to-last distance, VIO → closed | 0.51 → 0.17, 0.33 → 0.11 m | 0.51 → 0.18, 0.33 → 0.11 m |
-| closed vs VIO position, median / max | 0.14 / 0.48, 0.17 / 0.45 m | 0.14 / 0.48, 0.14 / 0.46 m |
+| first-to-last distance, VIO → closed | 0.51 → 0.17, 0.33 → 0.11 m | 0.51 → 0.16, 0.33 → 0.11 m |
+| closed vs VIO position, median / max | 0.14 / 0.48, 0.17 / 0.45 m | 0.14 / 0.50, 0.18 / 0.48 m |
 | VIO vs cuVSLAM, Sim(3) RMS (the noise floor) | 0.65 / 0.78 m | same |
-| per keyframe: features / verify (median, kf with candidates) | 44 / 379 ms (204), 36 / 418 ms (194) | 1 / 902 ms (61), 1 / 750 ms (63) |
-| verify, whole run | 75 / 70 s | 57 / 52 s |
-| per accepted closure: pose-graph solve | 2.8 / 3.0 s | 1.1 / 1.1 s |
+| per keyframe: features / verify (median, kf with candidates) | 44 / 379 ms (204), 36 / 418 ms (194) | 1 / 1263 ms (115), 1 / 964 ms (118) |
+| verify, whole run | 75 / 70 s | 107 / 94 s |
+| per accepted closure: pose-graph solve | 2.8 / 3.0 s | 1.1 / 1.2 s |
+
+The review's changes, in order of effect: the 2 s post-closure throttle copied from cuVSLAM had
+skipped 50 / 47 of the 111 / 110 keyframes that had an older keyframe within 1 m, so it is off by
+default and a travelled-path gate (`min_path_m`, 2 m between the two keyframes) filters the rig
+closing against itself while standing still; keyframe records hold every landmark the keyframe
+observed, not only the ones it hosts; the radius is the tracker's reach; ORB is off; the pose graph
+has its analytic Jacobian. The opposite-heading edges are the corridor walked out and back: only a
+median 43 tracks survive the forward-backward check there against 507 same-direction, because the
+walls are seen foreshortened the other way round — cuVSLAM's patch tracker has the same limit.
 
 The gates still do the rejecting, and the per-stage counts in `hypotheses.csv` now say where: the
 forward-backward check keeps 9–13 % of forward KLT tracks, and cuVSLAM's inlier-ratio gate — whose
 denominator is now hundreds of loosely tracked points rather than its own tracker's confirmed
-landmarks — rejects 76 / 29 hypotheses that had a median 106 / 44 geometric inliers. Whether those
-are true closures is a question for the circuit log (tasks 8.7–8.11). The pure-VIO csv is
+landmarks — rejects 144 / 58 hypotheses, many with over a hundred geometric inliers. Whether those
+are true closures is a question for the circuit log (tasks 8.8–8.11). The pure-VIO csv is
 byte-identical with and without the backend (every column but the wall-clock `track_ms`), and two
 replays on one build give byte-identical hypotheses, edges and corrected trajectories. The 1.1 s
 solve is the Python per-edge loop around SciPy's sparse solver with the analytic Jacobian; vectorising

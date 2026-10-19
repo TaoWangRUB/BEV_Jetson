@@ -11,6 +11,7 @@
   "retrieval": {
     "min_separation_s": 10.0,
     "spatial_radius_m": 1.0,
+    "min_path_m": 2.0,
     "bow_num_bits": 16,
     "bow_min_score": 0.04,
     "bow_top_k": 5,
@@ -53,6 +54,6 @@
     "max_nodes": 0
   },
   "backend": {
-    "throttle_s": 2.0
+    "throttle_s": 0.0
   }
 }

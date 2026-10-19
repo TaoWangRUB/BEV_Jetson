@@ -111,33 +111,42 @@
       a test. Solve per accepted closure 2.8–3.0 s → 1.1 s median on ~250 nodes; what remains is the
       Python per-edge loop in the residual and Jacobian, not the solver.
 
-| run5 / run6 | before (10-18 design) | after |
-|---|---|---|
-| hypotheses verified | 603 / 574 | 162 / 166 |
-| accepted (all spatial) | 3 / 3 | 9 / 9 |
-| rejected with no track at all | 349 / 377 | 12 / 40 |
-| landmarks per keyframe, median | ~45 / ~55 | 165 / 220 |
-| first-to-last, VIO → closed | 0.51→0.17 / 0.33→0.11 m | 0.51→0.18 / 0.33→0.11 m |
-| closed vs VIO, median / max | 0.14 / 0.48, 0.17 / 0.45 m | 0.14 / 0.48, 0.14 / 0.46 m |
-| features per keyframe | 44 / 36 ms | 1 / 1 ms |
-| verify per keyframe with candidates, median | 379 / 418 ms (204 / 194 kf) | 902 / 750 ms (61 / 63 kf) |
-| verify, whole run | 75 / 70 s | 57 / 52 s |
-| solve per accepted closure, median | 2.8 / 3.0 s | 1.1 / 1.1 s |
+- [x] 8.7 (was 8.8) **Throttle off, travelled-path gate on** (design D1b). The 2 s post-closure
+      throttle had skipped 50 / 47 of the 111 / 110 keyframes that had an older keyframe within 1 m.
+      Off: 32 / 33 accepted, of which 12 / 4 were a rig standing still at the end of the log closing
+      against itself (under 5 cm apart). `min_path_m` = 2 m of travelled path between the two
+      keyframes removes exactly those: **20 / 29 accepted, 0 trivial, 0 dropped**, 12 / 19 of them
+      opposite-heading (the corridor walked out and back, > 120° between the passes).
+
+| run5 / run6 | 10-18 design | 8.2–8.6 | + 8.7 (defaults now) |
+|---|---|---|---|
+| hypotheses verified | 603 / 574 | 162 / 166 | 266 / 242 |
+| accepted (all spatial) | 3 / 3 | 9 / 9 | **20 / 29** |
+| of which opposite-heading (> 120°) | 0 / 0 | 4 / 4 | 12 / 19 |
+| of which trivial (< 5 cm apart) | 0 / 0 | 2 / 1 | 0 / 0 |
+| rejected with no track at all | 349 / 377 | 12 / 40 | 11 / 28 |
+| landmarks per keyframe, median | ~45 / ~55 | 165 / 220 | same |
+| first-to-last, VIO → closed | 0.51→0.17 / 0.33→0.11 m | 0.51→0.18 / 0.33→0.11 m | 0.51→0.16 / 0.33→0.11 m |
+| closed vs VIO, median / max | 0.14 / 0.48, 0.17 / 0.45 m | 0.14 / 0.48, 0.14 / 0.46 m | 0.14 / 0.50, 0.18 / 0.48 m |
+| features per keyframe | 44 / 36 ms | 1 / 1 ms | same |
+| verify, whole run | 75 / 70 s | 57 / 52 s | 107 / 94 s |
+| solve per accepted closure, median | 2.8 / 3.0 s | 1.1 / 1.1 s | 1.1 / 1.2 s |
 
 The global figures do not move: these logs only hold near-revisits, so three edges already pinned
-what nine can. What the extra edges show is that the pipeline now finds them where they exist.
+what twenty can. What the extra edges show is that the pipeline now finds them where they exist,
+including from the opposite direction — where only a median 43 tracks survive the forward-backward
+check against 507 for same-direction revisits, since a 1.5 m corridor's walls are seen foreshortened
+the other way round; cuVSLAM's patch tracker has the same limit.
 
 Open, deliberately left for the circuit log rather than tuned blind:
 
-- [ ] 8.7 **The ratio gate is mis-scaled the other way now.** 76 (run5) / 29 (run6) hypotheses were
-      rejected on cuVSLAM's inlier ratio with a median 106 / 44 joint inliers, all ≥ 40, because
-      `tracked` now counts every NCC-passed track from thousands of projections (median 450 / 588)
-      and the ratio reads 0.07–0.24 against a 0.3 floor. cuVSLAM's denominator is its own tracker's
-      confirmed landmarks. Decide on the circuit log whether those are true closures: if so, the
-      gate wants an absolute floor plus a ratio over the best pair, or a tighter NCC.
-- [ ] 8.8 Stationary keyframes close trivially: the rig rests at the end of both logs, so keyframes
-      28 s apart at the same spot (separation 0.5–3 cm) pass every gate. Harmless, useless; a
-      travelled-path gate (≥ N m between the two keyframes) is the natural filter.
+- [ ] 8.8 **The ratio gate is mis-scaled the other way now.** With the defaults above 144 (run5) /
+      58 (run6) hypotheses are rejected on cuVSLAM's inlier ratio — at the 8.2–8.6 stage 76 / 29,
+      with a median 106 / 44 joint inliers, all ≥ 40 — because `tracked` now counts every
+      NCC-passed track from thousands of projections (median 450 / 588) and the ratio reads
+      0.07–0.24 against a 0.3 floor. cuVSLAM's denominator is its own tracker's confirmed
+      landmarks. Decide on the circuit log whether those are true closures: if so, the gate wants
+      an absolute floor plus a ratio over the best pair, or a tighter NCC.
 - [ ] 8.9 Verification cost per candidate rose 2–3× with the landmark count (thousands of
       projections across 4×4 camera pairs). Cap the landmarks per source keyframe (oldest / most
       observed first) before the backend goes near a thread.
