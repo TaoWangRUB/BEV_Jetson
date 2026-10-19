@@ -1,6 +1,7 @@
 {
   "_comment": "slam-rs loop-closure backend (openspec/changes/add-slamrs-loop-closure/design.md). Gates follow cuVSLAM's LoopClosureSolverTwoStepsEasy; matching constants follow Basalt's mapper.",
   "features": {
+    "orb_enabled": false,
     "orb_features": 1000,
     "orb_fast_threshold": 12,
     "min_landmark_age": 3,
@@ -9,7 +10,7 @@
   },
   "retrieval": {
     "min_separation_s": 10.0,
-    "spatial_radius_m": 3.0,
+    "spatial_radius_m": 1.0,
     "bow_num_bits": 16,
     "bow_min_score": 0.04,
     "bow_top_k": 5,

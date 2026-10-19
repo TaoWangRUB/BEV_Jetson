@@ -8,13 +8,14 @@ dyaw_ij) where dyaw_ij = yaw(R_rp_i @ R_ij), the constant that makes yaw_j = yaw
 Residuals: (R_i^T (p_j - p_i) - t_ij) / sigma_t and wrap(yaw_j - yaw_i - dyaw_ij) / sigma_yaw.
 Sequential edges have a covariance that grows with travelled distance (the VIO exposes none);
 loop edges carry the verifier's and a Huber weight applied by iteratively reweighted least squares
-(cuVSLAM's robustifier). Solved with sparse Levenberg-Marquardt via scipy; the first node is fixed.
+(cuVSLAM's robustifier). Solved with scipy's sparse trust-region least squares with the analytic
+Jacobian below (design D4); the first node is fixed.
 """
 from dataclasses import dataclass
 
 import numpy as np
 from scipy.optimize import least_squares
-from scipy.sparse import lil_matrix
+from scipy.sparse import csr_matrix
 
 from .camera import Rz, se3, wrap_angle, yaw_of
 
@@ -111,14 +112,46 @@ class PoseGraph4DoF:
             out[4 * e_i + 3] = w * wrap_angle(yaw[e.j] - yaw[e.i] - e.dyaw) / e.sigma_yaw
         return out
 
-    def _sparsity(self, edges):
+    def _jacobian(self, x, edges):
+        """Analytic sparse Jacobian of `_residuals` (4 rows per edge, 4 columns per free node).
+
+        With R_i = Rz(yaw_i) R_rp_i and d = p_j - p_i:
+          r_t = w (R_i^T d - t_ij) / sigma_t   ->  d/dp_j = w R_i^T / sigma_t,  d/dp_i = -w R_i^T / sigma_t,
+                                                    d/dyaw_i = w R_rp_i^T (dRz(-yaw)/dyaw) d / sigma_t
+          r_y = w wrap(yaw_j - yaw_i - dyaw) / sigma_yaw  ->  d/dyaw_j = w / sigma_yaw,  d/dyaw_i = -w / sigma_yaw
+        Node 0 is fixed and has no columns."""
         n = len(self.p)
-        S = lil_matrix((4 * len(edges), 4 * (n - 1)), dtype=np.int8)
+        p = np.empty((n, 3))
+        yaw = np.empty(n)
+        p[0], yaw[0] = self.p[0], self.yaw[0]
+        xx = x.reshape(-1, 4)
+        p[1:], yaw[1:] = xx[:, :3], xx[:, 3]
+        rows, cols, vals = [], [], []
+
+        def put(r0, c0, block):
+            b = np.atleast_2d(block)
+            for a in range(b.shape[0]):
+                for c in range(b.shape[1]):
+                    rows.append(r0 + a); cols.append(c0 + c); vals.append(b[a, c])
+
         for e_i, e in enumerate(edges):
-            for k in (e.i, e.j):
-                if k > 0:
-                    S[4 * e_i: 4 * e_i + 4, 4 * (k - 1): 4 * (k - 1) + 4] = 1
-        return S.tocsr()
+            r0 = 4 * e_i
+            w = e.weight
+            cy, sy = np.cos(yaw[e.i]), np.sin(yaw[e.i])
+            RzT = np.array([[cy, sy, 0.0], [-sy, cy, 0.0], [0.0, 0.0, 1.0]])          # Rz(-yaw_i)
+            dRzT = np.array([[-sy, cy, 0.0], [-cy, -sy, 0.0], [0.0, 0.0, 0.0]])       # d/dyaw of Rz(-yaw_i)
+            RiT = self.R_rp[e.i].T @ RzT
+            d = p[e.j] - p[e.i]
+            if e.j > 0:
+                c0 = 4 * (e.j - 1)
+                put(r0, c0, w * RiT / e.sigma_t)
+                put(r0 + 3, c0 + 3, w / e.sigma_yaw)
+            if e.i > 0:
+                c0 = 4 * (e.i - 1)
+                put(r0, c0, -w * RiT / e.sigma_t)
+                put(r0, c0 + 3, (w * (self.R_rp[e.i].T @ dRzT @ d) / e.sigma_t).reshape(3, 1))
+                put(r0 + 3, c0 + 3, -w / e.sigma_yaw)
+        return csr_matrix((vals, (rows, cols)), shape=(4 * len(edges), 4 * (n - 1)))
 
     def optimize(self, irls_rounds=3):
         """Solve; returns the loop edges' normalised residual norms after the final solve."""
@@ -128,10 +161,9 @@ class PoseGraph4DoF:
         huber = float(self.cfg["huber_m"])
         for e in edges:
             e.weight = 1.0
-        S = self._sparsity(edges)
         x = self._pack()
         for _ in range(irls_rounds if any(e.loop for e in edges) else 1):
-            res = least_squares(self._residuals, x, args=(edges,), jac_sparsity=S, method="trf",
+            res = least_squares(self._residuals, x, args=(edges,), jac=self._jacobian, method="trf",
                                 x_scale="jac", max_nfev=100, xtol=1e-10, ftol=1e-10)
             x = res.x
             changed = False

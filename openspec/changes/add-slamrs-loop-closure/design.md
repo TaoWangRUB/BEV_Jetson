@@ -58,6 +58,19 @@ with no macOS wheel. Revisit if HashBow's recall is the limiting factor on the c
 Time gate: candidates younger than `min_separation_s` (default 10 s) are dropped — run1's
 2.45 s "revisits" are exactly the noise cuVSLAM's `throttling_time_ms` exists to suppress.
 
+*D1a (2026-10-19, Dell review).* **The spatial radius is the tracker's reach, and ORB is off by
+default.** On run5/run6 the KLT step is what bounds a candidate, not retrieval: of the spatial
+hypotheses within 0.5 m, 67–82 % produced tracks and 17–59 % reached 40; between 0.5 and 1 m,
+2–11 % reached 40; beyond 1 m essentially none (0 % at 1–3 m on both runs, 253 of 505 and 213 of
+470 hypotheses). All six accepted edges sat at 0.20–0.46 m. A 3 m radius therefore spent more
+than half of the verification time on candidates the tracker could not use, so
+`spatial_radius_m` is 1.0. The appearance route never produced a single track (every one of its
+98 / 104 hypotheses died in KLT, because an appearance candidate has no usable guess) and the
+descriptor fallback never ran, so ORB — which only serves that route — is behind
+`features.orb_enabled`, off by default, saving 36–44 ms per keyframe. cuVSLAM's design needs no
+descriptor; the switch is kept for the circuit log, where drift beyond the radius is the case
+the route exists for, and then on the rectified virtual pinholes rather than the raw fisheyes.
+
 **D2. Correspondences are KLT tracks of the stored landmark appearance, exactly as cuVSLAM does
 it; ORB descriptors are only the fallback.** The first version matched ORB descriptors between
 keyframes with depth from the VIO landmarks, and the real data overturned it: on these raw
@@ -85,6 +98,19 @@ the host rig frame at the snapshot it was last seen in. Before: projection-to-ob
 median 5.7 px; after: 0.50 px, 87 % within 2 px. Landmarks younger than `min_landmark_age`
 snapshots (3) are not used: their depth is still settling.
 
+**D2b. A keyframe's record holds every landmark it observed, not only the ones it hosts.**
+A keyframe hosts the landmarks born at it — a median 42–55 per keyframe on run5/run6, and 10 %
+of keyframes host none — but it observes the whole window's, two to six times as many. The
+verifier can only track landmarks the record holds, and cuVSLAM's 40 floor was set for 300+
+landmarks per frame; with hosted-only records the floor was reached almost exclusively by
+pooling ±10 neighbours (the candidate itself contributed 3–23 of the 63–239 tracks behind each
+accepted edge) and 46–106 hypotheses per run died with a median 11–17 inliers. The record now
+accumulates every landmark whose id the frontend reported at keyframe time as soon as a
+snapshot gives it a position, in the keyframe's rig frame at that snapshot (D2a's consistency
+rule, unchanged), with a `hosted` flag. The verifier is instrumented per stage (selected,
+projected, tracked, forward-backward, error, NCC) on every hypothesis, so a candidate that
+yields nothing says where it died.
+
 **D3. Verification is cuVSLAM's two-step PnP with its gates, per camera pair then jointly.**
 The landmarks in sight are the candidate's plus those of its neighbouring keyframes (within
 `neighbour_radius_m`, ±`neighbour_max_kf`, each brought into the candidate's frame through the
@@ -106,8 +132,10 @@ graph applies: fixing them keeps the map gravity-aligned (Basalt's roll-pitch fa
 strongest form) and halves the unknowns. Edges: sequential VIO relative poses with covariance
 `diag(σ_t·d, σ_yaw·d)` growing with travelled distance `d` (no VIO covariance is exposed); loop
 edges with D3's covariance and a Huber kernel (robustifier 0.1 m, cuVSLAM's). Solver: sparse
-Levenberg–Marquardt via `scipy.optimize.least_squares` with an analytic sparse Jacobian; at ≤ 1000
-keyframes this is well under a second per solve. *Alternative:* GTSAM (installed) with iSAM2 for
+trust-region least squares via `scipy.optimize.least_squares` with an analytic sparse Jacobian
+(`PoseGraph4DoF._jacobian`, checked against central differences in the tests). The first
+version passed only a sparsity pattern and let SciPy difference the residuals, which cost 0.8–3 s
+per solve on ~250 nodes; the analytic Jacobian is what makes the solve negligible. *Alternative:* GTSAM (installed) with iSAM2 for
 incremental solves — kept as a later option; a 4-DoF factor is not in its Python wrapper, and the
 offline sizes do not need incremental solving yet.
 
@@ -143,7 +171,13 @@ VIO-to-cuVSLAM disagreement (its noise floor).
   trades yaw against position drift.
 - [A wrong accepted loop corrupts the whole trajectory] → cuVSLAM's gates plus a post-optimisation
   check: if any loop edge's residual exceeds 3σ after the solve, the edge is dropped and the graph
-  re-solved (Huber already bounds its influence).
+  re-solved (Huber already bounds its influence). Known limit: a loop edge's σ after D3's scaling
+  (≈0.3 m at ratio 0.6) is comparable to the sequential chain's between the two keyframes, so the
+  solve splits the difference and the 3σ check can only catch loops that contradict *each other*,
+  not a single wrong one. cuVSLAM's step-consistency gate, copied here, is in the reference
+  effectively inert: it compares `linear().norm()` of two rotation matrices, which is √3 for any
+  rotation, so only its translation half ever fires there; the port uses a true angle and is
+  stricter.
 - [Verification cost on the host] → ORB + 16-pair matching is ~20–40 ms per candidate; throttle and
   a candidate cap (`max_candidates`, default 3) bound it per keyframe; the per-stage timings are in
   the output (spec: Cost is visible).

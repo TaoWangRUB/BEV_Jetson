@@ -8,6 +8,11 @@ stored landmark patches, done here with the descriptor instead of the patch.
 HashBow is Basalt's retrieval structure (include/basalt/hash_bow/hash_bow.h): a word is a fixed
 subset of the descriptor's bits, a frame is an L1-normalised word histogram, and the score is the
 L1 overlap. No vocabulary, deterministic, microseconds per query.
+
+ORB is off by default (`features.orb_enabled`): cuVSLAM's design needs no descriptor - candidates
+come from the pose and correspondences from KLT - and on run5/run6 the descriptor route found
+no closure at all while costing 36-44 ms per keyframe. It stays as the switch for appearance
+retrieval after drift beyond the spatial radius (design D1).
 """
 from dataclasses import dataclass
 
@@ -29,8 +34,8 @@ class CamFeatures:
 class KeyframeFeatures:
     cams: list            # CamFeatures per camera
     lm_pos_rig: np.ndarray  # landmarks in the keyframe's own rig (IMU) frame, (m, 3)
-    bow: dict             # word -> normalised weight
-    n_assoc: int          # landmark projections with a descriptor, all cameras
+    bow: dict             # word -> normalised weight ({} with ORB off)
+    n_assoc: int          # landmarks with an observation at keyframe time, summed over cameras
 
 
 class HashBow:
@@ -95,7 +100,9 @@ def describe_at(orb, im, uv):
 
 
 def extract(kf, rig, orb, hashbow, cfg):
-    """ORB on each camera, descriptors at the landmark projections, bearings and the bag of words."""
+    """Landmark bookkeeping per camera and, with `orb` not None, ORB detections, descriptors at
+    the landmark observations, bearings and the bag of words. With ORB off only the landmark
+    observations are kept (what KLT verification needs); the bag of words is empty."""
     T_imu_world = np.linalg.inv(kf.T_vio)
     lm_rig = (T_imu_world[:3, :3] @ kf.lm_pos.T).T + T_imu_world[:3, 3] if len(kf.lm_pos) else np.zeros((0, 3))
     cams, descs, n_assoc = [], [], 0
@@ -104,7 +111,7 @@ def extract(kf, rig, orb, hashbow, cfg):
         # Descriptors are computed UNROTATED on both sides (angle 0): the landmark side has no
         # corner orientation to rotate by, and on a ground rig roll is constant, so rotation
         # invariance buys nothing and would only make the two sides disagree.
-        kps = orb.detect(im, None)
+        kps = orb.detect(im, None) if orb is not None else []
         for p in kps:
             p.angle = 0.0
         kps, desc = orb.compute(im, kps) if kps else ([], None)
@@ -132,9 +139,12 @@ def extract(kf, rig, orb, hashbow, cfg):
                 ok &= P[:, 2] > -0.05
                 idx = np.nonzero(ok)[0]
                 uv = uv_all[idx]
-            got, d = describe_at(orb, im, uv)
-            f["lm_kp"], f["lm_desc"], f["lm_idx"] = uv[got], d, idx[got]
-            n_assoc += len(got)
+            n_assoc += len(idx)
+            if orb is not None:
+                got, d = describe_at(orb, im, uv)
+                f["lm_kp"], f["lm_desc"], f["lm_idx"] = uv[got], d, idx[got]
+            else:
+                f["lm_kp"], f["lm_idx"] = np.asarray(uv, dtype=np.float64), np.asarray(idx, dtype=np.int64)
         cams.append(CamFeatures(**f))
-    bow = hashbow.bow(np.concatenate(descs) if descs else np.zeros((0, 32), np.uint8))
+    bow = hashbow.bow(np.concatenate(descs)) if (orb is not None and descs) else {}
     return KeyframeFeatures(cams, lm_rig, bow, n_assoc)

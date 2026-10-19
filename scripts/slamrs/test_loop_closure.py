@@ -233,6 +233,69 @@ def test_backend_throttle_and_bad_edge_drop(tmp_path=None):
     assert (out / "hypotheses.csv").exists() and (out / "timings.csv").exists() and s["keyframes"] == len(vio)
 
 
+def test_posegraph_jacobian_matches_finite_differences():
+    truth = _square_lap()
+    vio = _drifted(truth, yaw_rate=0.004, scale=1.05)
+    g = PoseGraph4DoF(CFG["graph"])
+    for k, T in enumerate(vio):
+        g.add_node(k * 10 ** 9, T)
+    g.add_loop_edge(len(vio) - 1, 0, inv(truth[-1]) @ truth[0], 0.05, np.radians(1.0))
+    g.edges[-1].weight = 0.7                                     # a Huber-reweighted loop edge
+    x = g._pack() + np.random.RandomState(5).normal(scale=0.05, size=g._pack().shape)
+    J = g._jacobian(x, g.edges).toarray()
+    eps = 1e-6
+    Jn = np.empty_like(J)
+    for c in range(len(x)):
+        xp, xm = x.copy(), x.copy()
+        xp[c] += eps
+        xm[c] -= eps
+        Jn[:, c] = (g._residuals(xp, g.edges) - g._residuals(xm, g.edges)) / (2 * eps)
+    assert np.abs(J - Jn).max() < 1e-4 * max(1.0, np.abs(Jn).max()), np.abs(J - Jn).max()
+    assert J.shape == (4 * len(g.edges), 4 * (len(vio) - 1))
+
+
+def test_keyframe_record_keeps_observed_landmarks():
+    """D2b: a keyframe's record holds every landmark it observed once that landmark has a
+    position, not only the ones it hosts; positions follow the keyframe's own latest pose."""
+    from loop_closure.keyframes import KeyframeTracker
+
+    class Flow:
+        camera_count = 4
+
+        def __init__(self, t, ids):
+            self.t_ns, self._ids = t, np.asarray(ids, np.int64)
+
+        def ids(self, c):
+            return self._ids if c == 0 else np.zeros(0, np.int64)
+
+        def positions(self, c):
+            return np.zeros((len(self.ids(c)), 2))
+
+    class Snap:
+        def __init__(self, kf_ids, wt, hosts, lids, lpos, marg):
+            self.kf_ids, self.window_t_ns, self.marginalized = kf_ids, wt, marg
+            self.window_poses = np.tile([0, 0, 0, 0, 0, 0, 1.0], (len(wt), 1))   # identity poses
+            self.landmark_hosts, self.landmark_ids, self.landmark_positions = hosts, lids, lpos
+
+    ims = [np.zeros((4, 4), np.uint8)] * 4
+    tr = KeyframeTracker()
+    # keyframe 10 observes ids 1, 2, 3; 1 is hosted by 10, 2 by the older keyframe 5, 3 has no position yet
+    out = tr.update(10, ims, Snap([5, 10], [5, 10], [10, 5], [1, 2], [[1, 0, 0], [0, 2, 0]], []), Flow(10, [1, 2, 3]))
+    assert out == [] and 10 in tr.pending
+    # next frame: 3 is triangulated, hosted by 11
+    out = tr.update(11, ims, Snap([5, 10, 11], [5, 10, 11], [10, 5, 11], [1, 2, 3],
+                                  [[1, 0, 0], [0, 2, 0], [0, 0, 3]], []), Flow(11, [1, 2, 3]))
+    assert out == []
+    # keyframe 10 is marginalised
+    out = tr.update(12, ims, Snap([5, 11], [5, 11, 12], [5, 11], [2, 3], [[0, 2, 0], [0, 0, 3]], [10]), Flow(12, [2, 3]))
+    assert len(out) == 1
+    kf = out[0]
+    assert kf.lm_ids.tolist() == [1, 2, 3]
+    assert kf.lm_hosted.tolist() == [True, False, False]
+    assert np.allclose(kf.lm_pos, [[1, 0, 0], [0, 2, 0], [0, 0, 3]])
+    assert kf.lm_age.tolist() == [2, 2, 1]
+
+
 if __name__ == "__main__":
     import inspect
     fails = 0

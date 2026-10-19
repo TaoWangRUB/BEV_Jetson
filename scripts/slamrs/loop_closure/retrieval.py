@@ -3,9 +3,10 @@ import numpy as np
 
 
 class Retriever:
-    def __init__(self, hashbow, cfg):
+    def __init__(self, hashbow, cfg, appearance=True):
         self.hashbow = hashbow
         self.cfg = cfg
+        self.appearance = bool(appearance)     # the bag-of-words route needs descriptors (ORB on)
         self.t = []          # keyframe stamps, ns
         self.p = []          # keyframe VIO positions (world)
 
@@ -31,7 +32,8 @@ class Retriever:
                 out.append((int(i), "spatial", float(np.linalg.norm(self.p[i] - self.p[index]))))
                 seen.add(int(i))
         oldset = set(int(i) for i in old)
-        for fid, score in self.hashbow.query(feats.bow, int(c["bow_top_k"]), keep=lambda f: f in oldset):
+        bow_hits = self.hashbow.query(feats.bow, int(c["bow_top_k"]), keep=lambda f: f in oldset) if self.appearance else []
+        for fid, score in bow_hits:
             if score >= float(c["bow_min_score"]) and fid not in seen:
                 out.append((fid, "appearance", float(score)))
                 seen.add(fid)

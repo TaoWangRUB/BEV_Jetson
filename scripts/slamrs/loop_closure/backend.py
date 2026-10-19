@@ -21,9 +21,12 @@ class LoopClosureBackend:
     def __init__(self, rig, cfg, out_dir=None, log=print):
         self.rig, self.cfg, self.log = rig, cfg, log
         self.out_dir = Path(out_dir) if out_dir else None
-        self.orb = make_orb(cfg["features"])
+        # ORB serves only appearance retrieval and the descriptor fallback; off by default (design D1)
+        self.orb = make_orb(cfg["features"]) if bool(cfg["features"].get("orb_enabled", False)) else None
         self.hashbow = HashBow(int(cfg["retrieval"]["bow_num_bits"]), int(cfg["verify"]["seed"]))
-        self.retriever = Retriever(self.hashbow, cfg["retrieval"])
+        self.retriever = Retriever(self.hashbow, cfg["retrieval"], appearance=self.orb is not None)
+        self.vcfg = dict(cfg["verify"])
+        self.vcfg["orb_fallback"] = self.orb is not None
         self.graph = PoseGraph4DoF(cfg["graph"])
         self.min_z = float(cfg["features"]["min_bearing_z"])
         self.keyframes = []        # KeyframeRecord, index == position
@@ -58,7 +61,7 @@ class LoopClosureBackend:
             kc = self.keyframes[ci]
             T_guess = inv(kf.T_vio) @ kc.T_vio          # odometry's T_cur_from_cand
             h = verify(ci, kf.index, route, kc, kf, self.rig, T_guess,
-                       self.cfg["verify"], self.min_z, neighbours=self._in_sight(ci, kf))
+                       self.vcfg, self.min_z, neighbours=self._in_sight(ci, kf))
             h.score = score
             self.hypotheses.append(h)
             if h.accepted:
@@ -109,8 +112,6 @@ class LoopClosureBackend:
             self.graph.drop_edge(bad)
             self.dropped.append((bad.i, bad.j, float(r.max())))
             self.edges = [(h, e) for h, e in self.edges if e is not bad]
-            for h, _ in self.edges:
-                pass
 
     # -- outputs --------------------------------------------------------------------------
     def finish(self):
@@ -154,20 +155,26 @@ class LoopClosureBackend:
                         f"{sv:.3f},{sl:.3f}\n")
         with open(d / "hypotheses.csv", "w") as f:
             f.write("cur,cand,route,score,accepted,reason,tracked,inliers1,inliers2,ratio,best_pair,"
-                    "guess_diff_m,guess_diff_deg,pairs\n")
+                    "guess_diff_m,guess_diff_deg,method,n_sel,n_proj,n_klt,n_fb,n_err,n_ncc,pairs\n")
             for h in self.hypotheses:
                 pairs = ";".join(f"{k}:{v}" for k, v in h.pair_counts.items())
                 f.write(f"{h.cur},{h.cand},{h.route},{getattr(h, 'score', 0):.3f},{int(h.accepted)},{h.reason},"
                         f"{h.tracked},{h.inliers1},{h.inliers2},{h.ratio:.3f},{h.best_pair[0] + 1}-{h.best_pair[1] + 1},"
-                        f"{h.guess_diff_m:.3f},{h.guess_diff_deg:.2f},{pairs}\n")
+                        f"{h.guess_diff_m:.3f},{h.guess_diff_deg:.2f},{h.method},"
+                        f"{h.n_sel},{h.n_proj},{h.n_klt},{h.n_fb},{h.n_err},{h.n_ncc},{pairs}\n")
         keys = ["t_ns", "index", "n_assoc", "candidates", "feat_ms", "retrieve_ms", "verify_ms", "optimize_ms", "accepted"]
         with open(d / "timings.csv", "w") as f:
             f.write(",".join(keys) + ",note\n")
             for r in self.timings:
                 f.write(",".join(f"{r[k]:.2f}" if isinstance(r[k], float) else str(r[k]) for k in keys)
                         + f",{r.get('note', '')}\n")
+        reasons = {}
+        for h in self.hypotheses:
+            reasons[h.reason] = reasons.get(h.reason, 0) + 1
         summary = dict(keyframes=len(self.keyframes), hypotheses=len(self.hypotheses),
-                       accepted=len(self.edges), dropped=self.dropped,
+                       accepted=len(self.edges), dropped=self.dropped, reasons=reasons,
+                       landmarks_per_keyframe_median=float(np.median([len(k.lm_ids) for k in self.keyframes])) if self.keyframes else 0.0,
+                       orb=self.orb is not None,
                        feat_ms_median=float(np.median([r["feat_ms"] for r in self.timings])) if self.timings else 0.0,
                        verify_ms_median=float(np.median([r["verify_ms"] for r in self.timings if r["candidates"]]))
                        if any(r["candidates"] for r in self.timings) else 0.0)

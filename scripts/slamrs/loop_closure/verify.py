@@ -42,6 +42,14 @@ class Hypothesis:
     guess_diff_m: float = 0.0
     guess_diff_deg: float = 0.0
     method: str = ""
+    # KLT stage counts over every source keyframe and camera pair (a landmark seen by two source
+    # cameras, or landing in two current cameras, counts once per pair): why a candidate died
+    n_sel: int = 0            # landmarks with an observation and enough age
+    n_proj: int = 0           # ... that project into a current camera with the guess
+    n_klt: int = 0            # ... that Lucas-Kanade tracked forward
+    n_fb: int = 0             # ... and tracked back to within klt_fb_max_px
+    n_err: int = 0            # ... with a tracking error under klt_max_err
+    n_ncc: int = 0            # ... whose patch NCC >= klt_ncc_min (= the correspondences used)
 
 
 def match_pair(fa, fb, cfg):
@@ -91,10 +99,14 @@ def klt_pairs(src, cur, T_cur_from_src, rig, cfg, min_z):
     keyframes apart are nearly as far apart as random ones (run5: Hamming 80 vs 122), and the
     detector misses most tracked corners. Tracking a patch from a predicted position needs no
     detector and no descriptor, only a guess within the pyramid's reach.
+
+    Also returns the stage counts (see Hypothesis.n_*), so a candidate that yields nothing says
+    at which stage it died.
     """
     out = []
+    stats = dict(sel=0, proj=0, klt=0, fb=0, err=0, ncc=0)
     if src.lm_obs is None or src.images is None or cur.images is None or len(src.lm_ids) == 0:
-        return out
+        return out, stats
     fs = src.features
     win, lev = int(cfg["klt_win"]), int(cfg["klt_levels"])
     half = int(cfg["klt_patch"]) // 2
@@ -103,6 +115,7 @@ def klt_pairs(src, cur, T_cur_from_src, rig, cfg, min_z):
     min_age = int(cfg.get("min_landmark_age", 1))
     for i, (ids, uv_s) in src.lm_obs.items():
         sel = [(n, pos[int(k)]) for n, k in enumerate(ids) if int(k) in pos and src.lm_age[pos[int(k)]] >= min_age]
+        stats["sel"] += len(sel)
         if len(sel) < 3:
             continue
         n_obs = np.array([s[0] for s in sel]); l_idx = np.array([s[1] for s in sel])
@@ -113,6 +126,7 @@ def klt_pairs(src, cur, T_cur_from_src, rig, cfg, min_z):
             Pc = P_cur @ Tc[:3, :3].T + Tc[:3, 3]
             uv_pred, ok = cam.project(Pc)
             ok &= Pc[:, 2] > 0.02
+            stats["proj"] += int(ok.sum())
             if ok.sum() < 3:
                 continue
             k_idx = np.nonzero(ok)[0]
@@ -130,8 +144,11 @@ def klt_pairs(src, cur, T_cur_from_src, rig, cfg, min_z):
                 criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
                 flags=cv2.OPTFLOW_USE_INITIAL_FLOW)
             fb = np.linalg.norm(p0b.reshape(-1, 2) - p0.reshape(-1, 2), axis=1)
+            stats["klt"] += int((st.ravel() == 1).sum())
             p1 = p1.reshape(-1, 2); st = (st.ravel() == 1) & (stb.ravel() == 1) & (fb <= float(cfg["klt_fb_max_px"]))
             err = err.ravel()
+            stats["fb"] += int(st.sum())
+            stats["err"] += int((st & (err < max_err)).sum())
             keep = []
             for n in np.nonzero(st & (err < max_err))[0]:
                 x0, y0 = p0[n, 0]; x1, y1 = p1[n]
@@ -141,11 +158,25 @@ def klt_pairs(src, cur, T_cur_from_src, rig, cfg, min_z):
                 pb = cv2.getRectSubPix(cur.images[j], (2 * half + 1, 2 * half + 1), (float(x1), float(y1)))
                 if _ncc(pa, pb) >= ncc_min:
                     keep.append(n)
+            stats["ncc"] += len(keep)
             if len(keep) < 3:
                 continue
             keep = np.array(keep)
             out.append((i, j, P_src[k_idx[keep]], cam.unproject(p1[keep])))
-    return out
+    return out, stats
+
+
+def orb_pairs(fs, fk, cfg):
+    """The descriptor route: mutual ORB matches from the source keyframe's landmark descriptors to
+    the current keyframe's detections, per camera pair. Needs a core built with ORB on
+    (features.orb_enabled); the fallback for a candidate KLT cannot reach, or for bare features."""
+    found = []
+    for i, fa in enumerate(fs.cams):
+        for j, fb in enumerate(fk.cams):
+            ia, ib = match_pair(fa, fb, cfg)
+            if len(ia):
+                found.append((i, j, fs.lm_pos_rig[ia], fb.bearing[ib]))
+    return found
 
 
 def _normalised(b, min_z):
@@ -218,7 +249,8 @@ def verify(cand_idx, cur_idx, route, cand, cur, rig, T_guess, cfg, min_z, neighb
     landmark near the guess, then picks the single keyframe owning most of them for step 1).
 
     Correspondences come from KLT tracking of the stored landmark appearance (klt_pairs) when
-    images and observations are available, else from ORB descriptor matching (match_pair)."""
+    images and observations are available; ORB descriptor matching (orb_pairs) serves bare
+    features (no images) and, with cfg["orb_fallback"], a candidate KLT found nothing on."""
     h = Hypothesis(cand_idx, cur_idx, route)
     P_all, B_all, cam_all, counts = [], [], [], {}
     pairs = []
@@ -230,15 +262,16 @@ def verify(cand_idx, cur_idx, route, cand, cur, rig, T_guess, cfg, min_z, neighb
         if getattr(s, "images", None) is not None and getattr(cur, "images", None) is not None \
                 and getattr(s, "lm_obs", None) is not None:
             # guess for this source: T_cur_from_src = T_cur_from_cand @ T_cand_from_src
-            found = klt_pairs(s, cur, T_guess @ T_cand_from_src, rig, cfg, min_z)
+            found, st = klt_pairs(s, cur, T_guess @ T_cand_from_src, rig, cfg, min_z)
+            h.n_sel += st["sel"]; h.n_proj += st["proj"]; h.n_klt += st["klt"]
+            h.n_fb += st["fb"]; h.n_err += st["err"]; h.n_ncc += st["ncc"]
             h.method = "klt"
+            if not found and bool(cfg.get("orb_fallback", False)):
+                found = orb_pairs(fs, fk, cfg)
+                h.method = "klt+orb"
         else:
             h.method = "orb"
-            for i, fa in enumerate(fs.cams):
-                for j, fb in enumerate(fk.cams):
-                    ia, ib = match_pair(fa, fb, cfg)
-                    if len(ia):
-                        found.append((i, j, fs.lm_pos_rig[ia], fb.bearing[ib]))
+            found = orb_pairs(fs, fk, cfg)
         for i, j, P_src, B in found:
             if own:
                 counts[(i, j)] = int(len(P_src))
