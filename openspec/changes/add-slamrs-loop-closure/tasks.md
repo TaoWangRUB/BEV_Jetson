@@ -154,6 +154,50 @@ Open, deliberately left for the circuit log rather than tuned blind:
 - [ ] 8.11 The forward-backward threshold (1.5 px) is the stage that decides; sweep it on the
       circuit log together with the NCC floor, with the stage counts as the readout.
 
+## 9. Mac review of the tuning branch (2026-10-19) — what 8.8 is really about
+
+- [x] 9.1 The tuning branch reproduces on the Mac: 9/9 tests; run6 29 accepted (same as the Dell),
+      run5 18 (Dell 20 — run5's VIO differs between the builds, 1.2/8.1); verification 502 / 550 ms
+      median per keyframe with candidates; the Rerun scenes (`lc_run{5,6}/compare*.rrd`) regenerated.
+- [x] 9.2 `run_slamrs_lc.py` aligned with the GPU-lane merge: the VIO csv carries `fe_ms` / `est_ms`
+      like `run_slamrs.py`, and `--gpu` selects the lane.
+- [x] 9.3 **8.8 measured: the ratio's denominator is not the lever.** Of run6's 91 hypotheses with
+      ≥ 40 joint inliers, the pooled gate (current) passes 37; cuVSLAM's literal single-keyframe gate
+      (inliers and ratio over the best source keyframe) passes 14, and "pooled floor + best-source
+      ratio" 38. The candidate keyframe is the best source in only 6–14 % of cases (median 14 inliers
+      per keyframe) — pooling the keyframes in sight is what makes closures possible on this rig, so a
+      per-keyframe gate would cost closures, not add them.
+- [x] 9.4 **cuVSLAM's second step re-tracks from the first solution; doing so here changes nothing.**
+      On 116 hypotheses with ≥ 20 inliers: inliers 46 → 48 median, the pose moves 2 cm, gate passes
+      38 → 37. Not adopted; the deviation was not the cause.
+- [x] 9.5 **The end-of-log loop on run6 is real and every gate rejects it.** Keyframes 224–242 against
+      13–17 are the only long revisit in the data (≈70 s apart). All 45 hypotheses solve to the same
+      correction, 0.30 m / 7.0° — the VIO's own end-to-start gap — on ~50 inliers of ~570 tracks, the
+      rest 10–20 px off. The cause is landmark depth, not tracking: the early keyframes' landmarks
+      were frozen at marginalisation after the slow start, fit their own observations to 0.1 px (any
+      depth does at low parallax), and the VIO later moves them a median 100 m (to infinity, p90
+      1.4–2.3 km). Re-verifying with those later positions raises the inliers 42 → 162 and accepts 5
+      of 30 (ratio 0.28, still under the floor); blindly refreshing every keyframe is wrong, though —
+      mid-run keyframes' self-consistency degrades 0.4 → 1.9 px (D2a). Tracks at 5–10 px are a third of
+      the accepted edges' tracks too, so the 5 px threshold is tight relative to the depth accuracy
+      even where depths are fine.
+- [x] 9.6 **8.9 measured:** capping each source keyframe to its 150 oldest landmarks keeps the
+      acceptances (the ratio improves: 12 → 20 passes on a 25-hypothesis sample) and cuts
+      verification 196 → 139 ms; 100 loses acceptances (15), 60 loses most (5). 150 is the number to
+      adopt with 8.9.
+
+Next, in order — each measurable on run6's long loop before the circuit log exists:
+
+- [ ] 9.7 **Per-landmark depth confidence in the keyframe record** (the real 8.8): parallax or
+      observation span while alive, and the position's later movement; exclude low-confidence
+      landmarks from the ratio's denominator, use far ones as bearing-only (rotation) support, and
+      refresh positions from later snapshots only while the keyframe's own self-projection stays
+      ≤ 2 px. Readout: the 45 end-of-log hypotheses, their inliers and acceptances.
+- [ ] 9.8 A two-tier inlier count (5 px for the pose, 10 px for the support ratio) as the measured
+      alternative to the single threshold; report both on run6 before choosing.
+- [ ] 9.9 8.9 with cap 150, then 8.10 (vectorised residual/Jacobian), then the circuit log (7.x) and
+      the sweep (8.11); 5.4 (node cap) and threading after that.
+
 ## Workflow follow-up
 
 - Archive the change after 6.1 is recorded; 7.x may complete after archive if the board is not

@@ -30,7 +30,7 @@ from loop_closure.camera import Rig, T_to_pose7, pose7_to_T  # noqa: E402
 from loop_closure.keyframes import KeyframeTracker, export_keyframe  # noqa: E402
 
 REPO = HERE.parents[1]
-HDR = "t_ns,status,tx,ty,tz,qx,qy,qz,qw,vx,vy,vz,bax,bay,baz,bgx,bgy,bgz,num_obs,num_landmarks,track_ms"
+HDR = "t_ns,status,tx,ty,tz,qx,qy,qz,qw,vx,vy,vz,bax,bay,baz,bgx,bgy,bgz,num_obs,num_landmarks,track_ms,fe_ms,est_ms"
 
 
 def main():
@@ -39,6 +39,7 @@ def main():
     ap.add_argument("out", type=Path)
     ap.add_argument("--max-sets", type=int, default=0)
     ap.add_argument("--threads", type=int, default=1)
+    ap.add_argument("--gpu", action="store_true", help="CubeCL/wgpu frontend lane (core built with GPU=1), as run_slamrs.py")
     ap.add_argument("--calib", type=Path, default=REPO / "config/slamrs/bev_calib_s2.json")
     ap.add_argument("--config", type=Path, default=REPO / "config/slamrs/bev_vio_config.json")
     ap.add_argument("--lc-config", type=Path, default=REPO / "config/slamrs/bev_lc_config.json")
@@ -65,7 +66,8 @@ def main():
     from slam_rs import _core
     calib = _core.Calibration.from_json(a.calib.read_text())
     cfg = _core.VioConfig.from_json(a.config.read_text())
-    vio = _core.Vio(calib, cfg, threads=a.threads)
+    vio = _core.Vio(calib, cfg, threads=a.threads, gpu=a.gpu)
+    print(f"slam-rs lane: {'gpu' if vio.gpu else 'cpu'}  threads={a.threads}")
 
     lc_cfg = json.load(open(a.lc_config))
     rig = Rig.from_json(a.calib, lc_cfg["features"]["theta_max_deg"])
@@ -86,7 +88,10 @@ def main():
         snap = vio.snapshot()
         nobs = snap.num_observations if snap else 0
         nlm = len(snap.landmark_ids) if snap else 0
-        rows.append([t, int(r.status), *r.world_from_rig, *r.velocity, *r.accel_bias, *r.gyro_bias, nobs, nlm, dt_ms])
+        tm = snap.timings_ms if snap else {}
+        fe_ms = sum(v for k, v in tm.items() if k.startswith("frontend_"))
+        est_ms = tm.get("measure", 0.0)
+        rows.append([t, int(r.status), *r.world_from_rig, *r.velocity, *r.accel_bias, *r.gyro_bias, nobs, nlm, dt_ms, fe_ms, est_ms])
         poses.append((t, pose7_to_T(r.world_from_rig)))
         if backend is not None or a.keyframes_out:
             for kf in tracker.update(t, ims, snap, vio.flow_frame()):
@@ -110,7 +115,7 @@ def main():
             backend.on_keyframe(kf)
 
     np.savetxt(a.out / "slamrs_vio.csv", np.array(rows), delimiter=",", header=HDR, comments="",
-               fmt=["%d", "%d"] + ["%.9g"] * 19)
+               fmt=["%d", "%d"] + ["%.9g"] * 21)
     print(f"wrote {a.out / 'slamrs_vio.csv'}: {len(rows)} poses in {time.perf_counter() - t0:.0f} s; {n_kf} keyframes")
     if backend is None:
         return
