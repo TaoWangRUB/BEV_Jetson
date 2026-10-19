@@ -140,7 +140,10 @@ the other way round; cuVSLAM's patch tracker has the same limit.
 
 Open, deliberately left for the circuit log rather than tuned blind:
 
-- [ ] 8.8 **The ratio gate is mis-scaled the other way now.** With the defaults above 144 (run5) /
+- [x] 8.8 Resolved by 9.7 (design D2c): the denominator was full of landmarks whose depth was frozen
+      without parallax; with the latest positions and the weak exclusion the long-loop edges sit at
+      ratios 0.62–0.89 under the unchanged gate. Original note kept below for the record.
+      **The ratio gate is mis-scaled the other way now.** With the defaults above 144 (run5) /
       58 (run6) hypotheses are rejected on cuVSLAM's inlier ratio — at the 8.2–8.6 stage 76 / 29,
       with a median 106 / 44 joint inliers, all ≥ 40 — because `tracked` now counts every
       NCC-passed track from thousands of projections (median 450 / 588) and the ratio reads
