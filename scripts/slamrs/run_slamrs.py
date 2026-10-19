@@ -1,8 +1,12 @@
 """Replay a BEV raw log (log_rig.sh output) through slam-rs, straight from the .raw files.
 
-  SLAM_RS_DIR=<slam-rs checkout> python3 scripts/slamrs/run_slamrs.py <imglog dir> <out.csv> [--dry-run] [--max-sets N] [--profile fast|reference]
+  SLAM_RS_DIR=<slam-rs checkout> python3 scripts/slamrs/run_slamrs.py <imglog dir> <out.csv> [--dry-run] [--max-sets N] [--profile fast|reference] [--gpu]
 
 --dry-run exercises everything except slam-rs (frameset matching, IMU prep, image decode).
+--gpu runs the frontend (pyramid, detect, KLT) as CubeCL kernels through wgpu/Vulkan; the
+estimator is one CPU thread in either lane. Needs a core built with GPU=1 build_slamrs.sh.
+The CSV carries track_ms (the whole call) plus fe_ms (the frontend stages) and est_ms (the
+estimator's measure phase), from the snapshot's nested timers.
 """
 import argparse
 import json
@@ -63,6 +67,7 @@ def main():
     ap.add_argument("--profile", default="fast")
     ap.add_argument("--threads", type=int, default=1,
                     help="CPU frontend worker threads (the estimator is always one thread)")
+    ap.add_argument("--gpu", action="store_true", help="CubeCL/wgpu frontend lane (core built with GPU=1)")
     ap.add_argument("--calib", type=Path, default=REPO / "config/slamrs/bev_calib_s2.json")
     ap.add_argument("--config", type=Path, default=REPO / "config/slamrs/bev_vio_config.json")
     a = ap.parse_args()
@@ -92,7 +97,8 @@ def main():
 
     calib = _core.Calibration.from_json(a.calib.read_text())
     cfg = _core.VioConfig.from_json(a.config.read_text())
-    vio = _core.Vio(calib, cfg, threads=a.threads)
+    vio = _core.Vio(calib, cfg, threads=a.threads, gpu=a.gpu)
+    print(f"slam-rs lane: {'gpu' if vio.gpu else 'cpu'}  threads={a.threads}  profile={a.profile}")
     ii = 0
     rows, t0 = [], time.perf_counter()
     for n, (t, offs) in enumerate(sets):
@@ -106,13 +112,16 @@ def main():
         snap = vio.snapshot()
         nobs = snap.num_observations if snap else 0
         nlm = len(snap.landmark_ids) if snap else 0
-        rows.append([t, int(r.status), *r.world_from_rig, *r.velocity, *r.accel_bias, *r.gyro_bias, nobs, nlm, dt_ms])
+        tm = snap.timings_ms if snap else {}
+        fe_ms = sum(v for k, v in tm.items() if k.startswith("frontend_"))
+        est_ms = tm.get("measure", 0.0)
+        rows.append([t, int(r.status), *r.world_from_rig, *r.velocity, *r.accel_bias, *r.gyro_bias, nobs, nlm, dt_ms, fe_ms, est_ms])
         if n % 100 == 0:
             p = r.world_from_rig
             print(f"{n:5d} t={(t - sets[0][0]) / 1e9:6.2f}s status={int(r.status)} pos={np.round(p[:3], 3)} "
-                  f"lm={nlm} obs={nobs} track={dt_ms:.1f}ms", flush=True)
-    hdr = "t_ns,status,tx,ty,tz,qx,qy,qz,qw,vx,vy,vz,bax,bay,baz,bgx,bgy,bgz,num_obs,num_landmarks,track_ms"
-    np.savetxt(a.out, np.array(rows), delimiter=",", header=hdr, comments="", fmt=["%d", "%d"] + ["%.9g"] * 19)
+                  f"lm={nlm} obs={nobs} track={dt_ms:.1f}ms fe={fe_ms:.1f} est={est_ms:.1f}", flush=True)
+    hdr = "t_ns,status,tx,ty,tz,qx,qy,qz,qw,vx,vy,vz,bax,bay,baz,bgx,bgy,bgz,num_obs,num_landmarks,track_ms,fe_ms,est_ms"
+    np.savetxt(a.out, np.array(rows), delimiter=",", header=hdr, comments="", fmt=["%d", "%d"] + ["%.9g"] * 21)
     print(f"wrote {a.out}: {len(rows)} poses in {time.perf_counter() - t0:.0f} s")
 
 

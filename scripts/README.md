@@ -182,8 +182,42 @@ Measured 2026-09-28, MAXN, alongside cuVSLAM replaying 20 s clips of the same lo
 | slam-rs VIO, 4-6 threads (run6, 500 sets) | - | 148-151 ms | no: ~6.7 Hz, the estimator is one thread |
 | cuVSLAM VO precision, `Track()` | 6-8 ms | 54-73 ms (callback 82-100) | no: 46-58 % of sets kept |
 | cuVSLAM VO performance, `Track()` | 3-4 ms | 24-44 ms (callback 51-69) | borderline: 72-91 % kept |
+| slam-rs VIO, GPU lane (frontend on wgpu, clocks locked) | 21-27 ms | not measured | - |
 
 The modular node's remap is ~26 ms of each TX2 callback; the fused node does it on the GPU.
+
+**The GPU lane** (`GPU=1 build_slamrs.sh`, `run_slamrs.py --gpu`) moves the frontend - pyramid, FAST
+detection, KLT, stereo - onto CubeCL kernels through wgpu/Vulkan; the estimator stays one CPU thread in
+either lane, by upstream's design. Measured 2026-10-16 on the host's RTX A2000 against the CPU lane of
+the same build on the same logs (`compare_lanes.py`); the CPU lane of the `gpu-wgpu` build is
+byte-identical to the CPU-only build:
+
+| run5 / run6, median per set | CPU lane | GPU lane, clocks locked | GPU lane, clocks managed |
+|---|---|---|---|
+| `track()` | 51 / 44 ms | **21 / 27 ms** | 33 / 41 ms |
+| frontend | 36 / 24 ms | 5.0 / 4.8 ms | 17 / 20 ms |
+| estimator (`measure`) | 8.7 / 14.0 ms | 10.2 / 15.6 ms | 11.9 / 17.5 ms |
+| sets tracked | 1756 / 1746 | same | same |
+| position vs the CPU lane, RMS after rigid alignment | - | 1.1 / 0.3 cm | 1.1 / 0.3 cm |
+
+So the lane is valid - identical tracking, trajectories within a centimetre, which is upstream's own
+bar (design notes D64 / D83: inside the accuracy band and faster than the CPU lane). Two things to
+know before quoting its speed:
+
+- **Lock the clocks.** The lane loads the GPU 10-20 %, so the driver drops the A2000 from 1357 to
+  ~300 MHz a few seconds in and every round trip takes 4x longer: the frontend goes 5 -> 20 ms and
+  stays there even when the window is nearly empty. `sudo nvidia-smi -lgc 1357,1357` and
+  `sudo nvidia-smi -lmc 5501,5501` for the measurement, `-rgc` / `-rmc` after. On the TX2 that is
+  what `jetson_clocks` does.
+- **The estimator is the floor.** With the frontend at 5 ms, `measure` is 10-16 ms median and
+  29-45 ms p95 at keyframes, and ~1.5 ms slower in the GPU lane (the wgpu worker thread competes for
+  the core). Four CPU frontend threads buy nothing on the host (41.5 vs 43.9 ms). The TX2's 184-223 ms
+  per set holds the same split, unmeasured: the GPU lane can only take the frontend's share, and
+  upstream's post-pin work (landmark blocks and normal-equation assembly on the CPU pool, `bfd4e17`)
+  is what addresses the rest.
+
+Not run on the TX2 yet (board unreachable 2026-10-16): it needs a Vulkan ICD on L4T 32.7 and the
+`gpu-wgpu` build there.
 
 **Compare against the right cuVSLAM replay.** Any replay made before `75dac4a` (2026-09-08) is
 missing camera 0's stereo partner, and its teleports are that bug, not the tracker: run6 goes
@@ -198,7 +232,9 @@ a launch argument the installed `install_host/` does not declare is dropped sile
 |---|---|---|
 | [slamrs/make_calib.py](slamrs/make_calib.py) | dev | write [config/slamrs/bev_calib_s2.json](../config/slamrs/bev_calib_s2.json): KB4 fitted to the Mei intrinsics (slam-rs has no omni model; its KB4 uses `atan2` so it holds our >180° lenses), rig extrinsics, and the round-2 Kalibr `T_cam_imu` — whose only tracked copy is that JSON |
 | [slamrs/fit_kb4.py](slamrs/fit_kb4.py) | dev | the KB4 fit on its own: residual per camera out to 100° incidence |
-| [slamrs/run_slamrs.py](slamrs/run_slamrs.py) | dev | replay a raw log through `slam_rs.Vio` at half resolution; IMU stamps shifted by Δ from `imu_mpu9250.yaml`; writes one pose row per set. `--dry-run` checks everything but slam-rs |
+| [slamrs/build_slamrs.sh](slamrs/build_slamrs.sh) | dev / TX2 | build `slam_rs/_core.so` in the submodule without pixi; `GPU=1` adds the CubeCL/wgpu (Vulkan) frontend lane, `PYTHON=` a ≥3.12 interpreter on the TX2 |
+| [slamrs/run_slamrs.py](slamrs/run_slamrs.py) | dev | replay a raw log through `slam_rs.Vio` at half resolution; IMU stamps shifted by Δ from `imu_mpu9250.yaml`; writes one pose row per set with `track_ms` and its `fe_ms` / `est_ms` split. `--gpu` runs the frontend lane on the GPU (needs the `GPU=1` build); `--dry-run` checks everything but slam-rs |
+| [slamrs/compare_lanes.py](slamrs/compare_lanes.py) | dev | A/B two `run_slamrs.py` outputs of one log (CPU vs GPU lane, or two builds): sets tracked, position disagreement raw and rigid-aligned, path length, `track_ms` / `fe_ms` / `est_ms` medians and the speed ratio |
 | [slamrs/compare.py](slamrs/compare.py) | dev | score it against cuVSLAM's `obs_*` bag: continuity, path length, and a Sim(3) fit whose **scale** is an independent check on cuVSLAM's (IMU vs camera baselines) |
 | [slamrs/handeye.py](slamrs/handeye.py) | dev | cam1↔IMU rotation and time offset from the gyro vs cuVSLAM's rotation — a cross-check on Kalibr (rotation agrees to <1°; the offset is too coarse to use) |
 

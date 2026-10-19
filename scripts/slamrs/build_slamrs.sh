@@ -3,6 +3,7 @@
 #
 #   ./scripts/slamrs/build_slamrs.sh                 # host
 #   PYTHON=~/micromamba/envs/slamrs/bin/python ./scripts/slamrs/build_slamrs.sh   # TX2
+#   GPU=1 ./scripts/slamrs/build_slamrs.sh           # + the CubeCL/wgpu frontend lane: Vio(..., gpu=True)
 #
 # Upstream builds through pixi, which also pulls dataforge and the rest of the monorepo's
 # Python stack. None of that is needed to call slam_rs._core from run_slamrs.py: the core is
@@ -36,6 +37,9 @@ m.main(m.Config(package_dir=pkg))
 PY
 
 cd "${PKG}"
-PYO3_PYTHON="$(command -v "${PYTHON}")" cargo build --release -p slam-rs-py
+# gpu-wgpu compiles the CubeCL kernels and the wgpu (Vulkan) runtime in; the CPU lane stays
+# available in that build, Vio(gpu=...) picks per instance. Without it gpu=True is a ValueError.
+FEATURES=(); [[ "${GPU:-0}" == 1 ]] && FEATURES=(--features gpu-wgpu)
+PYO3_PYTHON="$(command -v "${PYTHON}")" cargo build --release -p slam-rs-py "${FEATURES[@]}"
 cp target/release/lib_core.so slam_rs/_core.so
-echo "built ${PKG}/slam_rs/_core.so ($(git -C "${PKG}" log -1 --format='%h %ad' --date=short))"
+echo "built ${PKG}/slam_rs/_core.so gpu=${GPU:-0} ($(git -C "${PKG}" log -1 --format='%h %ad' --date=short))"
