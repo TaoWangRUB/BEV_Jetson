@@ -188,15 +188,28 @@ Open, deliberately left for the circuit log rather than tuned blind:
 
 Next, in order — each measurable on run6's long loop before the circuit log exists:
 
-- [ ] 9.7 **Per-landmark depth confidence in the keyframe record** (the real 8.8): parallax or
-      observation span while alive, and the position's later movement; exclude low-confidence
-      landmarks from the ratio's denominator, use far ones as bearing-only (rotation) support, and
-      refresh positions from later snapshots only while the keyframe's own self-projection stays
-      ≤ 2 px. Readout: the 45 end-of-log hypotheses, their inliers and acceptances.
-- [ ] 9.8 A two-tier inlier count (5 px for the pose, 10 px for the support ratio) as the measured
-      alternative to the single threshold; report both on run6 before choosing.
-- [ ] 9.9 8.9 with cap 150, then 8.10 (vectorised residual/Jacobian), then the circuit log (7.x) and
-      the sweep (8.11); 5.4 (node cap) and threading after that.
+- [x] 9.7 **Per-landmark depth confidence (design D2c) — the end-of-log loop closes.** The tracker
+      keeps finalised records open: a landmark's position follows the latest snapshot while it is
+      alive, and its parallax and observation count (from the frontend's keypoint ids and the
+      window poses) grow with it; landmarks under 2° of parallax or 5 observations are weak and not
+      tracked. Measured on run6's 111 end-of-log hypotheses, which every earlier variant rejected:
+      the far / bearing-only class gave 0–20 inliers of ~200 (a zero-parallax landmark here is near
+      and unknown, not far); a 2 px or 20 px self-projection bound on the refresh gave 0 closures
+      (the early keyframes' frozen poses are degrees off, and the later geometry fails the test where
+      it matters); unbounded refresh without classes gave 10 edges; **unbounded refresh with the weak
+      exclusion gives 19 long-loop edges (106–270 inliers of ~375, ratio 0.62–0.89), 47 edges in all,
+      0 dropped**, run6 first-to-last 0.33 → 0.12 m; run5 28 edges, 10 across its own end-of-log
+      loop, 0.53 → 0.14 m. Two run6 replays byte-identical. Verification 38 / 53 s per log (down
+      from 94 / 107 s: weak landmarks are not tracked), solve 0.40 / 0.47 s. Three tests added:
+      parallax measurement, the refresh rule, far landmarks as directions (the code path stays, off
+      by default). Resolves 8.8: the ratio's denominator was full of depthless landmarks, not
+      mis-scaled. README table, design D2c.
+- [x] 9.8 Moot after 9.7: the accepted long-loop edges sit at ratios 0.62–0.89 with the single
+      5 px threshold; no two-tier count is needed on run6. Re-check on the circuit log only if a
+      true loop is rejected on ratio there.
+- [ ] 9.9 8.10 (vectorised residual/Jacobian) next; 8.9's cap only if verification cost matters
+      again after 9.7 halved it; then the circuit log (7.x) and the sweep (8.11); 5.4 (node cap)
+      and threading after that.
 
 ## Workflow follow-up
 

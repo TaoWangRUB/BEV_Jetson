@@ -124,6 +124,33 @@ rule, unchanged), with a `hosted` flag. The verifier is instrumented per stage (
 projected, tracked, forward-backward, error, NCC) on every hypothesis, so a candidate that
 yields nothing says where it died.
 
+**D2c (2026-10-19, task 9.7). A landmark's depth is as good as its latest position, and a
+keyframe record stays open until its landmarks die.** The end-of-log loop on run6 (keyframes
+220–242 against 13–17, the only revisit 70 s apart in the data) solved to the same 0.30 m / 7°
+correction on all 45 hypotheses and was rejected on every one of them, with ~50 inliers of ~570
+tracks. The early keyframes were recorded while the rig stood still: their landmarks' depths were
+frozen at marginalisation with no parallax behind them, and such a depth fits the keyframe's own
+observations at any value. The VIO keeps refining those landmarks for seconds after the keyframe
+is gone, so the tracker now keeps every finalised record open: while a landmark is alive, its
+position in the record follows the latest snapshot, and its confidence — the parallax its
+observations have subtended (the angle at the landmark between the first and latest rig position
+that saw it, from the frontend's keypoint ids) and their count — keeps growing. Landmarks under
+`min_parallax_deg` (2°) or `min_obs` (5) are weak and not tracked at all.
+
+Three things were tried first and measured not to work, each on the same 111 long-loop
+hypotheses: (1) a *far* class (parallax < 1°) used as bearing-only support, the observation ray
+rotated but not translated — 0–20 inliers of ~200, because a zero-parallax landmark on this rig is
+not far, it is near and unknown, so the direction model is wrong by the parallax it will have;
+(2) accepting a refreshed position only if the keyframe's own observation still projects within
+2 px under its frozen pose (D2a applied forward in time) — 0 long-loop closures, because the early
+keyframes' frozen poses are a couple of degrees off and the later, better geometry fails that test
+exactly where it is needed; the disagreement is the drift the loop should repair, not a reason to
+discard the position; (3) a 20 px bound — same. Unbounded refresh with no classes gave 10
+long-loop edges; unbounded refresh with the weak exclusion gives **19 long-loop edges, 106–270
+inliers of ~375 tracks at ratios 0.62–0.89**, 47 edges in all, none dropped, and verification
+drops to 266 ms per keyframe because fewer landmarks are tracked. The ratio gate of task 8.8 was
+never mis-scaled: its denominator was full of landmarks whose depth meant nothing.
+
 **D3. Verification is cuVSLAM's two-step PnP with its gates, per camera pair then jointly.**
 The landmarks in sight are the candidate's plus those of its neighbouring keyframes (within
 `neighbour_radius_m`, ±`neighbour_max_kf`, each brought into the candidate's frame through the

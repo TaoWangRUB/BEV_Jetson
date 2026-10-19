@@ -27,6 +27,9 @@ class LoopClosureBackend:
         self.retriever = Retriever(self.hashbow, cfg["retrieval"], appearance=self.orb is not None)
         self.vcfg = dict(cfg["verify"])
         self.vcfg["orb_fallback"] = self.orb is not None
+        for k in ("min_landmark_age", "min_obs", "min_parallax_deg", "far_parallax_deg"):   # depth confidence (D2c)
+            if k in cfg["features"]:
+                self.vcfg[k] = cfg["features"][k]
         self.graph = PoseGraph4DoF(cfg["graph"])
         self.min_z = float(cfg["features"]["min_bearing_z"])
         self.keyframes = []        # KeyframeRecord, index == position
@@ -145,23 +148,25 @@ class LoopClosureBackend:
                           "lc_tx,lc_ty,lc_tz,lc_qx,lc_qy,lc_qz,lc_qw,n_assoc", comments="")
         with open(d / "loop_edges.csv", "w") as f:
             f.write("cur,cand,t_cur_ns,t_cand_ns,route,inliers,tracked,ratio,sigma_t,sigma_yaw_deg,best_pair,"
-                    "sep_vio_m,sep_lc_m\n")
+                    "sep_vio_m,sep_lc_m,tracked3d,far_tracked,far_inliers\n")
             for h, e in self.edges:
                 kc, kk = self.keyframes[h.cand], self.keyframes[h.cur]
                 sv = np.linalg.norm(kc.T_vio[:3, 3] - kk.T_vio[:3, 3])
                 sl = np.linalg.norm(corr[h.cand][:3, 3] - corr[h.cur][:3, 3])
                 f.write(f"{h.cur},{h.cand},{kk.t_ns},{kc.t_ns},{h.route},{h.inliers2},{h.tracked},{h.ratio:.3f},"
                         f"{h.sigma_t:.4f},{np.degrees(h.sigma_yaw):.3f},{h.best_pair[0] + 1}-{h.best_pair[1] + 1},"
-                        f"{sv:.3f},{sl:.3f}\n")
+                        f"{sv:.3f},{sl:.3f},{h.tracked3d},{h.far_tracked},{h.far_inliers}\n")
         with open(d / "hypotheses.csv", "w") as f:
             f.write("cur,cand,route,score,accepted,reason,tracked,inliers1,inliers2,ratio,best_pair,"
-                    "guess_diff_m,guess_diff_deg,method,n_sel,n_proj,n_klt,n_fb,n_err,n_ncc,pairs\n")
+                    "guess_diff_m,guess_diff_deg,method,n_sel,n_proj,n_klt,n_fb,n_err,n_ncc,"
+                    "n_weak,tracked3d,far_tracked,far_inliers,pairs\n")
             for h in self.hypotheses:
                 pairs = ";".join(f"{k}:{v}" for k, v in h.pair_counts.items())
                 f.write(f"{h.cur},{h.cand},{h.route},{getattr(h, 'score', 0):.3f},{int(h.accepted)},{h.reason},"
                         f"{h.tracked},{h.inliers1},{h.inliers2},{h.ratio:.3f},{h.best_pair[0] + 1}-{h.best_pair[1] + 1},"
                         f"{h.guess_diff_m:.3f},{h.guess_diff_deg:.2f},{h.method},"
-                        f"{h.n_sel},{h.n_proj},{h.n_klt},{h.n_fb},{h.n_err},{h.n_ncc},{pairs}\n")
+                        f"{h.n_sel},{h.n_proj},{h.n_klt},{h.n_fb},{h.n_err},{h.n_ncc},"
+                        f"{h.n_weak},{h.tracked3d},{h.far_tracked},{h.far_inliers},{pairs}\n")
         keys = ["t_ns", "index", "n_assoc", "candidates", "feat_ms", "retrieve_ms", "verify_ms", "optimize_ms", "accepted"]
         with open(d / "timings.csv", "w") as f:
             f.write(",".join(keys) + ",note\n")
@@ -171,8 +176,15 @@ class LoopClosureBackend:
         reasons = {}
         for h in self.hypotheses:
             reasons[h.reason] = reasons.get(h.reason, 0) + 1
+        cls_counts = {}
+        if self.keyframes:
+            from .keyframes import CLASS_3D, CLASS_FAR, CLASS_WEAK
+            allc = np.concatenate([k.depth_class(self.cfg["features"]) for k in self.keyframes])
+            cls_counts = {"3d": int((allc == CLASS_3D).sum()), "far": int((allc == CLASS_FAR).sum()),
+                          "weak": int((allc == CLASS_WEAK).sum()),
+                          "refreshed_landmarks": int(sum((k.lm_refreshed > 0).sum() for k in self.keyframes))}
         summary = dict(keyframes=len(self.keyframes), hypotheses=len(self.hypotheses),
-                       accepted=len(self.edges), dropped=self.dropped, reasons=reasons,
+                       accepted=len(self.edges), dropped=self.dropped, reasons=reasons, landmark_classes=cls_counts,
                        landmarks_per_keyframe_median=float(np.median([len(k.lm_ids) for k in self.keyframes])) if self.keyframes else 0.0,
                        orb=self.orb is not None,
                        feat_ms_median=float(np.median([r["feat_ms"] for r in self.timings])) if self.timings else 0.0,

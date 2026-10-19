@@ -50,6 +50,11 @@ class Hypothesis:
     n_fb: int = 0             # ... and tracked back to within klt_fb_max_px
     n_err: int = 0            # ... with a tracking error under klt_max_err
     n_ncc: int = 0            # ... whose patch NCC >= klt_ncc_min (= the correspondences used)
+    # depth confidence (design D2c): what the correspondences were made of
+    n_weak: int = 0           # landmarks skipped for lack of parallax and observations
+    tracked3d: int = 0        # correspondences on landmarks with a trusted depth (the gates' denominator)
+    far_tracked: int = 0      # correspondences on far / zero-parallax landmarks (bearing-only support)
+    far_inliers: int = 0      # ... of which consistent with the refined rotation
 
 
 def match_pair(fa, fb, cfg):
@@ -101,29 +106,49 @@ def klt_pairs(src, cur, T_cur_from_src, rig, cfg, min_z):
     detector and no descriptor, only a guess within the pyramid's reach.
 
     Also returns the stage counts (see Hypothesis.n_*), so a candidate that yields nothing says
-    at which stage it died.
+    at which stage it died. Each returned pair carries a per-correspondence class: CLASS_3D for
+    landmarks with a trusted depth, CLASS_FAR for zero-parallax ones, used as directions only
+    (design D2c); CLASS_WEAK landmarks are not tracked.
     """
+    from .keyframes import CLASS_FAR, CLASS_WEAK
     out = []
-    stats = dict(sel=0, proj=0, klt=0, fb=0, err=0, ncc=0)
+    stats = dict(sel=0, proj=0, klt=0, fb=0, err=0, ncc=0, weak=0)
     if src.lm_obs is None or src.images is None or cur.images is None or len(src.lm_ids) == 0:
         return out, stats
     fs = src.features
+    if getattr(src, "dirty", False):
+        fs.lm_pos_rig = src.lm_pos_rig()
+        src.dirty = False
     win, lev = int(cfg["klt_win"]), int(cfg["klt_levels"])
     half = int(cfg["klt_patch"]) // 2
     ncc_min, max_err = float(cfg["klt_ncc_min"]), float(cfg["klt_max_err"])
     pos = {int(i): n for n, i in enumerate(src.lm_ids)}
     min_age = int(cfg.get("min_landmark_age", 1))
+    # the confidence thresholds live in the features config; the backend copies them into cfg
+    cls = src.depth_class(cfg) if hasattr(src, "depth_class") else np.zeros(len(src.lm_ids), np.int64)
     for i, (ids, uv_s) in src.lm_obs.items():
-        sel = [(n, pos[int(k)]) for n, k in enumerate(ids) if int(k) in pos and src.lm_age[pos[int(k)]] >= min_age]
+        cand = [(n, pos[int(k)]) for n, k in enumerate(ids) if int(k) in pos and src.lm_age[pos[int(k)]] >= min_age]
+        sel = [(n, l) for n, l in cand if cls[l] != CLASS_WEAK]
+        stats["weak"] += len(cand) - len(sel)
         stats["sel"] += len(sel)
         if len(sel) < 3:
             continue
         n_obs = np.array([s[0] for s in sel]); l_idx = np.array([s[1] for s in sel])
-        P_src = fs.lm_pos_rig[l_idx]
+        P_src = fs.lm_pos_rig[l_idx].copy()
+        kind_sel = cls[l_idx]
+        far_sel = kind_sel == CLASS_FAR
+        if far_sel.any():
+            # a far landmark is a direction: the host camera's observation ray, in the rig frame.
+            # (Not the ray from the rig origin to the frozen point: at the frozen, false depth
+            # that ray is off by the camera's lever arm, run6: 0 of 210 far inliers.)
+            d = rig.cams[i].unproject(uv_s[n_obs[far_sel]]) @ rig.T_imu_cam[i][:3, :3].T
+            P_src[far_sel] = d
         P_cur = P_src @ T_cur_from_src[:3, :3].T + T_cur_from_src[:3, 3]
+        P_cur[far_sel] = P_src[far_sel] @ T_cur_from_src[:3, :3].T          # rotation only
         for j, cam in enumerate(rig.cams):
             Tc = rig.T_cam_imu[j]
             Pc = P_cur @ Tc[:3, :3].T + Tc[:3, 3]
+            Pc[far_sel] = P_cur[far_sel] @ Tc[:3, :3].T
             uv_pred, ok = cam.project(Pc)
             ok &= Pc[:, 2] > 0.02
             stats["proj"] += int(ok.sum())
@@ -162,20 +187,21 @@ def klt_pairs(src, cur, T_cur_from_src, rig, cfg, min_z):
             if len(keep) < 3:
                 continue
             keep = np.array(keep)
-            out.append((i, j, P_src[k_idx[keep]], cam.unproject(p1[keep])))
+            out.append((i, j, P_src[k_idx[keep]], cam.unproject(p1[keep]), kind_sel[k_idx[keep]]))
     return out, stats
 
 
 def orb_pairs(fs, fk, cfg):
     """The descriptor route: mutual ORB matches from the source keyframe's landmark descriptors to
     the current keyframe's detections, per camera pair. Needs a core built with ORB on
-    (features.orb_enabled); the fallback for a candidate KLT cannot reach, or for bare features."""
+    (features.orb_enabled); the fallback for a candidate KLT cannot reach, or for bare features.
+    Every correspondence is CLASS_3D: bare features carry no confidence."""
     found = []
     for i, fa in enumerate(fs.cams):
         for j, fb in enumerate(fk.cams):
             ia, ib = match_pair(fa, fb, cfg)
             if len(ia):
-                found.append((i, j, fs.lm_pos_rig[ia], fb.bearing[ib]))
+                found.append((i, j, fs.lm_pos_rig[ia], fb.bearing[ib], np.zeros(len(ia), np.int64)))
     return found
 
 
@@ -206,15 +232,25 @@ def pnp_pair(P_rig, bearings, T_imu_cam_j, cfg, min_z):
     return T_imu_cam_j @ T_camj_from_cand, mask
 
 
-def _residuals(x, P_rig, bearings, cam_of, T_cam_imu, min_z, huge=10.0):
+def _residuals(x, P_rig, bearings, cam_of, T_cam_imu, min_z, far=None, huge=10.0):
+    """Normalised-plane residuals of every correspondence under T = (rotvec, t). Rows flagged
+    `far` are directions: their point is taken at infinity along its bearing from the candidate
+    rig, so only the rotation acts on them (design D2c)."""
     T = se3(rotvec_to_R(x[:3]), x[3:6])
     out = np.empty(len(P_rig) * 2)
+    if far is None:
+        far = np.zeros(len(P_rig), bool)
     for j, Tci in enumerate(T_cam_imu):
         m = cam_of == j
         if not m.any():
             continue
         Tc = Tci @ T
         P = (Tc[:3, :3] @ P_rig[m].T).T + Tc[:3, 3]
+        fm = far[m]
+        if fm.any():
+            d = P_rig[m][fm]
+            d = d / np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-12)
+            P[fm] = (Tc[:3, :3] @ d.T).T
         xy_obs, ok = _normalised(bearings[m], min_z)
         z = P[:, 2]
         okp = ok & (z > 1e-3)
@@ -226,14 +262,14 @@ def _residuals(x, P_rig, bearings, cam_of, T_cam_imu, min_z, huge=10.0):
     return out
 
 
-def refine(T0, P_rig, bearings, cam_of, rig, cfg, min_z):
+def refine(T0, P_rig, bearings, cam_of, rig, cfg, min_z, far=None):
     """Joint non-linear refinement over all pairs; returns (T, inlier mask, per-point error)."""
     x0 = np.concatenate([R_to_rotvec(T0[:3, :3]), T0[:3, 3]])
     thr = float(cfg["ransac_thresh_norm"])
-    res = least_squares(_residuals, x0, args=(P_rig, bearings, cam_of, rig.T_cam_imu, min_z),
+    res = least_squares(_residuals, x0, args=(P_rig, bearings, cam_of, rig.T_cam_imu, min_z, far),
                         loss="huber", f_scale=thr, max_nfev=200, xtol=1e-10, ftol=1e-10)
     T = se3(rotvec_to_R(res.x[:3]), res.x[3:6])
-    r = _residuals(res.x, P_rig, bearings, cam_of, rig.T_cam_imu, min_z).reshape(-1, 2)
+    r = _residuals(res.x, P_rig, bearings, cam_of, rig.T_cam_imu, min_z, far).reshape(-1, 2)
     err = np.linalg.norm(r, axis=1)
     return T, err <= thr, err
 
@@ -251,8 +287,9 @@ def verify(cand_idx, cur_idx, route, cand, cur, rig, T_guess, cfg, min_z, neighb
     Correspondences come from KLT tracking of the stored landmark appearance (klt_pairs) when
     images and observations are available; ORB descriptor matching (orb_pairs) serves bare
     features (no images) and, with cfg["orb_fallback"], a candidate KLT found nothing on."""
+    from .keyframes import CLASS_3D, CLASS_FAR
     h = Hypothesis(cand_idx, cur_idx, route)
-    P_all, B_all, cam_all, counts = [], [], [], {}
+    P_all, B_all, cam_all, kind_all, counts = [], [], [], [], {}
     pairs = []
     fk = getattr(cur, "features", cur)
     sources = [(cand, np.eye(4), True)] + [(nb, T, False) for nb, T in neighbours]
@@ -264,7 +301,7 @@ def verify(cand_idx, cur_idx, route, cand, cur, rig, T_guess, cfg, min_z, neighb
             # guess for this source: T_cur_from_src = T_cur_from_cand @ T_cand_from_src
             found, st = klt_pairs(s, cur, T_guess @ T_cand_from_src, rig, cfg, min_z)
             h.n_sel += st["sel"]; h.n_proj += st["proj"]; h.n_klt += st["klt"]
-            h.n_fb += st["fb"]; h.n_err += st["err"]; h.n_ncc += st["ncc"]
+            h.n_fb += st["fb"]; h.n_err += st["err"]; h.n_ncc += st["ncc"]; h.n_weak += st["weak"]
             h.method = "klt"
             if not found and bool(cfg.get("orb_fallback", False)):
                 found = orb_pairs(fs, fk, cfg)
@@ -272,27 +309,33 @@ def verify(cand_idx, cur_idx, route, cand, cur, rig, T_guess, cfg, min_z, neighb
         else:
             h.method = "orb"
             found = orb_pairs(fs, fk, cfg)
-        for i, j, P_src, B in found:
+        for i, j, P_src, B, kind in found:
             if own:
                 counts[(i, j)] = int(len(P_src))
             P = P_src @ T_cand_from_src[:3, :3].T + T_cand_from_src[:3, 3]
+            P[kind == CLASS_FAR] = P_src[kind == CLASS_FAR] @ T_cand_from_src[:3, :3].T   # directions
             # step 1 may start from any source keyframe's pair: cuVSLAM picks the keyframe
             # owning most of the fetched landmarks, which need not be the candidate itself
-            pairs.append((i, j, P, B))
+            pairs.append((i, j, P, B, kind))
             P_all.append(P)
             B_all.append(B)
             cam_all.append(np.full(len(P), j, np.int64))
+            kind_all.append(kind)
     h.pair_counts = {f"{i + 1}-{j + 1}": n for (i, j), n in sorted(counts.items())}
     h.tracked = int(sum(len(p) for p in P_all))
     if h.tracked == 0:
         h.reason = "no_matches"
         return h
-    # step 1: best single pair
+    kind_all = np.concatenate(kind_all)
+    h.tracked3d = int((kind_all == CLASS_3D).sum())
+    h.far_tracked = int((kind_all == CLASS_FAR).sum())
+    # step 1: best single pair, on trusted depths only (a direction cannot place the rig)
     best = None
-    for i, j, P, B in pairs:
-        if len(P) < int(cfg["min_pair_matches"]):
+    for i, j, P, B, kind in pairs:
+        m3 = kind == CLASS_3D
+        if m3.sum() < int(cfg["min_pair_matches"]):
             continue
-        T1, mask = pnp_pair(P, B, rig.T_imu_cam[j], cfg, min_z)
+        T1, mask = pnp_pair(P[m3], B[m3], rig.T_imu_cam[j], cfg, min_z)
         if T1 is None:
             continue
         if best is None or mask.sum() > best[0]:
@@ -301,11 +344,14 @@ def verify(cand_idx, cur_idx, route, cand, cur, rig, T_guess, cfg, min_z, neighb
         h.reason = "no_pair_solution"
         return h
     h.inliers1, T1, h.best_pair = best
-    # step 2: joint refinement from T1
+    # step 2: joint refinement from T1 over everything; far landmarks constrain the rotation only
     P_all, B_all, cam_all = np.concatenate(P_all), np.concatenate(B_all), np.concatenate(cam_all)
-    T2, inl, _ = refine(T1, P_all, B_all, cam_all, rig, cfg, min_z)
-    h.inliers2 = int(inl.sum())
-    h.ratio = h.inliers2 / h.tracked
+    T2, inl, _ = refine(T1, P_all, B_all, cam_all, rig, cfg, min_z, far=kind_all == CLASS_FAR)
+    h.inliers2 = int(inl[kind_all == CLASS_3D].sum())
+    h.far_inliers = int(inl[kind_all == CLASS_FAR].sum())
+    # the gates count landmarks whose depth is trusted: a zero-parallax landmark's 3D error says
+    # nothing about the hypothesis, so it is neither an inlier nor an outlier (design D2c)
+    h.ratio = h.inliers2 / max(h.tracked3d, 1)
     h.T_cur_from_cand = T2
     D = inv(T_guess) @ T2
     h.guess_diff_m = float(np.linalg.norm(D[:3, 3]))

@@ -72,7 +72,7 @@ def main():
     lc_cfg = json.load(open(a.lc_config))
     rig = Rig.from_json(a.calib, lc_cfg["features"]["theta_max_deg"])
     backend = None if a.no_lc else LoopClosureBackend(rig, lc_cfg, a.out)
-    tracker = KeyframeTracker()
+    tracker = KeyframeTracker(rig=rig, cfg=lc_cfg["features"])
 
     ii, rows, poses, t0 = 0, [], [], time.perf_counter()
     n_kf = 0

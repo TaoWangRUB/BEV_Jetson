@@ -6,7 +6,12 @@
     "orb_fast_threshold": 12,
     "min_landmark_age": 3,
     "min_bearing_z": 0.2,
-    "theta_max_deg": 98.0
+    "theta_max_deg": 98.0,
+    "min_obs": 5,
+    "min_parallax_deg": 2.0,
+    "far_parallax_deg": 0.0,
+    "refresh_enabled": true,
+    "refresh_max_px": 1000.0
   },
   "retrieval": {
     "min_separation_s": 10.0,

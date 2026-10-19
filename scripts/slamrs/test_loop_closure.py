@@ -307,6 +307,122 @@ def test_keyframe_record_keeps_observed_landmarks():
     assert kf.lm_age.tolist() == [2, 2, 1]
 
 
+def _flow_and_snap():
+    class Flow:
+        camera_count = 4
+
+        def __init__(self, t, ids, uv=None):
+            self.t_ns, self._ids = t, np.asarray(ids, np.int64)
+            self._uv = np.asarray(uv, np.float64) if uv is not None else np.zeros((len(self._ids), 2))
+
+        def ids(self, c):
+            return self._ids if c == 0 else np.zeros(0, np.int64)
+
+        def positions(self, c):
+            return self._uv if c == 0 else np.zeros((0, 2))
+
+    class Snap:
+        def __init__(self, kf_ids, wt, poses, hosts, lids, lpos, marg):
+            self.kf_ids, self.window_t_ns, self.marginalized = kf_ids, wt, marg
+            self.window_poses = np.asarray(poses, dtype=np.float64)
+            self.landmark_hosts, self.landmark_ids, self.landmark_positions = hosts, lids, np.asarray(lpos, float)
+
+    return Flow, Snap
+
+
+def test_tracker_measures_parallax_and_observations():
+    """D2c: parallax is the angle at the landmark between the first and latest rig positions that
+    observed it; a landmark seen without motion has none and is classified far."""
+    from loop_closure.keyframes import CLASS_3D, CLASS_FAR, KeyframeTracker
+    Flow, Snap = _flow_and_snap()
+    ims = [np.zeros((4, 4), np.uint8)] * 4
+    tr = KeyframeTracker()
+    at = lambda x: [x, 0, 0, 0, 0, 0, 1.0]
+    # landmark 1 at [0, 2, 0], seen from x = 0 .. 1 over six frames; landmark 2 at [5, 0, 0] seen the same way
+    L = [[0, 2, 0], [5, 0, 0]]
+    for k, x in enumerate(np.linspace(0, 1, 6)):
+        t = 10 + k
+        kfs = [10] if k < 5 else [10, 15]
+        tr.update(t, ims, Snap(kfs, [10, t] if t != 10 else [10], [at(0), at(x)] if t != 10 else [at(0)],
+                               [10, 10], [1, 2], L, []), Flow(t, [1, 2]))
+    out = tr.update(16, ims, Snap([15], [15, 16], [at(1), at(1)], [15], [3], [[0, 0, 9]], [10]), Flow(16, [3]))
+    assert len(out) == 1
+    kf = out[0]
+    assert kf.lm_ids.tolist() == [1, 2]
+    assert kf.lm_nobs.tolist() == [6, 6]
+    assert abs(kf.lm_parallax_deg[0] - np.degrees(np.arctan(0.5))) < 1e-6, kf.lm_parallax_deg   # 26.6 deg
+    assert abs(kf.lm_parallax_deg[1]) < 1e-6                                                 # moved along its ray
+    assert np.allclose(kf.lm_baseline, [1.0, 1.0])
+    cls = kf.depth_class(dict(min_obs=5, min_parallax_deg=2.0, far_parallax_deg=1.0))
+    assert cls.tolist() == [CLASS_3D, CLASS_FAR]
+    assert kf.depth_class(dict(min_obs=7, min_parallax_deg=2.0, far_parallax_deg=1.0)).tolist() == [2, 2]
+
+
+def test_tracker_refresh_keeps_only_consistent_positions():
+    """D2c: after finalisation a landmark's position is replaced from a later snapshot only if the
+    keyframe's own observation still projects within refresh_max_px under the frozen pose."""
+    from loop_closure.keyframes import KeyframeTracker
+    Flow, Snap = _flow_and_snap()
+    ims = [np.zeros((RIG.cams[0].height, RIG.cams[0].width), np.uint8)] * 4
+    tr = KeyframeTracker(rig=RIG, cfg=dict(refresh_enabled=True, refresh_max_px=2.0))
+    # two landmarks in front of camera 1 of a keyframe at the identity pose
+    Tc = RIG.T_imu_cam[0]
+    P_cam = np.array([[0.2, 0.1, 2.0], [-0.3, 0.2, 3.0]])
+    L = P_cam @ Tc[:3, :3].T + Tc[:3, 3]                    # rig frame == world frame (identity pose)
+    uv, ok = RIG.cams[0].project(P_cam)
+    assert ok.all()
+    I = [0, 0, 0, 0, 0, 0, 1.0]
+    tr.update(10, ims, Snap([10], [10], [I], [10, 10], [1, 2], L, []), Flow(10, [1, 2], uv))
+    out = tr.update(11, ims, Snap([11], [10, 11], [I, I], [10, 10], [1, 2], L, [10]), Flow(11, [1, 2], uv))
+    assert len(out) == 1 and out[0].lm_refreshed.tolist() == [0, 0]
+    kf = out[0]
+    # later snapshot: landmark 1 moves 1 cm along its ray (consistent), landmark 2 moves 0.5 m sideways
+    L2 = L.copy()
+    L2[0] = (P_cam[0] * 1.005) @ Tc[:3, :3].T + Tc[:3, 3]
+    L2[1] = L[1] + np.array([0.5, 0.0, 0.0])
+    tr.update(12, ims, Snap([11], [11, 12], [I, I], [11, 11], [1, 2], L2, []), Flow(12, [1, 2], uv))
+    assert kf.lm_refreshed.tolist() == [1, 0], kf.lm_refreshed
+    assert np.allclose(kf.lm_pos[0], L2[0]) and np.allclose(kf.lm_pos[1], L[1])
+
+
+def test_refine_uses_far_landmarks_as_directions():
+    """D2c: far landmarks constrain the rotation only; with them a yaw error in the guess is
+    recovered and they count as inliers although their stored depth is meaningless."""
+    from loop_closure.verify import refine
+    rng = np.random.RandomState(6)
+    near = rng.uniform([-3, -3, -1], [3, 3, 2], size=(60, 3))
+    far_dir = rng.normal(size=(80, 3)); far_dir /= np.linalg.norm(far_dir, axis=1, keepdims=True)
+    far_true = far_dir * 300.0                          # where they really are
+    far_stored = far_dir * 2.0                          # the depth the record froze: wrong by 150x
+    T_true = se3(Rz(0.15), [0.3, -0.2, 0.05])           # T_cur_from_cand
+    P_store = np.vstack([near, far_stored]); P_real = np.vstack([near, far_true])
+    far = np.r_[np.zeros(60, bool), np.ones(80, bool)]
+    cam_of, B, seen = [], [], []
+    for n, p in enumerate(P_real):
+        best = None
+        for j in range(4):
+            Tc = RIG.T_cam_imu[j] @ T_true
+            pc = Tc[:3, :3] @ p + Tc[:3, 3]
+            uv, ok = RIG.cams[j].project(pc[None])
+            if ok[0] and pc[2] > 0.2 and (best is None or pc[2] > best[0]):
+                best = (pc[2], j, pc / np.linalg.norm(pc))
+        if best is None:
+            continue                                     # outside every camera: no observation
+        seen.append(n); cam_of.append(best[1]); B.append(best[2] + rng.normal(scale=0.001, size=3))
+    seen, cam_of, B = np.array(seen), np.array(cam_of), np.array(B)
+    P_store, far = P_store[seen], far[seen]
+    assert far.sum() > 60 and (~far).sum() > 50
+    T0 = se3(Rz(0.15 + 0.05), [0.3, -0.2, 0.05])        # 2.9 deg of yaw error in the guess
+    T, inl, err = refine(T0, P_store, B, cam_of, RIG, CFG["verify"], CFG["features"]["min_bearing_z"], far=far)
+    D = inv(T_true) @ T
+    assert rot_angle_deg(D[:3, :3]) < 0.3, rot_angle_deg(D[:3, :3])
+    assert np.linalg.norm(D[:3, 3]) < 0.03
+    assert inl[far].sum() > 0.9 * far.sum() and inl[~far].sum() > 0.9 * (~far).sum(), (inl[far].sum(), inl[~far].sum())
+    # the same far points treated as 3D points are all outliers: that is why they must not count
+    T_b, inl_b, _ = refine(T0, P_store, B, cam_of, RIG, CFG["verify"], CFG["features"]["min_bearing_z"], far=None)
+    assert inl_b[far].sum() < 10
+
+
 if __name__ == "__main__":
     import inspect
     fails = 0
