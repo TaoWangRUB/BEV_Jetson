@@ -55,6 +55,7 @@ impl Level {
     }
 
     /// Pixel (x, y) in image coordinates; the border is addressable down to -pad.
+    #[cfg(test)]
     #[inline]
     fn at(&self, x: isize, y: isize) -> f32 {
         f32::from(
@@ -72,6 +73,7 @@ impl Level {
     }
 
     /// Bilinear sample; the caller keeps (x, y) inside the padded extent (see `inside`).
+    #[cfg(test)]
     #[inline]
     fn interp(&self, x: f32, y: f32) -> f32 {
         let x0 = x.floor();
