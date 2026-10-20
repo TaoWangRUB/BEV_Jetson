@@ -32,3 +32,6 @@ build/cuNLS-*/
 
 # Host viz venv (rerun-sdk; system site-packages for rosbags/cv2)
 .venv/
+
+# Rust workspace build output (rust/slamrs-lc)
+rust/target/

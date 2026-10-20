@@ -313,6 +313,44 @@ trajectories (checked again after 9.7). The solve is the Python per-edge loop ar
 solver with the analytic Jacobian; vectorising it is the next step before the backend goes near a
 thread.
 
+**Native port: `rust/slamrs-lc` (2026-10-20, `openspec/changes/port-loop-closure-to-rust`).**
+The same pipeline as one Rust binary, no Python in the processing path: the slam-rs VIO embedded
+by path (locked to the submodule's own `Cargo.lock` — with other dependency versions the poses
+differ by centimetres) and the backend ported module for module (`keyframes`, `retrieval`, `klt`,
+`pnp`, `posegraph`, `verify`, `backend`). Build and run from the repo root:
+
+```bash
+(cd rust && cargo build --release)             # ~4 min the first time; cargo test --release for the unit tests
+rust/target/release/slamrs-lc replay datasets/imglog_run6_20260907_143036 datasets/replay_out/rs_lc_run6
+.venv/bin/python scripts/slamrs/compare_port.py datasets/replay_out/lc_run6 datasets/replay_out/rs_lc_run6
+```
+
+`replay` reads the raw log exactly as `run_slamrs_lc.py` does and writes the same files, so
+`compare.py`, `rerun_compare.py --lc-dir` and `compare_port.py` (the parity report, stage by
+stage) read its output unchanged. Lucas-Kanade is re-implemented from OpenCV's shape (8-bit
+padded pyramid with a bit-exact `pyrDown`, the same criteria and gates), PnP is RANSAC over
+Gauss-Newton samples from the odometry guess rather than EPnP, so the backend is held to the
+Python outputs within tolerance while the VIO is held to the byte:
+
+| run5 / run6, Python → Rust | |
+|---|---|
+| VIO csv | byte-identical in every pose column (1762 / 1758 rows) |
+| keyframes, landmarks, classes, `n_assoc` | identical |
+| accepted edges (across the 70 s loop) | 28 → 42 (11 → 16), 47 → 52 (19 → 20); 24 / 44 in common |
+| corrected keyframe positions, median / max difference | 6 mm / 2.7 cm, 4 mm / 4.8 cm |
+| first-to-last distance, closed | 0.149 → 0.151 m, 0.127 → 0.131 m |
+| verify per keyframe with candidates, median | 508 → 432 ms, 345 → 306 ms (Mac, one thread) |
+| pose-graph solve per closure | 0.4–1.1 s → milliseconds |
+| whole run6 replay | 102 s: VIO 65 s + backend 46 s |
+
+The port's tracker lets a few more tracks through the forward-backward check (run6 median 164
+vs 142 per hypothesis, everything before that stage equal), hence the extra edges; they join the
+same places as their neighbours and the corrected trajectories agree within centimetres. Two
+replays of one build give byte-identical output. Not ported, by measurement: the appearance route
+(ORB + HashBow) and the far / bearing-only class; open as before: the backend on its own thread,
+the node cap, the GPU lane (`--features gpu-wgpu`, `--gpu`) measured on the TX2, and the
+closed-circuit log.
+
 ## bev/ — bird's-eye ground stitch
 
 | script | runs on | purpose |
