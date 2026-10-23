@@ -68,14 +68,36 @@ against the Python fixtures of 2026-10-19 in `datasets/replay_out/lc_run5` and `
 
 - [ ] 4.1 The backend on its own thread with cuVSLAM's throttling (D13); today it runs in the
   replay loop after every `track()`.
-- [ ] 4.2 The GPU lane on the TX2: build with `--features gpu-wgpu`, run with `--gpu`, time the
+- [x] 4.2 The GPU lane on the TX2: build with `--features gpu-wgpu`, run with `--gpu`, time the
   frontend and the backend against the 20 fps budget. Measured on the Mac first (2026-10-23,
   README "Performance of the native binary"): CPU 13.5 / 17.1 ms per set on run6 / run5, Metal
   lane 14.6 / 12.5 ms with a flat ~8 ms frontend, same closures; whole run6 replay 76 s on one
-  thread once the frames are read on a prefetch thread (was 102 s).
+  thread once the frames are read on a prefetch thread (was 102 s). TX2 (same day, 4.7): the
+  GPU lane runs with the cubecl-spirv patch; fast profile 39 ms median per set (frontend 34,
+  estimator 2.5; p95 158 ms at keyframes), reference profile 102 ms; trajectory within 2 mm of
+  the CPU lane. Next: re-pin the submodule for upstream's pooled estimator and lookahead
+  submissions, and the frame-of-lag pipeline for the keyframe solves.
 - [ ] 4.3 Node cap (`max_nodes`, the reference's 5.4).
 - [ ] 4.4 Rerun logging from the binary; the Python `rerun_compare.py --lc-dir` draws its output
   meanwhile (`datasets/replay_out/rs_lc_run6/compare.rrd`).
 - [ ] 4.5 Whether to hold the port's forward-backward check to Python's edge count (2.5): both
   close the long loops and the corrected trajectories agree within centimetres, so the extra
   edges are left as they are until a closed-circuit log (reference 7.x) says which is right.
+- [ ] 4.6 **A minimal PnP solver (P3P) for step 1.** D10's RANSAC solves each four-point sample
+  by Gauss-Newton from the odometry guess, and that holds only while the guess is close. On the
+  fast VIO profile (`config/slamrs/bev_vio_config_fast.json`, 2026-10-23) the same keyframes and
+  the same tracks (VIO csv and keyframe records identical between Python and Rust) give Python's
+  EPnP 46 edges with 16 across the 70 s loop, and the port 34 with none: every end-of-log
+  hypothesis dies as `no_pair_solution` with 150–260 tracked correspondences and zero RANSAC
+  inliers. Port Lambda Twist or Kneip's P3P as the sample solver, keep the guess for the
+  consistency gate only.
+- [x] 4.7 TX2 measured (2026-10-23, L4T 32.7.6, MAXN, `jetson_clocks`, binary cross-compiled with
+  cargo-zigbuild for glibc 2.27): reference profile 137 ms per set on one thread (frontend 77,
+  estimator 62), 126 ms on four; fast profile 74 / 65 ms (frontend 65 / 58, estimator 2.4 median
+  but 117 ms p95 at keyframes); the backend 2.6 s median per verified keyframe. Same 52 closures
+  as the Mac, corrected positions within 1 mm. The GPU lane crashed in the driver's SPIR-V
+  compiler on `FastCellSelectKernel`: cubecl-spirv 0.11.0-pre.3 declares shared memory as a
+  Workgroup pointer to a Workgroup pointer (invalid per spirv-val, tolerated by newer drivers);
+  fixed by `rust/patches/cubecl-spirv-0.11.0-pre.3-workgroup-variable.patch`
+  (`rust/prepare_patches.sh`), verified on the board: GPU lane 102 / 39 ms per set on the
+  reference / fast profile, GPU 25 % busy, same trajectory as the CPU lane.

@@ -6,7 +6,8 @@
 #
 # The submodule's own workspace patches cubecl-common from a prepared source tree
 # (scripts/slamrs/build_slamrs.sh runs the preparation); this workspace points at the
-# same tree, so run build_slamrs.sh once per checkout before building here.
+# same tree, so run build_slamrs.sh once per checkout before building here, and
+# ./prepare_patches.sh for this workspace's own dependency patch.
 [workspace]
 resolver = "3"
 members = ["slamrs-lc"]
@@ -28,6 +29,9 @@ thiserror = "2"
 
 [patch.crates-io]
 cubecl-common = { path = "../third_party/rerun-examples/packages/slam-rs/target/patch/cubecl-common-0.11.0-pre.3" }
+# Our own patch (patches/, prepared by ./prepare_patches.sh): valid shared-memory SPIR-V, which
+# the Jetson TX2's L4T 32.7 Vulkan compiler needs. Only the gpu-wgpu build compiles it.
+cubecl-spirv = { path = "target/patch/cubecl-spirv-0.11.0-pre.3" }
 
 [profile.dev]
 opt-level = 2

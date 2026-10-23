@@ -381,6 +381,41 @@ thread with cuVSLAM's throttling, or with the KLT verification spread over the c
 itself at 13–17 ms per set leaves the 50 ms frame budget to the TX2's slower cores (upstream's
 host-to-TX2 ratio for this core is about 5×).
 
+**On the TX2 (2026-10-23, L4T 32.7.6, MAXN, `jetson_clocks`, the binary cross-compiled on the
+Mac with `cargo zigbuild --target aarch64-unknown-linux-gnu.2.27 --features gpu-wgpu`, run from
+the NVMe).** The GPU lane first crashed inside the driver's SPIR-V compiler
+(`libnvidia-glvkspirv`, `FastCellSelectKernel`): cubecl-spirv 0.11.0-pre.3 declares every
+implicit shared-memory array as a Workgroup pointer to a Workgroup pointer, which `spirv-val`
+rejects and which newer NVIDIA, Mesa and Apple compilers tolerate; the L4T one segfaults.
+`rust/patches/cubecl-spirv-0.11.0-pre.3-workgroup-variable.patch` (applied by
+`rust/prepare_patches.sh`, pointed at from `rust/Cargo.toml`) swaps the two types back; the Mac's
+Metal lane is byte-identical with and without it. With the patch, run6:
+
+| TX2, run6, median per set | CPU, 1 thread | CPU, 4 threads | GPU lane (Vulkan) |
+|---|---|---|---|
+| reference profile: `track()` | 137 ms | 126 ms | 102 ms |
+| reference: frontend / estimator | 77 / 62 ms | 64 / 62 ms | 38 / 63 ms |
+| fast profile: `track()` | 74 ms | 65 ms | **39 ms** |
+| fast: frontend / estimator | 65 / 2.4 ms | 58 / 2.5 ms | 34 / 2.5 ms |
+| fast: p95 `track()` | 192 ms | 182 ms | 158 ms |
+| trajectory vs the CPU lane, RMS after rigid alignment | – | – | 0.2 cm |
+| loop-closure verify per keyframe, median | 2.6 s | – | – |
+
+The fast profile (`config/slamrs/bev_vio_config_fast.json`: upstream's `fast.json` knobs on our
+config - detect only when camera 0 has lost 15 % of its keypoints, solve the newest state alone
+between keyframes) is what makes the budget: 39 ms per set on the GPU lane against the 50 ms of
+20 fps, with the same 1746 sets tracked and the GPU lane's trajectory within 2 mm of the CPU
+lane's. Two things remain before it is real time on the rig. The p95 is the keyframe solve
+(120 ms p95, 250 max): the 14 % keyframe sets pay the joint window solve on one core, so the
+pipeline needs the frame-of-lag that upstream's `pipeline/lag.rs` provides, or the estimator's
+landmark blocks on the worker pool, which upstream added after our pin (`bfd4e17`). And the GPU
+frontend's 34 ms is dispatch and readback, not kernels: tegrastats shows the GPU 25 % busy, and
+upstream's later lookahead and one-wait submissions address exactly that. Re-pinning the
+submodule is the next step for both. The fast profile costs accuracy on these logs: 7–8 cm
+median against the reference trajectory after alignment, run5's first-to-last 0.54 → 0.71 m,
+and the loop-closure port then loses the long loop (tasks 4.6: step 1 needs a P3P solver, the
+Python EPnP still closes it).
+
 ## bev/ — bird's-eye ground stitch
 
 | script | runs on | purpose |
