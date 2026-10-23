@@ -425,8 +425,19 @@ So each set is 70 small launches, 25 uploads and two waits, and on the TX2 those
 25 of the 32 ms while tegrastats shows the GPU executing for about 13 (25 % of the 53 ms mean
 set): the rest of the wait is round-trip latency (fence, `map_async`, the runtime's poll-worker
 handoffs) on a CPU four to five times slower than the Mac's, during which the GPU has nothing
-queued. Upstream's later lookahead and one-wait submissions address exactly that. Re-pinning the
-submodule is the next step for both. The fast profile costs accuracy on these logs: 7–8 cm
+queued. CubeCL's own kernel profile (`CUBECL_DEBUG_OPTION=profile-medium`, which times each
+launch to completion, so it includes per-launch latency) puts the device work at 24 ms per set
+over 64 launches: KLT 7.6 ms (12.8 launches), patch building 6.6 (12.8), FAST scores 6.0 (3.4),
+pyramid halving 1.3 (12), cell selection 0.9, local maxima 0.7, the storage probe 0.7 (4 per
+set, a sanity check worth moving to start-up), finish and backward preparation 0.2. With
+tegrastats' 25 % as the lower bound, the GPU computes 13–24 ms of each set; everything above
+that is the CPU encoding 70 launches and waiting on two results with nothing queued behind them.
+Keeping the frames on the GPU (zero-copy camera buffers) saves only the uploads, 1.1 ms. The
+lever is overlap: with the next set's launches submitted before the current set's downloads
+are awaited, the set costs the larger of the GPU's 13–24 ms and the CPU's ~10 (encoding,
+bookkeeping, estimator), at one frame of latency; upstream's later lookahead and one-wait
+submissions do exactly that, and its fused KLT and packed selection cut the launch count.
+Re-pinning the submodule is the next step for both. The fast profile costs accuracy on these logs: 7–8 cm
 median against the reference trajectory after alignment, run5's first-to-last 0.54 → 0.71 m,
 and the loop-closure port then loses the long loop (tasks 4.6: step 1 needs a P3P solver, the
 Python EPnP still closes it).
