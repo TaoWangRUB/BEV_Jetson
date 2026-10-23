@@ -409,8 +409,23 @@ lane's. Two things remain before it is real time on the rig. The p95 is the keyf
 (120 ms p95, 250 max): the 14 % keyframe sets pay the joint window solve on one core, so the
 pipeline needs the frame-of-lag that upstream's `pipeline/lag.rs` provides, or the estimator's
 landmark blocks on the worker pool, which upstream added after our pin (`bfd4e17`). And the GPU
-frontend's 34 ms is dispatch and readback, not kernels: tegrastats shows the GPU 25 % busy, and
-upstream's later lookahead and one-wait submissions address exactly that. Re-pinning the
+frontend's 34 ms is waiting, not kernels. `replay` writes `frontend_breakdown.csv` beside the
+poses: the frontend's own stage timers and the GPU lane's seam counters (launches, uploads,
+synchronising downloads, with the host time spent in each). Fast profile, 300 sets of run6,
+median per set:
+
+| ms per set | Mac GPU (Metal) | TX2 GPU (Vulkan) | TX2 CPU, 1 thread |
+|---|---|---|---|
+| `track()` | 8.4 | 32.2 | 57.0 |
+| pyramid / detect / KLT / stereo | 0.1 / 0.2 / 2.7 / 1.4 | 1.1 / 1.1 / 17.9 / 10.0 | 5.0 / 17.3 / 29.6 / 3.1 |
+| inside the 2 synchronising downloads | 3.6 | 24.9 | – |
+| launches / uploads per set | 70 / 25 | 70 / 25 | – |
+
+So each set is 70 small launches, 25 uploads and two waits, and on the TX2 those two waits are
+25 of the 32 ms while tegrastats shows the GPU executing for about 13 (25 % of the 53 ms mean
+set): the rest of the wait is round-trip latency (fence, `map_async`, the runtime's poll-worker
+handoffs) on a CPU four to five times slower than the Mac's, during which the GPU has nothing
+queued. Upstream's later lookahead and one-wait submissions address exactly that. Re-pinning the
 submodule is the next step for both. The fast profile costs accuracy on these logs: 7–8 cm
 median against the reference trajectory after alignment, run5's first-to-last 0.54 → 0.71 m,
 and the loop-closure port then loses the long loop (tasks 4.6: step 1 needs a P3P solver, the

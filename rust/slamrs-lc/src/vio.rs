@@ -104,6 +104,19 @@ impl Vio {
     }
 
     /// Milliseconds the frontend spent on the last frameset (the Python csv's `fe_ms`).
+    /// Per-stage frontend time of the last frameset, ms: pyramid, detect, track, stereo, imu.
+    pub fn frontend_breakdown_ms(&self) -> [f64; 5] {
+        let t = self.inner.frontend_timings();
+        [t.pyramid_ns, t.detect_ns, t.track_ns, t.stereo_ns, t.imu_ns].map(|n| n as f64 * 1e-6)
+    }
+
+    /// The GPU lane's host-side seam counters on this thread: (calls, ms) for kernel launches,
+    /// uploads, tracker downloads and detector downloads. Zero on the CPU lane.
+    pub fn seam() -> [(u64, f64); 4] {
+        let s = slam_rs::gpu::seam::snapshot();
+        [s.launch, s.upload, s.read_track, s.read_detect].map(|m| (m.calls, m.nanos as f64 * 1e-6))
+    }
+
     pub fn frontend_ms(&self) -> f64 {
         let t = self.inner.frontend_timings();
         (t.pyramid_ns + t.detect_ns + t.track_ns + t.stereo_ns + t.imu_ns) as f64 / 1e6

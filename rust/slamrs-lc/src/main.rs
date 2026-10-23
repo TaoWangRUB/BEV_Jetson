@@ -160,6 +160,7 @@ fn replay(
     // wall time per stage of the loop, to see what surrounds track()
     let mut st = [0.0f64; 6]; // frames, imu, track, snapshot, tracker, backend
     let mut rows: Vec<String> = Vec::with_capacity(n_sets);
+    let mut fe_rows: Vec<String> = Vec::with_capacity(n_sets);
     let mut ii = 0usize;
     let imu = &log.imu;
     // the frames are read and halved on their own thread, a few sets ahead: on the rig they come
@@ -192,9 +193,19 @@ fn replay(
         let (nn, frames) = rx.recv().map_err(|_| "frame reader stopped early".to_string())?;
         debug_assert_eq!(nn, n);
         st[0] += ts.elapsed().as_secs_f64();
+        let seam0 = vio::Vio::seam();
         let tc = Instant::now();
         let r = vio.track(t, &frames, w, h).map_err(|e| e.to_string())?;
         let dt_ms = tc.elapsed().as_secs_f64() * 1e3;
+        let seam1 = vio::Vio::seam();
+        {
+            let b = vio.frontend_breakdown_ms();
+            let mut row = format!("{t},{dt_ms:.3},{:.3},{:.3},{:.3},{:.3},{:.3}", b[0], b[1], b[2], b[3], b[4]);
+            for k in 0..4 {
+                row.push_str(&format!(",{},{:.3}", seam1[k].0 - seam0[k].0, seam1[k].1 - seam0[k].1));
+            }
+            fe_rows.push(row);
+        }
         st[2] += dt_ms * 1e-3;
         let ts = Instant::now();
         let snap = vio.snapshot();
@@ -279,6 +290,14 @@ fn replay(
     writeln!(f, "{HDR}").map_err(|e| e.to_string())?;
     for row in &rows {
         writeln!(f, "{row}").map_err(|e| e.to_string())?;
+    }
+    {
+        let path = out.join("frontend_breakdown.csv");
+        let mut f = fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        writeln!(f, "t_ns,track_ms,pyramid_ms,detect_ms,klt_ms,stereo_ms,imu_ms,launches,launch_ms,uploads,upload_ms,reads_track,read_track_ms,reads_detect,read_detect_ms").map_err(|e| e.to_string())?;
+        for row in &fe_rows {
+            writeln!(f, "{row}").map_err(|e| e.to_string())?;
+        }
     }
     println!(
         "wrote {}: {} poses in {:.0} s; {n_kf} keyframes",
