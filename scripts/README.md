@@ -351,6 +351,36 @@ replays of one build give byte-identical output. Not ported, by measurement: the
 the node cap, the GPU lane (`--features gpu-wgpu`, `--gpu`) measured on the TX2, and the
 closed-circuit log.
 
+**Performance of the native binary (Mac, Apple M5 Pro, 2026-10-23).** Measured one replay at a
+time, `--no-lc` for the lanes, the release profile; `--gpu` is the CubeCL/wgpu frontend lane on
+Metal (`cargo build --release --features gpu-wgpu`), whose CPU lane is byte-identical to the
+CPU-only build:
+
+| run5 / run6, median per set | CPU, 1 thread | CPU, 4 threads | GPU lane (Metal) |
+|---|---|---|---|
+| `track()` | 17.1 / 13.5 ms | – / 12.0 ms | 12.5 / 14.6 ms |
+| frontend | 12.6 / 7.2 ms | – / 5.4 ms | 7.9 / 8.0 ms |
+| estimator | 4.4 / 6.5 ms | – / 6.6 ms | 4.3 / 6.6 ms |
+| p95 `track()` | 26.4 / 29.9 ms | – / 28.2 ms | 21.5 / 27.1 ms |
+| position vs the CPU lane, RMS after rigid alignment | – | – | 0.2 cm (run6) |
+
+The VIO runs at 3–4× real time on one thread (20 sets/s of log, 13–17 ms per set). The Metal
+lane makes the frontend a flat ~8 ms whatever the keypoint count — a win on run5 (12.6 → 7.9 ms),
+a loss on run6 (7.2 → 8.0 ms), so on this host the dispatch and readback floor is about where the
+CPU frontend already is; the A2000 measurement above (5 ms with locked clocks) is the better
+indication of what a discrete GPU gives. The estimator is the same single thread in every lane.
+The GPU lane changes the trajectory within upstream's band and closes the same 52 loop edges on
+run6 with the same 0.131 m first-to-last.
+
+The whole run6 replay with the backend takes 76 s wall on one thread (log span 88 s): frames
+read and halved on a prefetch thread (1.2 s of waiting), VIO 28 s, keyframe records 0.5 s,
+backend 46 s. The backend is the cost that matters for real time: per keyframe with candidates
+the verification is 306 ms median but 1.2 s p95 and 2.2 s max (run6), the pose-graph solve
+19 ms median; on a TX2, several times slower per core, that only fits behind the VIO on its own
+thread with cuVSLAM's throttling, or with the KLT verification spread over the cores. The VIO
+itself at 13–17 ms per set leaves the 50 ms frame budget to the TX2's slower cores (upstream's
+host-to-TX2 ratio for this core is about 5×).
+
 ## bev/ — bird's-eye ground stitch
 
 | script | runs on | purpose |

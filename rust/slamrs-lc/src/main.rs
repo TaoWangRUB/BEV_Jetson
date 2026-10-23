@@ -157,23 +157,48 @@ fn replay(
     let mut frames_out: Vec<(i64, geom::Pose, i64)> = Vec::with_capacity(n_sets);
     let mut n_kf = 0usize;
     let t0 = Instant::now();
+    // wall time per stage of the loop, to see what surrounds track()
+    let mut st = [0.0f64; 6]; // frames, imu, track, snapshot, tracker, backend
     let mut rows: Vec<String> = Vec::with_capacity(n_sets);
     let mut ii = 0usize;
     let imu = &log.imu;
+    // the frames are read and halved on their own thread, a few sets ahead: on the rig they come
+    // from the cameras, so their cost is replay overhead, not VIO time
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(usize, Vec<Vec<u8>>)>(4);
+    let reader_dir = log_dir.clone();
+    let reader = std::thread::spawn(move || -> Result<(), String> {
+        let log2 = log::RawLog::open(&reader_dir).map_err(|e| e.to_string())?;
+        for n in 0..n_sets {
+            let (_, offs) = log2.sets[n];
+            if tx.send((n, log2.frames(&offs))).is_err() {
+                break;
+            }
+        }
+        Ok(())
+    });
     for n in 0..n_sets {
         let (t, offs) = log.sets[n];
+        let _ = offs;
         // IMU samples up to 20 ms past the frame, as run_slamrs.py pushes them
+        let ts = Instant::now();
         let j = imu.t.partition_point(|&x| x < t + 20_000_000);
         if j > ii {
             vio.push_imu_batch(&imu.t[ii..j], &imu.gyr[ii..j], &imu.acc[ii..j])
                 .map_err(|e| e.to_string())?;
             ii = j;
         }
-        let frames = log.frames(&offs);
+        st[1] += ts.elapsed().as_secs_f64();
+        let ts = Instant::now();
+        let (nn, frames) = rx.recv().map_err(|_| "frame reader stopped early".to_string())?;
+        debug_assert_eq!(nn, n);
+        st[0] += ts.elapsed().as_secs_f64();
         let tc = Instant::now();
         let r = vio.track(t, &frames, w, h).map_err(|e| e.to_string())?;
         let dt_ms = tc.elapsed().as_secs_f64() * 1e3;
+        st[2] += dt_ms * 1e-3;
+        let ts = Instant::now();
         let snap = vio.snapshot();
+        st[3] += ts.elapsed().as_secs_f64();
         let (nobs, nlm, est_ms) = snap.as_ref().map_or((0, 0, 0.0), |s| {
             (s.num_observations, s.landmark_ids.len(), s.est_ms)
         });
@@ -200,8 +225,12 @@ fn replay(
             vio::status_int(r.status),
         ));
         if let (Some(snap), Some(b)) = (snap.as_ref(), backend.as_mut()) {
+            let ts = Instant::now();
             let flow = vio.flow_frame();
-            for idx in tracker.update(t, &frames, snap, flow.as_ref(), &rig) {
+            let new_kf = tracker.update(t, &frames, snap, flow.as_ref(), &rig);
+            st[4] += ts.elapsed().as_secs_f64();
+            let ts = Instant::now();
+            for idx in new_kf {
                 n_kf += 1;
                 if let Some(hy) = b.on_keyframe(&mut tracker.done, idx, &rig) {
                     println!(
@@ -217,6 +246,7 @@ fn replay(
                     );
                 }
             }
+            st[5] += ts.elapsed().as_secs_f64();
         }
         if n % 100 == 0 {
             let p = r.world_from_rig;
@@ -230,12 +260,20 @@ fn replay(
             );
         }
     }
+    drop(rx);
+    reader.join().map_err(|_| "frame reader panicked".to_string())??;
     if let Some(b) = backend.as_mut() {
+        let ts = Instant::now();
         for idx in tracker.flush() {
             n_kf += 1;
             b.on_keyframe(&mut tracker.done, idx, &rig);
         }
+        st[5] += ts.elapsed().as_secs_f64();
     }
+    println!(
+        "stages (s): frames (wait) {:.1}  imu {:.1}  track {:.1}  snapshot {:.1}  keyframe tracker {:.1}  backend {:.1}  total {:.1}",
+        st[0], st[1], st[2], st[3], st[4], st[5], t0.elapsed().as_secs_f64()
+    );
     let path = out.join("slamrs_vio.csv");
     let mut f = fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     writeln!(f, "{HDR}").map_err(|e| e.to_string())?;

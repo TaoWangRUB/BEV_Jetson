@@ -69,7 +69,10 @@ against the Python fixtures of 2026-10-19 in `datasets/replay_out/lc_run5` and `
 - [ ] 4.1 The backend on its own thread with cuVSLAM's throttling (D13); today it runs in the
   replay loop after every `track()`.
 - [ ] 4.2 The GPU lane on the TX2: build with `--features gpu-wgpu`, run with `--gpu`, time the
-  frontend and the backend against the 20 fps budget.
+  frontend and the backend against the 20 fps budget. Measured on the Mac first (2026-10-23,
+  README "Performance of the native binary"): CPU 13.5 / 17.1 ms per set on run6 / run5, Metal
+  lane 14.6 / 12.5 ms with a flat ~8 ms frontend, same closures; whole run6 replay 76 s on one
+  thread once the frames are read on a prefetch thread (was 102 s).
 - [ ] 4.3 Node cap (`max_nodes`, the reference's 5.4).
 - [ ] 4.4 Rerun logging from the binary; the Python `rerun_compare.py --lc-dir` draws its output
   meanwhile (`datasets/replay_out/rs_lc_run6/compare.rrd`).
