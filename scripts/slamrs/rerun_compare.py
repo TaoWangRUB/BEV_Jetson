@@ -43,6 +43,7 @@ from run_slamrs import load_framesets  # noqa: E402
 REPO = HERE.parents[1]
 JUMP_MPS = 5.0
 C_SLAMRS, C_VO, C_SLAM = 0xE8A33DFF, 0x3D9BE8FF, 0x52C46BFF   # orange, blue, green
+C_LC = 0xB65CE8FF                                              # purple: slam-rs loop-closed
 
 
 def pose(T, p, q):
@@ -78,6 +79,7 @@ def main():
     ap.add_argument("--no-images", action="store_true")
     ap.add_argument("--save", type=Path)
     ap.add_argument("--spawn", action="store_true")
+    ap.add_argument("--lc-dir", type=Path, help="run_slamrs_lc.py output: draws the loop-closed slam-rs path and its edges")
     a = ap.parse_args()
 
     # slam-rs: T_world_imu -> T_world_cam1 through the same extrinsic it was run with
@@ -91,6 +93,27 @@ def main():
                     np.array([[c["qx"], c["qy"], c["qz"], c["qw"]]]))[0]
     T_w_c1 = T_w_imu @ T_imu_c1
     Ps = T_w_c1[:, :3, 3]
+
+    # slam-rs with loop closure (run_slamrs_lc.py): corrected frames and the accepted edges, same world
+    Pl_lc, tl_lc, edges_lc, n_edges = None, None, [], 0
+    if a.lc_dir:
+        l = np.genfromtxt(a.lc_dir / "slamrs_lc.csv", delimiter=",", names=True)
+        okl = l["status"] == 1
+        tl_lc = l["t_ns"][okl].astype(np.int64)
+        Pl_lc = (pose(None, np.stack([l["tx"], l["ty"], l["tz"]], -1)[okl],
+                      np.stack([l["qx"], l["qy"], l["qz"], l["qw"]], -1)[okl]) @ T_imu_c1)[:, :3, 3]
+        kf = np.genfromtxt(a.lc_dir / "keyframes_lc.csv", delimiter=",", names=True)
+        kf_c1 = (pose(None, np.stack([kf["lc_tx"], kf["lc_ty"], kf["lc_tz"]], -1),
+                      np.stack([kf["lc_qx"], kf["lc_qy"], kf["lc_qz"], kf["lc_qw"]], -1)) @ T_imu_c1)[:, :3, 3]
+        try:
+            ed = np.genfromtxt(a.lc_dir / "loop_edges.csv", delimiter=",", names=True, dtype=None, encoding="utf-8", ndmin=1)
+            # (time the closure was accepted, current keyframe pos, candidate keyframe pos, label)
+            edges_lc = sorted(
+                (int(e["t_cur_ns"]), kf_c1[int(e["cur"])], kf_c1[int(e["cand"])],
+                 f"LC kf{int(e['cur'])}->kf{int(e['cand'])} {int(e['inliers'])}/{int(e['tracked'])}") for e in ed)
+        except (ValueError, IndexError):
+            edges_lc = []
+        n_edges = len(edges_lc)
 
     # cuVSLAM VO (cam1 pose in its odom frame)
     db = next(a.cuvslam_bag.glob("*.db3"))
@@ -140,7 +163,13 @@ def main():
         "slam-rs is metric only as far as the MPU-9250 accelerometer is: at rest it reads "
         f"|a| = 10.33-10.35 m/s^2, and only the along-gravity part of that was removed.",
         "",
-        "Colours: **orange** slam-rs VIO, **blue** cuVSLAM VO, **green** cuVSLAM SLAM (optimised path).",
+        "Colours: **orange** slam-rs VIO, **blue** cuVSLAM VO, **green** cuVSLAM SLAM (optimised path)"
+        + (", **purple** slam-rs loop-closed path with its accepted edges." if Pl_lc is not None else "."),
+    ] + ([
+        "",
+        f"slam-rs loop closure from `{a.lc_dir.name}`: {n_edges} accepted edges; end - start "
+        f"{np.linalg.norm(Pl_lc[-1] - Pl_lc[0]):.2f} m (VIO {np.linalg.norm(Ps[-1] - Ps[0]):.2f} m).",
+    ] if Pl_lc is not None else []) + [
         "",
         f"cuVSLAM VO from `{a.cuvslam_bag.name}`, SLAM from `{slam_bag.name}` "
         f"({len(slam_path)} optimised poses, {len(lc)} loop-closure sites).",
@@ -168,7 +197,7 @@ def main():
     for view in ("anchored", "sim3"):
         rr.log(view, rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
     for key, name, col in (("slamrs", "slam-rs VIO", C_SLAMRS), ("cuvslam_vo", "cuVSLAM VO", C_VO),
-                           ("cuvslam_slam", "cuVSLAM SLAM", C_SLAM)):
+                           ("cuvslam_slam", "cuVSLAM SLAM", C_SLAM), ("slamrs_lc", "slam-rs loop-closed", C_LC)):
         rr.log(f"plots/z/{key}", rr.SeriesLines(colors=[col], names=name), static=True)
         rr.log(f"plots/speed/{key}", rr.SeriesLines(colors=[col], names=name), static=True)
     rr.log("plots/slamrs/landmarks", rr.SeriesLines(colors=[C_SLAMRS], names="landmarks"), static=True)
@@ -184,6 +213,10 @@ def main():
                    static=True)
         if len(lc):
             rr.log(f"{view}/loop_closures", rr.Points3D(apply(A, lc), colors=[C_SLAM], radii=0.05), static=True)
+        if Pl_lc is not None:
+            rr.log(f"{view}/slamrs_lc", rr.LineStrips3D(segments(Pl_lc, (tl_lc - t0) * 1e-9), colors=[C_LC], radii=0.012),
+                   static=True)
+            # the edges and their markers are logged on the timeline below, when each closure happens
         rr.log(f"{view}/start", rr.Points3D([Ps[0]], colors=[0xFFFFFFFF], radii=0.08, labels=["start"]), static=True)
 
     # time-varying: heads and plots
@@ -211,6 +244,27 @@ def main():
         for i in range(len(tl)):
             rr.set_time("time", duration=tl[i])
             rr.log("plots/z/cuvslam_slam", rr.Scalars(Pl[i, 2]))
+    if Pl_lc is not None:
+        # purple head along the loop-closed path, and its height / speed traces
+        tl_s = (tl_lc - t0) * 1e-9
+        vl = np.linalg.norm(np.diff(Pl_lc, axis=0), axis=1) / np.maximum(np.diff(tl_s), 1e-9)
+        for i in range(len(tl_s)):
+            rr.set_time("time", duration=tl_s[i])
+            for view in ("anchored", "sim3"):
+                rr.log(f"{view}/head_lc", rr.Points3D([Pl_lc[i]], colors=[C_LC], radii=0.06))
+            rr.log("plots/z/slamrs_lc", rr.Scalars(Pl_lc[i, 2]))
+            if i and vl[i - 1] < JUMP_MPS:
+                rr.log("plots/speed/slamrs_lc", rr.Scalars(vl[i - 1]))
+        # each accepted closure appears when it happened: a labelled marker on both keyframes and
+        # the edge between them; everything accepted so far stays visible from then on
+        for n, (t_acc, p_cur, p_cand, label) in enumerate(edges_lc):
+            rr.set_time("time", duration=(t_acc - t0) * 1e-9)
+            so_far = edges_lc[: n + 1]
+            for view in ("anchored", "sim3"):
+                rr.log(f"{view}/slamrs_lc_edges", rr.LineStrips3D([[e[1], e[2]] for e in so_far], colors=[C_LC], radii=0.02))
+                rr.log(f"{view}/slamrs_lc_closures",
+                       rr.Points3D([e[1] for e in so_far] + [e[2] for e in so_far], colors=[C_LC], radii=0.05,
+                                   labels=[e[3] for e in so_far] + [""] * len(so_far)))
 
     if not a.no_images:
         geo = dict(line.split() for line in open(a.log / "geometry.txt"))
