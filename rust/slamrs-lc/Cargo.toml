@@ -1,0 +1,23 @@
+[package]
+name = "slamrs-lc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "slam-rs VIO with the BEV loop-closing backend: raw-log replay, keyframe records, KLT verification, 4-DoF pose graph."
+
+[[bin]]
+name = "slamrs-lc"
+path = "src/main.rs"
+
+[features]
+gpu-wgpu = ["slam-rs/gpu-wgpu"]
+
+[dependencies]
+slam-rs = { workspace = true }
+nalgebra = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+memmap2 = { workspace = true }
+thiserror = { workspace = true }

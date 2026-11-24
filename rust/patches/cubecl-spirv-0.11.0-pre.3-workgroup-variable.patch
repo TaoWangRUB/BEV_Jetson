@@ -1,0 +1,30 @@
+# cubecl-spirv 0.11.0-pre.3: declare implicit shared memory as a Workgroup variable of the
+# array type, and take its address as the slice's pointer type - the explicit-layout lowering
+# next to it already does so. The two were swapped, so every kernel with a `SharedMemory`
+# declared `OpVariable %_ptr_Workgroup__ptr_Workgroup_<array> Workgroup`, which spirv-val
+# rejects ("variables can only allocate a workgroup pointer if the VariablePointers capability
+# is declared"). Recent NVIDIA, Mesa and Apple compilers accept it anyway; the Jetson TX2's
+# L4T 32.7.6 Vulkan compiler (libnvidia-glvkspirv) segfaults on the first such kernel,
+# slam-rs's FastCellSelectKernel. Found 2026-10-23 with CUBECL_DEBUG_LOG and spirv-val.
+diff -ruN pa/src/ops/memory.rs pb/src/ops/memory.rs
+--- a/src/ops/memory.rs	2026-10-23 20:31:59
++++ b/src/ops/memory.rs	2026-10-23 20:31:59
+@@ -198,12 +198,16 @@
+         let name = slice.get_result(ctx).unique_name(ctx);
+         shared_size += slice.value_ty(ctx).size(ctx);
+         entry_args.push(name.clone());
+-        let var = GlobalVariableOp::new(ctx, value_ty, StorageClass::Workgroup, name.clone(), None);
++        // The variable holds the array; its address is the slice's pointer type. As in the
++        // explicit-layout lowering below. The other way round declares a Workgroup pointer to
++        // a Workgroup pointer, which is invalid without VariablePointers: lenient drivers
++        // accept it, NVIDIA's L4T 32.7 compiler crashes on it.
++        let var = GlobalVariableOp::new(ctx, ty, StorageClass::Workgroup, name.clone(), None);
+         rewriter.set_insertion_point_to_block_start(module.get_body(ctx, 0));
+         rewriter.append_op(ctx, &var);
+ 
+         rewriter.set_insertion_point_before_operation(slice.get_operation());
+-        let addr = AddressOfOp::new(ctx, ty, name);
++        let addr = AddressOfOp::new(ctx, value_ty, name);
+         rewriter.append_op(ctx, &addr);
+         rewriter.replace_operation(ctx, slice.get_operation(), addr.get_operation());
+     }

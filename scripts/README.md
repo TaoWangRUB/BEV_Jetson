@@ -109,6 +109,62 @@ See [docs/extrinsic_calibration.md](../docs/extrinsic_calibration.md) for the fu
 | [port/locate_frame_loss.py](port/locate_frame_loss.py) | dev/TX2 | **where** a triggered rig loses a frame (sensor vs consumer) |
 | [port/raw_log_to_bag.py](port/raw_log_to_bag.py) | dev | convert a raw image log into a **rosbag2 bag format v4** (Foxy-readable); `--motion` cuts to the IMU motion window |
 | [port/topic_rate_probe.py](port/topic_rate_probe.py) | TX2 | count what a subscriber actually receives, to separate DDS from whatever consumes it |
+| [vo/replay_raw.sh](vo/replay_raw.sh) | host | **cuVSLAM straight from a raw log** (5.10c): builds [vo/cuvslam_raw_replay.cpp](vo/cuvslam_raw_replay.cpp) against the host libcuvslam.so and runs the node's per-set path in-process - no ROS, no bag, no wall clock. Every set, async SBA off and SLAM inline. `--multisensor --imu` with `CUVSLAM_LIB_DIR` pointing at the cuNLS build runs the Multisensor mode with the MPU-9250. Use it for offline A/Bs; replay_host.sh stays for what the node itself does |
+
+**In-process replay (`replay_raw.sh`).** A bag replay plays in real time, so it loses whatever the
+consumer cannot take: on the full run6 log at 0.5×, VO only, the transport delivered 49 fewer cam3
+frames than the others and 156 frames aged out unmatched - 1706 poses of 1758 sets. The in-process
+reader tracks all 1758, and its trajectory lies within the replays' own noise of that replay
+(0.12 / 0.28 m RMS / max after an SE(3) fit, against 0.41 m between two identical replays; scale
+against slam-rs 0.831 vs 0.828; `compare_modes.py` reads both kinds of directory). slam-rs's outputs are byte-identical
+on every repeat. cuVSLAM's are on run6, three replays alike in VO, SLAM poses, path and closures, but
+a run5 replay made while the GPU was also rendering diverged from 31 s on (6 cm median, 23 against
+21 closures, first-to-last 1.16 against 1.13 m), so some path in the library still depends on
+timing. Load makes it visible: a run6 precision VO replay made while a cuVSLAM build was
+compiling left the reference from set 1308 on and ended 3.08 instead of 3.19 m from its start.
+Compare runs made on an idle machine, and repeat before trusting a difference. On the host: VO 29 s per 88 s log, SLAM inline 150 s
+(run6) and 324 s (run5, 1099 of 1762 sets keyframes). The library needs CUDA 12
+(`libcusolver.so.11`): `/usr/local/cuda` now points at 13.2, so replay_host.sh needs
+`CUDA_HOST_MOUNT=/usr/local/cuda-12.8` too.
+
+**Multisensor + IMU (`--multisensor --imu`).** cuVSLAM 17's experimental mode that fuses the
+IMU with the cameras sits behind `USE_CUNLS`, which the default host library is built without. A
+second library, leaving `build_host` alone (cuNLS and the prebuilt CUDA-12 cuDSS are fetched at
+configure time; cuDSS is linked but never selected, `multisensor_pose_estimator.cpp:134` asks for
+DenseQR):
+
+```bash
+CUDA_HOST_MOUNT=/usr/local/cuda-12.8 docker compose -f docker-compose.host.yml run --rm \
+  -e USE_CUNLS=ON -e CUVSLAM_BUILD_DIR=build_host_cunls -e CMAKE_CUDA_ARCHITECTURES=86 build-cuvslam-host
+CUVSLAM_LIB_DIR=third_party/cuVSLAM/build_host_cunls/bin scripts/vo/replay_raw.sh \
+  datasets/imglog_run6_20260907_143036 datasets/replay_out/raw_run6_multisensor_imu --multisensor --imu
+```
+
+The IMU is prepared as slam-rs's driver does (`run_slamrs.py load_imu`) and placed by the inverse
+of the Kalibr `T_imu_cam1` in `config/slamrs/bev_calib_s2.json`, checked against the gyro and the
+resting accelerometer. The virtual-stereo pairs need no declaring: with `depth_camera_ids` empty
+the frustum graph is Multicamera's. Measured 2026-11-24, odometry only, every set tracked, the
+identical command repeated (run6 / run5):
+
+| | first-to-last | scale against slam-rs (1 s windows) | Track() median |
+|---|---|---|---|
+| Multicamera, precision (reference) | 3.19 / 2.19 m | 0.83 / 0.87 | 7 / 27 ms |
+| Multisensor, IMU off | 2.46, 2.16 / 2.06 m | 0.83 / 0.87 | 14-16 / 25 ms |
+| Multisensor + IMU, three runs | 1.81, 2.03, 1.31 / 2.07, 1.10, 1.15 m | 0.84-0.85 / 0.85-0.86 | 62-77 / 60-71 ms |
+| slam-rs VIO | 0.33 / 0.50 m | 1 | |
+
+The IMU brings cuVSLAM's endpoints closer and, in an ad-hoc attitude check against the gyro and
+the resting accelerometer (not yet in `scripts/`), cuts its end-of-log tilt error from 24-54 deg
+to 3-19 deg. It does not change its scale: the per-frame IMU factor is weighted lightly and holds
+velocity and biases fixed (`multisensor_pose_estimator.h:56`, `.cpp:375`, `.cpp:395-396`), so the
+metric scale still comes from the virtual-stereo baselines. It costs 4-5x the tracking time,
+because 80-97 % of sets become keyframes and the inertial bundle adjustment runs inline on almost
+all of them. And the Multisensor path is not repeatable: identical runs differ from the second
+set on, by about 1 m of first-to-last at the end (hypothesis: float `atomicAdd` in cuNLS's
+J^T J, `fast_matrix_multiplier.cu:172`). Two things to know before relying on it: on a tracking
+loss Multisensor resets its pose to the origin rather than keeping it
+(`multisensor_odometry.cpp:64-67`; no loss happened here), and both logs have 5-8 IMU gaps of
+~90 ms that it treats as dropped IMU.
 
 ### Running the Rerun viewer
 
@@ -235,8 +291,274 @@ a launch argument the installed `install_host/` does not declare is dropped sile
 | [slamrs/build_slamrs.sh](slamrs/build_slamrs.sh) | dev / TX2 | build `slam_rs/_core.so` in the submodule without pixi; `GPU=1` adds the CubeCL/wgpu (Vulkan) frontend lane, `PYTHON=` a ≥3.12 interpreter on the TX2 |
 | [slamrs/run_slamrs.py](slamrs/run_slamrs.py) | dev | replay a raw log through `slam_rs.Vio` at half resolution; IMU stamps shifted by Δ from `imu_mpu9250.yaml`; writes one pose row per set with `track_ms` and its `fe_ms` / `est_ms` split. `--gpu` runs the frontend lane on the GPU (needs the `GPU=1` build); `--dry-run` checks everything but slam-rs |
 | [slamrs/compare_lanes.py](slamrs/compare_lanes.py) | dev | A/B two `run_slamrs.py` outputs of one log (CPU vs GPU lane, or two builds): sets tracked, position disagreement raw and rigid-aligned, path length, `track_ms` / `fe_ms` / `est_ms` medians and the speed ratio |
+| [slamrs/plot_methods.py](slamrs/plot_methods.py) | dev | the two methods as one 1920x1080 image: first-to-last for the odometry alone and with loop closure, and compute per frame set split into tracking and loop closure, per walk. Takes a `slamrs-lc replay` directory (its `replay.log` stage timers if present) and a `replay_raw.sh` SLAM directory per walk |
 | [slamrs/compare.py](slamrs/compare.py) | dev | score it against cuVSLAM's `obs_*` bag: continuity, path length, and a Sim(3) fit whose **scale** is an independent check on cuVSLAM's (IMU vs camera baselines) |
 | [slamrs/handeye.py](slamrs/handeye.py) | dev | cam1↔IMU rotation and time offset from the gyro vs cuVSLAM's rotation — a cross-check on Kalibr (rotation agrees to <1°; the offset is too coarse to use) |
+| [slamrs/run_slamrs_lc.py](slamrs/run_slamrs_lc.py) | dev | the same replay with the **loop-closing backend** beside the VIO: writes the pure-VIO csv plus `slamrs_lc.csv` (corrected frames), `keyframes_lc.csv`, `loop_edges.csv`, `hypotheses.csv` (every candidate and why it was rejected), `timings.csv`. `--keyframes-out` also exports each keyframe's frames, pose and landmarks |
+| [slamrs/loop_closure/](slamrs/loop_closure/) | dev | the backend: KB4 + rig (`camera.py`), keyframes from the VIO's snapshots (`keyframes.py`), ORB + landmark association + hash bag-of-words (`features.py`), spatial/appearance retrieval (`retrieval.py`), cuVSLAM's two-step PnP gates (`verify.py`), the 4-DoF pose graph (`posegraph.py`), `LoopClosureBackend.on_keyframe` (`backend.py`). Parameters in [config/slamrs/bev_lc_config.json](../config/slamrs/bev_lc_config.json); design in `openspec/changes/add-slamrs-loop-closure/design.md` |
+| [slamrs/test_loop_closure.py](slamrs/test_loop_closure.py) | dev | synthetic tests on the real KB4 + extrinsics: model round trip, HashBow, the verifier recovers an injected loop pose and rejects a look-alike, determinism, the graph removes injected drift, the time gate |
+
+**Loop closure (`run_slamrs_lc.py`).** slam-rs is pure odometry — upstream states "mapper output is
+not" supported — so the backend lives beside it in Python and never touches the VIO's output. It is
+cuVSLAM's backend design on slam-rs's keyframes: retrieve earlier keyframes by pose radius (older
+than `min_separation_s` only; the radius is the KLT tracker's reach, 1 m on this rig — beyond it no
+candidate ever produced a track); project the candidate's landmarks — every landmark the keyframe
+observed, held in its own rig frame — and its neighbours' into the current cameras with the pose
+guess and track their stored appearance, the frontend's own observation at keyframe time, with
+Lucas-Kanade from there, forward-backward checked and NCC-gated (cuVSLAM's correspondence step;
+every hypothesis records how many landmarks survived each stage). ORB and the hash bag-of-words are
+off by default (`features.orb_enabled`): they only serve appearance retrieval after drift beyond the
+radius, and on these raw fisheyes ORB descriptors are near-random across keyframes (Hamming 80 vs
+122 random). Then solve a multi-camera
+PnP-RANSAC on the best pair, refine jointly, and accept only through cuVSLAM's gates (≥ 40 landmarks,
+inlier ratio ≥ lerp(0.5 @ 40 → 0.3 @ 200), refined pose consistent with the first). An accepted edge
+goes into a 4-DoF pose graph (position + yaw; roll and pitch stay the VIO's) with a Huber kernel and
+is solved at once; edges whose residual exceeds 3σ afterwards are dropped and the graph re-solved.
+Everything is seeded and synchronous, so the same log gives the same bytes — the property
+cuVSLAM's replay lacks (README §6). `compare.py <bag> <vio csv> <lc dir>` scores it;
+`rerun_compare.py --lc-dir` draws the closed path in purple with its edges.
+
+**Measured on run5 and run6** — the only revisits these logs hold are the near ones, so this
+verifies the pipeline, not the benefit (that needs the closed-circuit log of
+`openspec/changes/add-slamrs-loop-closure` task 7). The first column is the 2026-10-18 design
+(Mac and Dell agree on run6 to the inlier count; run5's VIO differs by 8 cm between the two
+builds, so its edges differ), the second the 2026-10-19 review's changes: observed landmarks in
+the keyframe records, ORB off, the radius set to the tracker's reach, the analytic Jacobian.
+
+| run5 / run6 | 10-18 design | after the review | after 9.7, depth confidence (defaults now) |
+|---|---|---|---|
+| keyframes / hypotheses / accepted | 251 / 603 / 3, 243 / 574 / 3 | 251 / 266 / **20**, 243 / 242 / **29** | 251 / 236 / **28**, 243 / 189 / **47** |
+| accepted across the 70 s end-of-log loop | 0 / 0 | 0 / 0 | **10 / 19** (ratios 0.62–0.89) |
+| accepted from the opposite heading (> 120°) | 0 / 0 | 12 / 19 | 13 / 18 |
+| hypotheses with no track at all | 349 / 377 | 11 / 28 | 15 / 28 |
+| landmarks per keyframe, median (weak share) | ~45 / ~55 | 165 / 220 | 166 / 220 (7 % weak, not tracked) |
+| first-to-last distance, VIO → closed | 0.51 → 0.17, 0.33 → 0.11 m | 0.51 → 0.16, 0.33 → 0.11 m | 0.53 → 0.14, 0.33 → 0.12 m |
+| closed vs VIO position, median / max | 0.14 / 0.48, 0.17 / 0.45 m | 0.14 / 0.50, 0.18 / 0.48 m | 0.15 / 0.54, 0.24 / 0.50 m |
+| VIO vs cuVSLAM, Sim(3) RMS (the noise floor) | 0.65 / 0.78 m | same | same |
+| per keyframe: features / verify (median, kf with candidates) | 44 / 379 ms (204), 36 / 418 ms (194) | 1 / 1263 ms (115), 1 / 964 ms (118) | 0 / 508 ms, 0 / 345 ms (Mac, three replays in parallel) |
+| verify, whole run | 75 / 70 s | 107 / 94 s | 53 / 38 s |
+| per accepted closure: pose-graph solve | 2.8 / 3.0 s | 1.1 / 1.2 s | 0.47 / 0.40 s (Mac) |
+
+The review's changes, in order of effect: the 2 s post-closure throttle copied from cuVSLAM had
+skipped 50 / 47 of the 111 / 110 keyframes that had an older keyframe within 1 m, so it is off by
+default and a travelled-path gate (`min_path_m`, 2 m between the two keyframes) filters the rig
+closing against itself while standing still; keyframe records hold every landmark the keyframe
+observed, not only the ones it hosts; the radius is the tracker's reach; ORB is off; the pose graph
+has its analytic Jacobian. The opposite-heading edges are the corridor walked out and back: only a
+median 43 tracks survive the forward-backward check there against 507 same-direction, because the
+walls are seen foreshortened the other way round — cuVSLAM's patch tracker has the same limit.
+
+**Depth confidence (task 9.7, design D2c)** is what closes the long loop. The only revisit 70 s
+apart in these logs — the rig returning to its first metres at the end — solved to the same 0.30 m /
+7° correction on every one of its 111 hypotheses and was rejected on all of them, because the
+early keyframes were recorded while the rig stood still and their landmarks' depths were frozen at
+marginalisation with no parallax behind them. The tracker now keeps a finalised keyframe's record
+open: a landmark's position follows the latest snapshot while it is alive, its parallax and
+observation count (from the frontend's keypoint ids and the window poses) grow with it, and
+landmarks under 2° of parallax or 5 observations are weak and never tracked. Two ideas that sound
+right were measured not to be: a far / bearing-only class (a zero-parallax landmark on this rig is
+near and unknown, not far) and a self-projection bound on the refresh (the early keyframes' frozen
+poses are degrees off, so the later, better geometry fails the bound exactly where it is needed —
+that disagreement is the drift the loop repairs). With the defaults the long loop closes on 10 / 19
+edges with 106–270 inliers at ratios 0.62–0.89, which also retires the ratio-gate question of task
+8.8: its denominator had been full of depthless landmarks. Not tracking the weak ones halves the
+verification cost.
+
+The pure-VIO csv is byte-identical with and without the backend (every column but the wall-clock
+`track_ms`), and two replays on one build give byte-identical hypotheses, edges and corrected
+trajectories (checked again after 9.7). The solve is the Python per-edge loop around SciPy's sparse
+solver with the analytic Jacobian; vectorising it is the next step before the backend goes near a
+thread.
+
+**Native port: `rust/slamrs-lc` (2026-10-20, `openspec/changes/port-loop-closure-to-rust`).**
+The same pipeline as one Rust binary, no Python in the processing path: the slam-rs VIO embedded
+by path (locked to the submodule's own `Cargo.lock` — with other dependency versions the poses
+differ by centimetres) and the backend ported module for module (`keyframes`, `retrieval`, `klt`,
+`pnp`, `posegraph`, `verify`, `backend`). Build and run from the repo root:
+
+```bash
+(cd rust && cargo build --release)             # ~4 min the first time; cargo test --release for the unit tests
+rust/target/release/slamrs-lc replay datasets/imglog_run6_20260907_143036 datasets/replay_out/rs_lc_run6
+.venv/bin/python scripts/slamrs/compare_port.py datasets/replay_out/lc_run6 datasets/replay_out/rs_lc_run6
+```
+
+`replay` reads the raw log exactly as `run_slamrs_lc.py` does and writes the same files, so
+`compare.py`, `rerun_compare.py --lc-dir` and `compare_port.py` (the parity report, stage by
+stage) read its output unchanged. Lucas-Kanade is re-implemented from OpenCV's shape (8-bit
+padded pyramid with a bit-exact `pyrDown`, the same criteria and gates), PnP is RANSAC over
+Gauss-Newton samples from the odometry guess rather than EPnP, so the backend is held to the
+Python outputs within tolerance while the VIO is held to the byte:
+
+| run5 / run6, Python → Rust | |
+|---|---|
+| VIO csv | byte-identical in every pose column (1762 / 1758 rows) |
+| keyframes, landmarks, classes, `n_assoc` | identical |
+| accepted edges (across the 70 s loop) | 28 → 42 (11 → 16), 47 → 52 (19 → 20); 24 / 44 in common |
+| corrected keyframe positions, median / max difference | 6 mm / 2.7 cm, 4 mm / 4.8 cm |
+| first-to-last distance, closed | 0.149 → 0.151 m, 0.127 → 0.131 m |
+| verify per keyframe with candidates, median | 508 → 432 ms, 345 → 306 ms (Mac, one thread) |
+| pose-graph solve per closure | 0.4–1.1 s → milliseconds |
+| whole run6 replay | 102 s: VIO 65 s + backend 46 s |
+
+The port's tracker lets a few more tracks through the forward-backward check (run6 median 164
+vs 142 per hypothesis, everything before that stage equal), hence the extra edges; they join the
+same places as their neighbours and the corrected trajectories agree within centimetres. Two
+replays of one build give byte-identical output. Not ported, by measurement: the appearance route
+(ORB + HashBow) and the far / bearing-only class; open as before: the backend on its own thread,
+the node cap, the GPU lane (`--features gpu-wgpu`, `--gpu`) measured on the TX2, and the
+closed-circuit log.
+
+**Against cuVSLAM (Dell, x86, 2026-11-24).** Both on the same full log, every set: cuVSLAM
+through `scripts/vo/replay_raw.sh` (in-process, no bag, deterministic - see vo/), slam-rs through
+`slamrs-lc replay`. `rerun_compare.py --lc-dir` draws the four paths, one column each in the
+scene's numbers pane:
+
+```bash
+rust/target/release/slamrs-lc replay datasets/imglog_run6_20260907_143036 datasets/replay_out/rs_lc_run6
+scripts/vo/replay_raw.sh datasets/imglog_run6_20260907_143036 datasets/replay_out/raw_run6_slam0125_performance \
+  --multicam-mode performance --slam --slam-primaries 0,1,2,5
+.venv/bin/python scripts/slamrs/rerun_compare.py datasets/imglog_run6_20260907_143036 \
+  datasets/replay_out/rs_lc_run6/slamrs_vio.csv datasets/replay_out/raw_run6_slam0125_performance \
+  --slam-bag datasets/replay_out/raw_run6_slam0125_performance \
+  --lc-dir datasets/replay_out/rs_lc_run6 --save datasets/replay_out/run6_raw_vs_slamrs.rrd
+```
+
+cuVSLAM's odometry is taken from its SLAM run, so each method is one configuration: its odometry
+and its loop closure from the same replay. `plot_methods.py` draws both methods' accuracy and
+compute side by side (`datasets/replay_out/methods_run6_run5.png`):
+
+```bash
+.venv/bin/python scripts/slamrs/plot_methods.py datasets/replay_out/methods_run6_run5.png \
+  --walk "walk 1" datasets/replay_out/rs_lc_run6 datasets/replay_out/raw_run6_slam0125_performance \
+  --walk "walk 2" datasets/replay_out/rs_lc_run5 datasets/replay_out/raw_run5_slam0125_performance
+```
+
+`--video run6.mp4 --video-speed 4` renders the same scene to an mp4 instead (Rerun cannot export
+video): a headless viewer of its own, the time-varying data streamed into it in time order and one
+screenshot per frame, so the clip is exactly what the viewer draws. 1920x1080 at 30 fps by default;
+the 88 s log at 4x takes 100 s to render.
+
+| run6 / run5, the whole log (0-88 s) | first-to-last | loop closures | per frame set, tracking + loop closure |
+|---|---|---|---|
+| slam-rs VIO | 0.33 / 0.50 m | – | |
+| slam-rs + the port's backend | **0.13 / 0.13 m** | 52 / 40 edges, 20 / 12 of them over 60 s apart | 37 + 54 = 91 / 49 + 63 = 112 ms, one CPU core |
+| cuVSLAM odometry, performance | 2.59 / 2.04 m | – | |
+| cuVSLAM SLAM, performance `[0,1,2,5]` | 1.71 / 1.13 m | 17 / 21 events | 4 + 39 = 43 / 10 + 121 = 131 ms, GPU |
+
+Compute is the mean per frame set over the log, everything inline (`async_sba` off, SLAM in sync
+mode, the port's backend in the replay loop), image preprocessing left out of both (cuVSLAM's
+pinhole remap, 5-9 ms; slam-rs's 2x downscale on its prefetch thread). Each figure is one replay
+with nothing else running, but with the GPU clock unlocked: two replays of the same cuVSLAM run
+differed by up to 2x (run6 81 against 43 ms), slam-rs's by about 10 %. What holds across them is
+where the time goes. cuVSLAM's GPU tracking is 5-9x cheaper than slam-rs's VIO on one core; loop
+closure is the larger share for both - 97-98 % of the port's backend is verification (the KLT
+re-tracking), the pose-graph solve 2-3 % - and cuVSLAM's grows with its keyframes (27 % of run6's
+frames, 62 % of run5's). In precision mode cuVSLAM's odometry alone ends 3.19 / 2.19 m from its
+start.
+
+The first version of this table (9843732) took cuVSLAM from the replay_host.sh bags, and those
+were cut to the IMU motion window (`raw_log_to_bag.py --motion`; run6 7.3-81.5 s of 87.8 s):
+cuVSLAM SLAM never saw the end-of-log frames that 19 of slam-rs's 20 long-loop edges on run6 (6 of
+12 on run5) are made on, and scored 4.26 / 1.10 m. Given the same frames it does better on run6
+and stays about ten times further from its start than slam-rs's backend. Its distances are in its
+own scale (0.83 / 0.87× slam-rs's over 1 s windows), which cannot account for that.
+
+On this host the port's VIO csv equals the Python core's built here on 2026-10-16
+(`slamrs_run{5,6}_cpu.csv`) in every pose column; run6 accepts the Mac's 52 edges, run5 40
+against 42, because run5's VIO differs between x86 and arm64 as the Python builds' did. There is no
+tape on these logs, so first-to-last is the only figure; the closed-circuit log still decides the
+benefit.
+
+**Performance of the native binary (Mac, Apple M5 Pro, 2026-10-23).** Measured one replay at a
+time, `--no-lc` for the lanes, the release profile; `--gpu` is the CubeCL/wgpu frontend lane on
+Metal (`cargo build --release --features gpu-wgpu`), whose CPU lane is byte-identical to the
+CPU-only build:
+
+| run5 / run6, median per set | CPU, 1 thread | CPU, 4 threads | GPU lane (Metal) |
+|---|---|---|---|
+| `track()` | 17.1 / 13.5 ms | – / 12.0 ms | 12.5 / 14.6 ms |
+| frontend | 12.6 / 7.2 ms | – / 5.4 ms | 7.9 / 8.0 ms |
+| estimator | 4.4 / 6.5 ms | – / 6.6 ms | 4.3 / 6.6 ms |
+| p95 `track()` | 26.4 / 29.9 ms | – / 28.2 ms | 21.5 / 27.1 ms |
+| position vs the CPU lane, RMS after rigid alignment | – | – | 0.2 cm (run6) |
+
+The VIO runs at 3–4× real time on one thread (20 sets/s of log, 13–17 ms per set). The Metal
+lane makes the frontend a flat ~8 ms whatever the keypoint count — a win on run5 (12.6 → 7.9 ms),
+a loss on run6 (7.2 → 8.0 ms), so on this host the dispatch and readback floor is about where the
+CPU frontend already is; the A2000 measurement above (5 ms with locked clocks) is the better
+indication of what a discrete GPU gives. The estimator is the same single thread in every lane.
+The GPU lane changes the trajectory within upstream's band and closes the same 52 loop edges on
+run6 with the same 0.131 m first-to-last.
+
+The whole run6 replay with the backend takes 76 s wall on one thread (log span 88 s): frames
+read and halved on a prefetch thread (1.2 s of waiting), VIO 28 s, keyframe records 0.5 s,
+backend 46 s. The backend is the cost that matters for real time: per keyframe with candidates
+the verification is 306 ms median but 1.2 s p95 and 2.2 s max (run6), the pose-graph solve
+19 ms median; on a TX2, several times slower per core, that only fits behind the VIO on its own
+thread with cuVSLAM's throttling, or with the KLT verification spread over the cores. The VIO
+itself at 13–17 ms per set leaves the 50 ms frame budget to the TX2's slower cores (upstream's
+host-to-TX2 ratio for this core is about 5×).
+
+**On the TX2 (2026-10-23, L4T 32.7.6, MAXN, `jetson_clocks`, the binary cross-compiled on the
+Mac with `cargo zigbuild --target aarch64-unknown-linux-gnu.2.27 --features gpu-wgpu`, run from
+the NVMe).** The GPU lane first crashed inside the driver's SPIR-V compiler
+(`libnvidia-glvkspirv`, `FastCellSelectKernel`): cubecl-spirv 0.11.0-pre.3 declares every
+implicit shared-memory array as a Workgroup pointer to a Workgroup pointer, which `spirv-val`
+rejects and which newer NVIDIA, Mesa and Apple compilers tolerate; the L4T one segfaults.
+`rust/patches/cubecl-spirv-0.11.0-pre.3-workgroup-variable.patch` (applied by
+`rust/prepare_patches.sh`, pointed at from `rust/Cargo.toml`) swaps the two types back; the Mac's
+Metal lane is byte-identical with and without it. With the patch, run6:
+
+| TX2, run6, median per set | CPU, 1 thread | CPU, 4 threads | GPU lane (Vulkan) |
+|---|---|---|---|
+| reference profile: `track()` | 137 ms | 126 ms | 102 ms |
+| reference: frontend / estimator | 77 / 62 ms | 64 / 62 ms | 38 / 63 ms |
+| fast profile: `track()` | 74 ms | 65 ms | **39 ms** |
+| fast: frontend / estimator | 65 / 2.4 ms | 58 / 2.5 ms | 34 / 2.5 ms |
+| fast: p95 `track()` | 192 ms | 182 ms | 158 ms |
+| trajectory vs the CPU lane, RMS after rigid alignment | – | – | 0.2 cm |
+| loop-closure verify per keyframe, median | 2.6 s | – | – |
+
+The fast profile (`config/slamrs/bev_vio_config_fast.json`: upstream's `fast.json` knobs on our
+config - detect only when camera 0 has lost 15 % of its keypoints, solve the newest state alone
+between keyframes) is what makes the budget: 39 ms per set on the GPU lane against the 50 ms of
+20 fps, with the same 1746 sets tracked and the GPU lane's trajectory within 2 mm of the CPU
+lane's. Two things remain before it is real time on the rig. The p95 is the keyframe solve
+(120 ms p95, 250 max): the 14 % keyframe sets pay the joint window solve on one core, so the
+pipeline needs the frame-of-lag that upstream's `pipeline/lag.rs` provides, or the estimator's
+landmark blocks on the worker pool, which upstream added after our pin (`bfd4e17`). And the GPU
+frontend's 34 ms is waiting, not kernels. `replay` writes `frontend_breakdown.csv` beside the
+poses: the frontend's own stage timers and the GPU lane's seam counters (launches, uploads,
+synchronising downloads, with the host time spent in each). Fast profile, 300 sets of run6,
+median per set:
+
+| ms per set | Mac GPU (Metal) | TX2 GPU (Vulkan) | TX2 CPU, 1 thread |
+|---|---|---|---|
+| `track()` | 8.4 | 32.2 | 57.0 |
+| pyramid / detect / KLT / stereo | 0.1 / 0.2 / 2.7 / 1.4 | 1.1 / 1.1 / 17.9 / 10.0 | 5.0 / 17.3 / 29.6 / 3.1 |
+| inside the 2 synchronising downloads | 3.6 | 24.9 | – |
+| launches / uploads per set | 70 / 25 | 70 / 25 | – |
+
+So each set is 70 small launches, 25 uploads and two waits, and on the TX2 those two waits are
+25 of the 32 ms while tegrastats shows the GPU executing for about 13 (25 % of the 53 ms mean
+set): the rest of the wait is round-trip latency (fence, `map_async`, the runtime's poll-worker
+handoffs) on a CPU four to five times slower than the Mac's, during which the GPU has nothing
+queued. CubeCL's own kernel profile (`CUBECL_DEBUG_OPTION=profile-medium`, which times each
+launch to completion, so it includes per-launch latency) puts the device work at 24 ms per set
+over 64 launches: KLT 7.6 ms (12.8 launches), patch building 6.6 (12.8), FAST scores 6.0 (3.4),
+pyramid halving 1.3 (12), cell selection 0.9, local maxima 0.7, the storage probe 0.7 (4 per
+set, a sanity check worth moving to start-up), finish and backward preparation 0.2. With
+tegrastats' 25 % as the lower bound, the GPU computes 13–24 ms of each set; everything above
+that is the CPU encoding 70 launches and waiting on two results with nothing queued behind them.
+Keeping the frames on the GPU (zero-copy camera buffers) saves only the uploads, 1.1 ms. The
+lever is overlap: with the next set's launches submitted before the current set's downloads
+are awaited, the set costs the larger of the GPU's 13–24 ms and the CPU's ~10 (encoding,
+bookkeeping, estimator), at one frame of latency; upstream's later lookahead and one-wait
+submissions do exactly that, and its fused KLT and packed selection cut the launch count.
+Re-pinning the submodule is the next step for both. The fast profile costs accuracy on these logs: 7–8 cm
+median against the reference trajectory after alignment, run5's first-to-last 0.54 → 0.71 m,
+and the loop-closure port then loses the long loop (tasks 4.6: step 1 needs a P3P solver, the
+Python EPnP still closes it).
 
 ## bev/ — bird's-eye ground stitch
 

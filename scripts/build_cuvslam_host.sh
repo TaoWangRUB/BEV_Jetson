@@ -10,11 +10,27 @@
 #
 # Output: third_party/cuVSLAM/build_host/bin/libcuvslam.so
 # Refuses to run if the TX2 port patch is applied to the submodule tree.
+#
+# A SECOND library with cuNLS (OdometryMode::Multisensor, the only mode behind USE_CUNLS) goes
+# in its own build tree, so nothing that links build_host changes under it:
+#
+#   CUDA_HOST_MOUNT=/usr/local/cuda-12.8 docker compose -f docker-compose.host.yml run --rm \
+#       -e USE_CUNLS=ON -e CUVSLAM_BUILD_DIR=build_host_cunls build-cuvslam-host
+#   # -> third_party/cuVSLAM/build_host_cunls/bin/libcuvslam.so; scripts/vo/replay_raw.sh
+#   #    takes it with CUVSLAM_LIB_DIR=third_party/cuVSLAM/build_host_cunls/bin
+#
+# Upstream cuNLS is fetched at configure time and pulls a prebuilt cuDSS archive (~175 MB) it
+# links but cuVSLAM never selects (multisensor_pose_estimator.cpp asks for DenseQR).
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${REPO_ROOT}/third_party/cuVSLAM"
-BUILD="${SRC}/build_host"
-LOG="${REPO_ROOT}/build/cuvslam_host.log"
+BUILD_NAME="${CUVSLAM_BUILD_DIR:-build_host}"
+BUILD="${SRC}/${BUILD_NAME}"
+if [[ "${BUILD_NAME}" == build_host ]]; then
+  LOG="${REPO_ROOT}/build/cuvslam_host.log"
+else
+  LOG="${REPO_ROOT}/build/cuvslam_${BUILD_NAME}.log"
+fi
 mkdir -p "${REPO_ROOT}/build"
 
 if [[ "$(uname -m)" != "x86_64" ]]; then
@@ -56,7 +72,7 @@ USE_CUNLS="${USE_CUNLS:-OFF}"
 HOST_CC="${HOST_CC:-gcc-11}"
 HOST_CXX="${HOST_CXX:-g++-11}"
 
-echo "Configuring cuVSLAM for host CUDA $($(/usr/local/cuda/bin/nvcc --version | sed -n 's/.*release \([0-9.]*\).*/\1/p')) / sm_${ARCHS} (USE_CUNLS=${USE_CUNLS}, CXX=${HOST_CXX}) ..."
+echo "Configuring cuVSLAM for host CUDA $($(/usr/local/cuda/bin/nvcc --version | sed -n 's/.*release \([0-9.]*\).*/\1/p')) / sm_${ARCHS} (USE_CUNLS=${USE_CUNLS}, CXX=${HOST_CXX}) in ${BUILD_NAME} ..."
 cmake -S "${SRC}" -B "${BUILD}" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_ARCHITECTURES="${ARCHS}" \
     -DCMAKE_C_COMPILER="${HOST_CC}" -DCMAKE_CXX_COMPILER="${HOST_CXX}" \

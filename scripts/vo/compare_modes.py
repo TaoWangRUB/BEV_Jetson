@@ -3,7 +3,8 @@
   python3 scripts/vo/compare_modes.py REF_DIR OTHER_DIR [OTHER_DIR ...] [--slamrs slamrs.csv]
 
 Each DIR is a replay_host.sh output directory; its <DIR>_timing.csv (TIMING=1 or SLAM=1) is
-read if present. Trajectories are compared against REF with an SE(3) fit over common stamps -
+read if present. A replay_raw.sh output directory works too (odometry.csv carries its own
+per-set timing; there the callback column is remap + Track() + Slam::Track, nothing dropped). Trajectories are compared against REF with an SE(3) fit over common stamps -
 no scale, so a scale change shows up as residual. Replays are NOT reproducible (async SBA,
 cuvslam_multicam_node.cpp): include a same-config replay at another rate as one of the OTHERs
 to see the noise floor, or a difference means nothing.
@@ -21,13 +22,26 @@ from handeye import read_odom  # noqa: E402
 JUMP_MPS = 5.0
 
 
+def raw_odometry(d):
+    f = Path(d) / "odometry.csv"          # scripts/vo/replay_raw.sh
+    return np.genfromtxt(f, delimiter=",", names=True) if f.exists() else None
+
+
 def load(d):
+    o = raw_odometry(d)
+    if o is not None:
+        o = o[o["status"] == 1]
+        return o["t_ns"].astype(np.int64), np.stack([o["tx"], o["ty"], o["tz"]], -1)
     od = read_odom(str(next(Path(d).glob("*.db3"))))
     t = od[:, 0].astype(np.int64)
     return t, od[:, 1:4]
 
 
 def timing(d):
+    o = raw_odometry(d)
+    if o is not None:
+        return {"track_us": o["track_us"], "keyframe": o["keyframe"],
+                "callback_us": o["track_us"] + o["remap_us"] + o["slam_us"]}
     f = Path(str(d).rstrip("/") + "_timing.csv")
     if not f.exists():
         return None
