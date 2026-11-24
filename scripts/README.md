@@ -379,6 +379,11 @@ scripts/vo/replay_raw.sh datasets/imglog_run6_20260907_143036 datasets/replay_ou
   --lc-dir datasets/replay_out/rs_lc_run6 --save datasets/replay_out/run6_raw_vs_slamrs.rrd
 ```
 
+`--video run6.mp4 --video-speed 4` renders the same scene to an mp4 instead (Rerun cannot export
+video): a headless viewer of its own, the time-varying data streamed into it in time order and one
+screenshot per frame, so the clip is exactly what the viewer draws. 1920x1080 at 30 fps by default;
+the 88 s log at 4x takes 100 s to render.
+
 | run6 / run5, the whole log (0-88 s) | first-to-last | loop closures |
 |---|---|---|
 | slam-rs VIO | 0.33 / 0.50 m | – |

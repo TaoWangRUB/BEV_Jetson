@@ -2,7 +2,7 @@
 
   .venv/bin/python scripts/slamrs/rerun_compare.py <imglog dir> <slamrs.csv> <cuvslam obs bag dir>
         [--slam-bag <obs bag dir>] [--lc-dir <loop-closure output dir>] [--save out.rrd] [--spawn]
-        [--image-stride 4] [--no-images]
+        [--image-stride 4] [--no-images] [--video out.mp4 [--video-speed 4] [--video-size 1920x1080]]
 
 Everything is drawn in slam-rs's world (gravity-aligned, +Z up, metric from the IMU). cuVSLAM's
 frame is cam1's optical frame at its first pose, so it is brought across through the Kalibr
@@ -22,6 +22,10 @@ lossless when slow enough for the backend (README 6) - at 0.4x on run6 it overra
 and the VO in THAT bag jumped 18.6 m across the gap. VO should come from a VO-only replay. The
 SLAM bag's frame is tied to the VO bag's at their first common stamp.
 
+--video renders the scene to an mp4 instead (Rerun itself cannot export video): a headless viewer
+of its own, the time-varying data streamed into it in time order, and one screenshot per frame, so
+the movie is exactly what the viewer draws, at --video-speed times real time.
+
 Either input can instead be a scripts/vo/replay_raw.sh output directory: cuVSLAM run in-process on
 the raw log, every set and deterministic - the same input slam-rs gets, which a bag replay is not
 (cut to the motion window, sets dropped whenever SLAM overruns the replay rate).
@@ -29,8 +33,14 @@ the raw log, every set and deterministic - the same input slam-rs gets, which a 
 import argparse
 import csv
 import json
+import os
+import shutil
+import signal
 import sqlite3
+import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 import cv2
@@ -120,6 +130,12 @@ def main():
     ap.add_argument("--save", type=Path)
     ap.add_argument("--spawn", action="store_true")
     ap.add_argument("--lc-dir", type=Path, help="run_slamrs_lc.py or `slamrs-lc replay` output: draws the loop-closed slam-rs path and its edges")
+    ap.add_argument("--video", type=Path, help="render the scene to this mp4 instead of saving or showing it")
+    ap.add_argument("--video-speed", type=float, default=4.0, help="times real time")
+    ap.add_argument("--video-fps", type=int, default=30)
+    ap.add_argument("--video-size", default="1920x1080", help="viewer size in points, as --window-size")
+    ap.add_argument("--video-hold", type=float, default=2.0, help="seconds to hold the last frame")
+    ap.add_argument("--video-port", type=int, default=9890, help="port of the headless viewer")
     a = ap.parse_args()
 
     # slam-rs: T_world_imu -> T_world_cam1 through the same extrinsic it was run with
@@ -239,9 +255,30 @@ def main():
     ]
     print("\n".join(lines))
 
-    rr.init("bev_slamrs_vs_cuvslam", spawn=a.spawn)
-    if a.save:
-        rr.save(a.save)
+    viewer = client = None
+    if a.video:
+        # A headless viewer of our own: the data is streamed into it in time order and it is
+        # screenshotted after each step, so every frame is exactly what the viewer draws.
+        from rerun.experimental import ViewerClient
+        url = f"rerun+http://127.0.0.1:{a.video_port}/proxy"
+        viewer = subprocess.Popen([str(Path(sys.executable).parent / "rerun"), "--headless", "--port",
+                                   str(a.video_port), "--window-size", a.video_size],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        for _ in range(150):
+            try:
+                client = ViewerClient.connect(url)
+                break
+            except ConnectionError:
+                time.sleep(0.2)
+        else:
+            os.killpg(viewer.pid, signal.SIGTERM)
+            sys.exit(f"the headless viewer never came up on {url}")
+        rr.init("bev_slamrs_vs_cuvslam", spawn=False)
+        rr.connect_grpc(url)
+    else:
+        rr.init("bev_slamrs_vs_cuvslam", spawn=a.spawn)
+        if a.save:
+            rr.save(a.save)
     cams = [f"cams/cam{i}" for i in (1, 2, 3, 4)]
     eye = rrb.EyeControls3D(kind=rrb.Eye3DKind.Orbital)
     linked = rrb.TimeAxis(link="LinkToGlobal")
@@ -256,8 +293,19 @@ def main():
             rrb.TimeSeriesView(name="speed (m/s), anchored", origin="/plots/speed", axis_x=linked),
             rrb.TimeSeriesView(name="slam-rs: landmarks / track ms", origin="/plots/slamrs", axis_x=linked)]),
         rrb.Horizontal(contents=[rrb.Spatial2DView(name=n.split("/")[-1], origin=n) for n in cams]),
-    ]), rrb.TimePanel(state="collapsed"), collapse_panels=True))
+    ]), rrb.TimePanel(state="collapsed", playback_speed=a.video_speed if a.video else None,
+                   play_state="following" if a.video else None), collapse_panels=True))
 
+    if a.video:
+        # the pane is a quarter of the width: one row per path instead of one column
+        colour = {"slam-rs VIO": "orange", "slam-rs + loop closure": "purple", "cuVSLAM VO": "blue",
+                  "cuVSLAM SLAM": "green"}
+        lines = [f"# {a.log.name}", "", f"Played at {a.video_speed:g}x.", "",
+                 "| path | first-to-last | loop closures |", "|---|---|---|"] + [
+            f"| **{colour[n]}** {n} | {c[4]} | {c[5]} |" for n, c in cols.items()] + [
+            "", "Left: anchored at the first pose, each path in its own scale. Right: cuVSLAM Sim(3)-fitted "
+            "onto slam-rs, shape only.", "",
+            f"cuVSLAM's scale is its own: over 1 s windows it moves {np.median(ws):.2f}x as far as slam-rs."]
     rr.log("summary", rr.TextDocument("\n".join(lines), media_type=rr.MediaType.MARKDOWN), static=True)
     for view in ("anchored", "sim3"):
         rr.log(view, rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
@@ -284,24 +332,42 @@ def main():
             # the edges and their markers are logged on the timeline below, when each closure happens
         rr.log(f"{view}/start", rr.Points3D([Ps[0]], colors=[0xFFFFFFFF], radii=0.08, labels=["start"]), static=True)
 
-    # time-varying: heads and plots
+    # time-varying: heads, plots, closures, images. Straight to Rerun, or buffered (--video) to be
+    # streamed in time order.
+    events = [] if a.video else None
+
+    class Timeline:
+        t = 0.0
+
+        def at(self, t_s):
+            self.t = float(t_s)
+            if events is None:
+                rr.set_time("time", duration=self.t)
+
+        def log(self, path, arch):
+            if events is None:
+                rr.log(path, arch)
+            else:
+                events.append((self.t, len(events), path, arch))
+
+    tl = Timeline()
     Pc_anch = apply(A_anchor, Pc)
     for i in range(len(ts)):
-        rr.set_time("time", duration=ts_s[i])
+        tl.at(ts_s[i])
         for view in ("anchored", "sim3"):
-            rr.log(f"{view}/head_slamrs", rr.Points3D([Ps[i]], colors=[C_SLAMRS], radii=0.06))
-        rr.log("plots/z/slamrs", rr.Scalars(Ps[i, 2]))
+            tl.log(f"{view}/head_slamrs", rr.Points3D([Ps[i]], colors=[C_SLAMRS], radii=0.06))
+        tl.log("plots/z/slamrs", rr.Scalars(Ps[i, 2]))
         if i:
-            rr.log("plots/speed/slamrs", rr.Scalars(vs[i - 1]))
-        rr.log("plots/slamrs/landmarks", rr.Scalars(s["num_landmarks"][ok][i]))
-        rr.log("plots/slamrs/track_ms", rr.Scalars(s["track_ms"][ok][i]))
+            tl.log("plots/speed/slamrs", rr.Scalars(vs[i - 1]))
+        tl.log("plots/slamrs/landmarks", rr.Scalars(s["num_landmarks"][ok][i]))
+        tl.log("plots/slamrs/track_ms", rr.Scalars(s["track_ms"][ok][i]))
     for i in range(len(tc)):
-        rr.set_time("time", duration=tc_s[i])
-        rr.log("anchored/head_vo", rr.Points3D([Pc_anch[i]], colors=[C_VO], radii=0.05))
-        rr.log("sim3/head_vo", rr.Points3D([apply(A_sim3, Pc[i:i + 1])[0]], colors=[C_VO], radii=0.05))
-        rr.log("plots/z/cuvslam_vo", rr.Scalars(Pc_anch[i, 2]))
+        tl.at(tc_s[i])
+        tl.log("anchored/head_vo", rr.Points3D([Pc_anch[i]], colors=[C_VO], radii=0.05))
+        tl.log("sim3/head_vo", rr.Points3D([apply(A_sim3, Pc[i:i + 1])[0]], colors=[C_VO], radii=0.05))
+        tl.log("plots/z/cuvslam_vo", rr.Scalars(Pc_anch[i, 2]))
         if i and v[i - 1] < JUMP_MPS:
-            rr.log("plots/speed/cuvslam_vo", rr.Scalars(v[i - 1]))
+            tl.log("plots/speed/cuvslam_vo", rr.Scalars(v[i - 1]))
     if len(slam_path):
         # cuVSLAM SLAM's height and speed from its FINAL optimised path - the green line in 3D, and
         # the same kind of path as slam-rs's loop-closed one. Its live corrected pose
@@ -311,31 +377,32 @@ def main():
         tg = (slam_t * 1e9 - t0) * 1e-9
         vg = np.linalg.norm(np.diff(Pg, axis=0), axis=1) / np.maximum(np.diff(tg), 1e-9)
         for i in range(len(tg)):
-            rr.set_time("time", duration=tg[i])
-            rr.log("plots/z/cuvslam_slam", rr.Scalars(Pg[i, 2]))
+            tl.at(tg[i])
+            tl.log("plots/z/cuvslam_slam", rr.Scalars(Pg[i, 2]))
             if i and vg[i - 1] < JUMP_MPS:
-                rr.log("plots/speed/cuvslam_slam", rr.Scalars(vg[i - 1]))
+                tl.log("plots/speed/cuvslam_slam", rr.Scalars(vg[i - 1]))
     if Pl_lc is not None:
         # purple head along the loop-closed path, and its height / speed traces
         tl_s = (tl_lc - t0) * 1e-9
         vl = np.linalg.norm(np.diff(Pl_lc, axis=0), axis=1) / np.maximum(np.diff(tl_s), 1e-9)
         for i in range(len(tl_s)):
-            rr.set_time("time", duration=tl_s[i])
+            tl.at(tl_s[i])
             for view in ("anchored", "sim3"):
-                rr.log(f"{view}/head_lc", rr.Points3D([Pl_lc[i]], colors=[C_LC], radii=0.06))
-            rr.log("plots/z/slamrs_lc", rr.Scalars(Pl_lc[i, 2]))
+                tl.log(f"{view}/head_lc", rr.Points3D([Pl_lc[i]], colors=[C_LC], radii=0.06))
+            tl.log("plots/z/slamrs_lc", rr.Scalars(Pl_lc[i, 2]))
             if i and vl[i - 1] < JUMP_MPS:
-                rr.log("plots/speed/slamrs_lc", rr.Scalars(vl[i - 1]))
+                tl.log("plots/speed/slamrs_lc", rr.Scalars(vl[i - 1]))
         # each accepted closure appears when it happened: a labelled marker on both keyframes and
         # the edge between them; everything accepted so far stays visible from then on
         for n, (t_acc, p_cur, p_cand, label) in enumerate(edges_lc):
-            rr.set_time("time", duration=(t_acc - t0) * 1e-9)
+            tl.at((t_acc - t0) * 1e-9)
             so_far = edges_lc[: n + 1]
             for view in ("anchored", "sim3"):
-                rr.log(f"{view}/slamrs_lc_edges", rr.LineStrips3D([[e[1], e[2]] for e in so_far], colors=[C_LC], radii=0.02))
-                rr.log(f"{view}/slamrs_lc_closures",
+                tl.log(f"{view}/slamrs_lc_edges", rr.LineStrips3D([[e[1], e[2]] for e in so_far], colors=[C_LC], radii=0.02))
+                tl.log(f"{view}/slamrs_lc_closures",
                        rr.Points3D([e[1] for e in so_far] + [e[2] for e in so_far], colors=[C_LC], radii=0.05,
-                                   labels=[e[3] for e in so_far] + [""] * len(so_far)))
+                                   labels=[e[3] for e in so_far] + [""] * len(so_far),
+                                   show_labels=not a.video))   # a pile of labels mid-movie
 
     if not a.no_images:
         geo = dict(line.split() for line in open(a.log / "geometry.txt"))
@@ -343,11 +410,45 @@ def main():
         raws = [np.memmap(a.log / f"cam{i}.raw", dtype=np.uint8, mode="r") for i in (1, 2, 3, 4)]
         sets, _ = load_framesets(a.log)
         for t, offs in sets[:: a.image_stride]:
-            rr.set_time("time", duration=(t - t0) * 1e-9)
+            tl.at((t - t0) * 1e-9)
             for k, o in enumerate(offs):
                 img = cv2.resize(raws[k][o:o + bpf].reshape(H, W), (W // 4, H // 4), interpolation=cv2.INTER_AREA)
-                rr.log(cams[k], rr.Image(img[::-1, ::-1].copy()).compress(jpeg_quality=70))  # mounted inverted
-    print(f"saved {a.save}" if a.save else "done")
+                tl.log(cams[k], rr.Image(img[::-1, ::-1].copy()).compress(jpeg_quality=70))  # mounted inverted
+    if a.video:
+        render_video(a, events, client, max(e[0] for e in events))
+        rr.disconnect()
+        os.killpg(viewer.pid, signal.SIGTERM)   # the launcher and the viewer it started
+        print(f"saved {a.video}")
+    else:
+        print(f"saved {a.save}" if a.save else "done")
+
+
+def render_video(a, events, client, t_end):
+    """Stream the buffered events into the headless viewer in time order, one screenshot per frame
+    of the movie (--video-speed seconds of log per second of video), then encode with ffmpeg."""
+    rec = rr.get_global_data_recording()
+    events.sort(key=lambda e: (e[0], e[1]))
+    dt = a.video_speed / a.video_fps
+    n = int(np.ceil(t_end / dt)) + 1
+    frames = Path(tempfile.mkdtemp(prefix="rerun_compare_video_"))
+    j = 0
+    t_wall = time.time()
+    for k in range(n):
+        while j < len(events) and events[j][0] <= k * dt:
+            t, _, path, arch = events[j]
+            rr.set_time("time", duration=t)
+            rr.log(path, arch)
+            j += 1
+        rec.flush(timeout_sec=10)
+        time.sleep(0.08)          # let the viewer ingest what was just sent before it draws
+        client.save_screenshot(str(frames / f"{k:05d}.png"))
+        if k % 100 == 0:
+            print(f"  frame {k}/{n} (t = {k * dt:.1f} s), {time.time() - t_wall:.0f} s")
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(a.video_fps), "-i", str(frames / "%05d.png"),
+                    "-vf", f"tpad=stop_mode=clone:stop_duration={a.video_hold},scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                    "-c:v", "libx264", "-preset", "slow", "-crf", "18", "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart", str(a.video)], check=True)
+    shutil.rmtree(frames)
 
 
 if __name__ == "__main__":
