@@ -1345,7 +1345,7 @@ physically moved - the remaining items are not doable from here.
             deeper queue; measure sets-reaching-matcher again at 1.0x.
       - [ ] 5.10b If reliable is not enough, raise the DDS buffers (Cyclone
             `MaxMessageSize`/`FragmentSize`, socket rcvbuf) - 20 Hz x 4 x 1.5 MB is 127 MB/s.
-      - [ ] 5.10c **Bypass DDS for replay: read the bag in-process and call `Track()` directly.**
+      - [x] 5.10c **Bypass DDS for replay: read the bag in-process and call `Track()` directly.**
             Promoted from "consider" — it is now the blocker for every offline comparison, not a
             tidy-up. **It must be paired with `async_sba=false`**, and neither half works alone:
 
@@ -1358,6 +1358,13 @@ physically moved - the remaining items are not doable from here.
 
             Together they give a fixed amount of optimisation per FRAME instead of per second,
             and two runs of the same bag become identical.
+
+            **Done 2026-11-24, from the raw log rather than the bag** (`scripts/vo/replay_raw.sh`
+            building `scripts/vo/cuvslam_raw_replay.cpp`): the node's per-set path in-process,
+            with `async_sba=false` and SLAM `sync_mode=true`. Every set is tracked (run6: 1758 of
+            1758, against 1706 from the full-log bag replay at 0.5x), two runs are byte-identical
+            in VO, SLAM poses, the optimised path and the closures, and the trajectory is 0.12 m
+            RMS from the bag replay's - inside the replays' own 0.41 m noise floor.
 
 - [ ] 5.13 **Every host-side figure in this change answers "is A better than B on this data",
       never "what will the rig do".** The two need different setups and the distinction has been
