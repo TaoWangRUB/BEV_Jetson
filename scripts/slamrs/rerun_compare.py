@@ -21,8 +21,13 @@ the LAST /cuvslam/slam_path (the most optimised graph), as in vo/rerun_multicam.
 lossless when slow enough for the backend (README 6) - at 0.4x on run6 it overran, sets queued
 and the VO in THAT bag jumped 18.6 m across the gap. VO should come from a VO-only replay. The
 SLAM bag's frame is tied to the VO bag's at their first common stamp.
+
+Either input can instead be a scripts/vo/replay_raw.sh output directory: cuVSLAM run in-process on
+the raw log, every set and deterministic - the same input slam-rs gets, which a bag replay is not
+(cut to the motion window, sets dropped whenever SLAM overruns the replay rate).
 """
 import argparse
+import csv
 import json
 import sqlite3
 import sys
@@ -70,11 +75,44 @@ def segments(P, t):
     return out
 
 
+def load_cuvslam_odom(d):
+    """cuVSLAM VO, rows (t_ns, x, y, z, qx, qy, qz, qw): from a scripts/vo/replay_raw.sh output
+    directory (odometry.csv) or from a replay_host.sh bag (/cuvslam/odometry)."""
+    if (d / "odometry.csv").exists():
+        o = np.genfromtxt(d / "odometry.csv", delimiter=",", names=True)
+        o = o[o["status"] == 1]
+        return np.stack([o[k] for k in ("t_ns", "tx", "ty", "tz", "qx", "qy", "qz", "qw")], -1)
+    return read_odom(str(next(d.glob("*.db3"))))
+
+
+def load_cuvslam_slam(d):
+    """cuVSLAM SLAM: the final optimised path (positions, stamps in s), the loop-closure poses and
+    the number of closure EVENTS. All empty for a run without SLAM."""
+    if (d / "odometry.csv").exists():                     # replay_raw.sh
+        if not (d / "slam_path.csv").exists():
+            return np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3)), 0
+        sp = np.genfromtxt(d / "slam_path.csv", delimiter=",", names=True, ndmin=1)
+        with open(d / "loop_closures.csv") as f:
+            rows = list(csv.DictReader(f))
+        lc = np.array([[float(r[k]) for k in ("tx", "ty", "tz")] for r in rows if r["kind"] == "lc_pose"])
+        return (np.stack([sp["tx"], sp["ty"], sp["tz"]], -1), sp["t_ns"] * 1e-9, lc.reshape(-1, 3),
+                sum(r["kind"] == "event" for r in rows))
+    # A bag: the node publishes /cuvslam/loop_closures once per closure event, each message
+    # carrying every closure pose so far - the message count is the number of closures.
+    sdb = next(d.glob("*.db3"))
+    with sqlite3.connect(f"file:{sdb}?mode=ro&immutable=1", uri=True) as con:   # bags are root-owned
+        n_events = con.execute("SELECT COUNT(*) FROM messages JOIN topics ON messages.topic_id = topics.id "
+                               "WHERE topics.name = '/cuvslam/loop_closures'").fetchone()[0]
+    path, t, lc, *_ = read_slam(find_bag(d))
+    return path, t, lc, n_events
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("log", type=Path)
     ap.add_argument("slamrs_csv", type=Path)
-    ap.add_argument("cuvslam_bag", type=Path, help="obs_* bag directory with /cuvslam/odometry")
+    ap.add_argument("cuvslam_bag", type=Path,
+                    help="cuVSLAM VO: an obs_* bag directory with /cuvslam/odometry, or a replay_raw.sh output")
     ap.add_argument("--slam-bag", type=Path, help="SLAM=1 replay to take the SLAM path from (default: cuvslam_bag)")
     ap.add_argument("--calib", type=Path, default=REPO / "config/slamrs/bev_calib_s2.json")
     ap.add_argument("--image-stride", type=int, default=4, help="log every Nth camera set")
@@ -118,22 +156,15 @@ def main():
         n_edges = len(edges_lc)
 
     # cuVSLAM VO (cam1 pose in its odom frame)
-    db = next(a.cuvslam_bag.glob("*.db3"))
-    od = read_odom(str(db))
+    od = load_cuvslam_odom(a.cuvslam_bag)
     tc = od[:, 0].astype(np.int64)
     T_o_c1 = pose(None, od[:, 1:4], od[:, 4:8])
     Pc = od[:, 1:4]
     slam_bag = a.slam_bag or a.cuvslam_bag
-    sdb = next(slam_bag.glob("*.db3"))
-    # the node publishes /cuvslam/loop_closures once per closure event, each message carrying every
-    # closure pose so far: the message count is the number of closures, the last message the sites
-    with sqlite3.connect(f"file:{sdb}?mode=ro&immutable=1", uri=True) as con:   # bags are root-owned
-        n_lc_events = con.execute("SELECT COUNT(*) FROM messages JOIN topics ON messages.topic_id = topics.id "
-                                  "WHERE topics.name = '/cuvslam/loop_closures'").fetchone()[0]
-    slam_path, slam_t, lc, *_ = read_slam(find_bag(slam_bag))
+    slam_path, slam_t, lc, n_lc_events = load_cuvslam_slam(slam_bag)
     A_vo_slam = np.eye(4)            # SLAM bag frame -> VO bag frame
     if slam_bag != a.cuvslam_bag:
-        od2 = read_odom(str(sdb))
+        od2 = load_cuvslam_odom(slam_bag)
         _, i1, i2 = np.intersect1d(tc, od2[:, 0].astype(np.int64), return_indices=True)
         A_vo_slam = T_o_c1[i1[0]] @ np.linalg.inv(pose(None, od2[i2[:1], 1:4], od2[i2[:1], 4:8])[0])
     slam_path = apply(A_vo_slam, slam_path) if len(slam_path) else slam_path
@@ -255,7 +286,6 @@ def main():
 
     # time-varying: heads and plots
     Pc_anch = apply(A_anchor, Pc)
-    slam_od = read_odom(str(sdb), "/cuvslam/slam_odometry") if len(slam_path) else None
     for i in range(len(ts)):
         rr.set_time("time", duration=ts_s[i])
         for view in ("anchored", "sim3"):
@@ -272,12 +302,19 @@ def main():
         rr.log("plots/z/cuvslam_vo", rr.Scalars(Pc_anch[i, 2]))
         if i and v[i - 1] < JUMP_MPS:
             rr.log("plots/speed/cuvslam_vo", rr.Scalars(v[i - 1]))
-    if slam_od is not None and len(slam_od):
-        Pl = apply(A_anchor @ A_vo_slam, slam_od[:, 1:4])
-        tl = (slam_od[:, 0].astype(np.int64) - t0) * 1e-9
-        for i in range(len(tl)):
-            rr.set_time("time", duration=tl[i])
-            rr.log("plots/z/cuvslam_slam", rr.Scalars(Pl[i, 2]))
+    if len(slam_path):
+        # cuVSLAM SLAM's height and speed from its FINAL optimised path - the green line in 3D, and
+        # the same kind of path as slam-rs's loop-closed one. Its live corrected pose
+        # (/cuvslam/slam_odometry) steps at every closure (up to 12 m/s on run6), and those
+        # corrections would read as speed spikes. slam_path is already in the VO bag's frame.
+        Pg = apply(A_anchor, slam_path)
+        tg = (slam_t * 1e9 - t0) * 1e-9
+        vg = np.linalg.norm(np.diff(Pg, axis=0), axis=1) / np.maximum(np.diff(tg), 1e-9)
+        for i in range(len(tg)):
+            rr.set_time("time", duration=tg[i])
+            rr.log("plots/z/cuvslam_slam", rr.Scalars(Pg[i, 2]))
+            if i and vg[i - 1] < JUMP_MPS:
+                rr.log("plots/speed/cuvslam_slam", rr.Scalars(vg[i - 1]))
     if Pl_lc is not None:
         # purple head along the loop-closed path, and its height / speed traces
         tl_s = (tl_lc - t0) * 1e-9

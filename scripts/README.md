@@ -109,6 +109,18 @@ See [docs/extrinsic_calibration.md](../docs/extrinsic_calibration.md) for the fu
 | [port/locate_frame_loss.py](port/locate_frame_loss.py) | dev/TX2 | **where** a triggered rig loses a frame (sensor vs consumer) |
 | [port/raw_log_to_bag.py](port/raw_log_to_bag.py) | dev | convert a raw image log into a **rosbag2 bag format v4** (Foxy-readable); `--motion` cuts to the IMU motion window |
 | [port/topic_rate_probe.py](port/topic_rate_probe.py) | TX2 | count what a subscriber actually receives, to separate DDS from whatever consumes it |
+| [vo/replay_raw.sh](vo/replay_raw.sh) | host | **cuVSLAM straight from a raw log** (5.10c): builds [vo/cuvslam_raw_replay.cpp](vo/cuvslam_raw_replay.cpp) against the host libcuvslam.so and runs the node's per-set path in-process - no ROS, no bag, no wall clock. Every set, byte-identical on a repeat (async SBA off, SLAM inline). Use it for offline A/Bs; replay_host.sh stays for what the node itself does |
+
+**In-process replay (`replay_raw.sh`).** A bag replay plays in real time, so it loses whatever the
+consumer cannot take: on the full run6 log at 0.5×, VO only, the transport delivered 49 fewer cam3
+frames than the others and 156 frames aged out unmatched - 1706 poses of 1758 sets. The in-process
+reader tracks all 1758, and its trajectory lies within the replays' own noise of that replay
+(0.12 / 0.28 m RMS / max after an SE(3) fit, against 0.41 m between two identical replays; scale
+against slam-rs 0.831 vs 0.828; `compare_modes.py` reads both kinds of directory). Two runs of one
+log give the same bytes, VO and SLAM alike. On the host: VO 29 s per 88 s log, SLAM inline 150 s
+(run6) and 324 s (run5, 1099 of 1762 sets keyframes). The library needs CUDA 12
+(`libcusolver.so.11`): `/usr/local/cuda` now points at 13.2, so replay_host.sh needs
+`CUDA_HOST_MOUNT=/usr/local/cuda-12.8` too.
 
 ### Running the Rerun viewer
 
@@ -351,31 +363,41 @@ replays of one build give byte-identical output. Not ported, by measurement: the
 the node cap, the GPU lane (`--features gpu-wgpu`, `--gpu`) measured on the TX2, and the
 closed-circuit log.
 
-**Against cuVSLAM (Dell, x86, 2026-11-24).** `rerun_compare.py --lc-dir` puts the port's output
-beside cuVSLAM's post-fix VO and SLAM replays, one column per path in the scene's numbers pane:
+**Against cuVSLAM (Dell, x86, 2026-11-24).** Both on the same full log, every set: cuVSLAM
+through `scripts/vo/replay_raw.sh` (in-process, no bag, deterministic - see vo/), slam-rs through
+`slamrs-lc replay`. `rerun_compare.py --lc-dir` draws the four paths, one column each in the
+scene's numbers pane:
 
 ```bash
 rust/target/release/slamrs-lc replay datasets/imglog_run6_20260907_143036 datasets/replay_out/rs_lc_run6
+scripts/vo/replay_raw.sh datasets/imglog_run6_20260907_143036 datasets/replay_out/raw_run6_precision
+scripts/vo/replay_raw.sh datasets/imglog_run6_20260907_143036 datasets/replay_out/raw_run6_slam0125_performance \
+  --multicam-mode performance --slam --slam-primaries 0,1,2,5
 .venv/bin/python scripts/slamrs/rerun_compare.py datasets/imglog_run6_20260907_143036 \
-  datasets/replay_out/rs_lc_run6/slamrs_vio.csv datasets/replay_out/obs_run6_fixed \
-  --slam-bag datasets/replay_out/obs_run6_slam0125_performance_r04 \
-  --lc-dir datasets/replay_out/rs_lc_run6 --save datasets/replay_out/run6_rs_lc_vs_cuvslam.rrd
+  datasets/replay_out/rs_lc_run6/slamrs_vio.csv datasets/replay_out/raw_run6_precision \
+  --slam-bag datasets/replay_out/raw_run6_slam0125_performance \
+  --lc-dir datasets/replay_out/rs_lc_run6 --save datasets/replay_out/run6_raw_vs_slamrs.rrd
 ```
 
-| run6 / run5, first-to-last over the span every path covers | distance | loop closures |
+| run6 / run5, the whole log (0-88 s) | first-to-last | loop closures |
 |---|---|---|
-| slam-rs VIO | 0.30 / 0.49 m | – |
-| slam-rs + the port's backend | **0.10 / 0.13 m** | 52 / 40 edges, 20 / 12 of them over 60 s apart |
-| cuVSLAM VO, precision (`obs_run{6,5}_fixed`) | 3.07 / 2.26 m | – |
-| cuVSLAM SLAM, performance `[0,1,2,5]` at 0.4× (`obs_run{6,5}_slam0125_performance_r04`) | 4.26 / 1.10 m | 14 / 14 events |
+| slam-rs VIO | 0.33 / 0.50 m | – |
+| slam-rs + the port's backend | **0.13 / 0.13 m** | 52 / 40 edges, 20 / 12 of them over 60 s apart |
+| cuVSLAM VO, precision | 3.19 / 2.19 m | – |
+| cuVSLAM SLAM, performance `[0,1,2,5]` | 1.71 / 1.16 m | 17 / 23 events |
+
+The first version of this table (9843732) took cuVSLAM from the replay_host.sh bags, and those
+were cut to the IMU motion window (`raw_log_to_bag.py --motion`; run6 7.3-81.5 s of 87.8 s):
+cuVSLAM SLAM never saw the end-of-log frames that 19 of slam-rs's 20 long-loop edges on run6 (6 of
+12 on run5) are made on, and scored 4.26 / 1.10 m. Given the same frames it does better on run6
+and stays about ten times further from its start than slam-rs's backend. Its distances are in its
+own scale (0.83 / 0.87× slam-rs's over 1 s windows), which cannot account for that.
 
 On this host the port's VIO csv equals the Python core's built here on 2026-10-16
 (`slamrs_run{5,6}_cpu.csv`) in every pose column; run6 accepts the Mac's 52 edges, run5 40
-against 42, because run5's VIO differs between x86 and arm64 as the Python builds' did. cuVSLAM's
-distances are in its own scale (it moves 0.83 / 0.87× as far as slam-rs over 1 s windows), which
-cannot account for 1–4 m against 0.1 m. Its SLAM is measured as replayed: it overruns the 0.4×
-budget at keyframes (README §6), and run6's optimised path keeps one 6.8 m/s step. There is no tape
-on these logs, so first-to-last is the only figure; the closed-circuit log still decides the benefit.
+against 42, because run5's VIO differs between x86 and arm64 as the Python builds' did. There is no
+tape on these logs, so first-to-last is the only figure; the closed-circuit log still decides the
+benefit.
 
 **Performance of the native binary (Mac, Apple M5 Pro, 2026-10-23).** Measured one replay at a
 time, `--no-lc` for the lanes, the release profile; `--gpu` is the CubeCL/wgpu frontend lane on
