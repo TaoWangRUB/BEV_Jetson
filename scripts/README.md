@@ -351,6 +351,32 @@ replays of one build give byte-identical output. Not ported, by measurement: the
 the node cap, the GPU lane (`--features gpu-wgpu`, `--gpu`) measured on the TX2, and the
 closed-circuit log.
 
+**Against cuVSLAM (Dell, x86, 2026-11-24).** `rerun_compare.py --lc-dir` puts the port's output
+beside cuVSLAM's post-fix VO and SLAM replays, one column per path in the scene's numbers pane:
+
+```bash
+rust/target/release/slamrs-lc replay datasets/imglog_run6_20260907_143036 datasets/replay_out/rs_lc_run6
+.venv/bin/python scripts/slamrs/rerun_compare.py datasets/imglog_run6_20260907_143036 \
+  datasets/replay_out/rs_lc_run6/slamrs_vio.csv datasets/replay_out/obs_run6_fixed \
+  --slam-bag datasets/replay_out/obs_run6_slam0125_performance_r04 \
+  --lc-dir datasets/replay_out/rs_lc_run6 --save datasets/replay_out/run6_rs_lc_vs_cuvslam.rrd
+```
+
+| run6 / run5, first-to-last over the span every path covers | distance | loop closures |
+|---|---|---|
+| slam-rs VIO | 0.30 / 0.49 m | – |
+| slam-rs + the port's backend | **0.10 / 0.13 m** | 52 / 40 edges, 20 / 12 of them over 60 s apart |
+| cuVSLAM VO, precision (`obs_run{6,5}_fixed`) | 3.07 / 2.26 m | – |
+| cuVSLAM SLAM, performance `[0,1,2,5]` at 0.4× (`obs_run{6,5}_slam0125_performance_r04`) | 4.26 / 1.10 m | 14 / 14 events |
+
+On this host the port's VIO csv equals the Python core's built here on 2026-10-16
+(`slamrs_run{5,6}_cpu.csv`) in every pose column; run6 accepts the Mac's 52 edges, run5 40
+against 42, because run5's VIO differs between x86 and arm64 as the Python builds' did. cuVSLAM's
+distances are in its own scale (it moves 0.83 / 0.87× as far as slam-rs over 1 s windows), which
+cannot account for 1–4 m against 0.1 m. Its SLAM is measured as replayed: it overruns the 0.4×
+budget at keyframes (README §6), and run6's optimised path keeps one 6.8 m/s step. There is no tape
+on these logs, so first-to-last is the only figure; the closed-circuit log still decides the benefit.
+
 **Performance of the native binary (Mac, Apple M5 Pro, 2026-10-23).** Measured one replay at a
 time, `--no-lc` for the lanes, the release profile; `--gpu` is the CubeCL/wgpu frontend lane on
 Metal (`cargo build --release --features gpu-wgpu`), whose CPU lane is byte-identical to the

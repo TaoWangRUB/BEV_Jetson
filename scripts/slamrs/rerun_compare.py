@@ -1,7 +1,8 @@
 """slam-rs VIO beside cuVSLAM VO and cuVSLAM SLAM, in one Rerun scene.
 
   .venv/bin/python scripts/slamrs/rerun_compare.py <imglog dir> <slamrs.csv> <cuvslam obs bag dir>
-        [--slam-bag <obs bag dir>] [--save out.rrd] [--spawn] [--image-stride 4] [--no-images]
+        [--slam-bag <obs bag dir>] [--lc-dir <loop-closure output dir>] [--save out.rrd] [--spawn]
+        [--image-stride 4] [--no-images]
 
 Everything is drawn in slam-rs's world (gravity-aligned, +Z up, metric from the IMU). cuVSLAM's
 frame is cam1's optical frame at its first pose, so it is brought across through the Kalibr
@@ -23,6 +24,7 @@ SLAM bag's frame is tied to the VO bag's at their first common stamp.
 """
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -79,7 +81,7 @@ def main():
     ap.add_argument("--no-images", action="store_true")
     ap.add_argument("--save", type=Path)
     ap.add_argument("--spawn", action="store_true")
-    ap.add_argument("--lc-dir", type=Path, help="run_slamrs_lc.py output: draws the loop-closed slam-rs path and its edges")
+    ap.add_argument("--lc-dir", type=Path, help="run_slamrs_lc.py or `slamrs-lc replay` output: draws the loop-closed slam-rs path and its edges")
     a = ap.parse_args()
 
     # slam-rs: T_world_imu -> T_world_cam1 through the same extrinsic it was run with
@@ -123,6 +125,11 @@ def main():
     Pc = od[:, 1:4]
     slam_bag = a.slam_bag or a.cuvslam_bag
     sdb = next(slam_bag.glob("*.db3"))
+    # the node publishes /cuvslam/loop_closures once per closure event, each message carrying every
+    # closure pose so far: the message count is the number of closures, the last message the sites
+    with sqlite3.connect(f"file:{sdb}?mode=ro&immutable=1", uri=True) as con:   # bags are root-owned
+        n_lc_events = con.execute("SELECT COUNT(*) FROM messages JOIN topics ON messages.topic_id = topics.id "
+                                  "WHERE topics.name = '/cuvslam/loop_closures'").fetchone()[0]
     slam_path, slam_t, lc, *_ = read_slam(find_bag(slam_bag))
     A_vo_slam = np.eye(4)            # SLAM bag frame -> VO bag frame
     if slam_bag != a.cuvslam_bag:
@@ -145,15 +152,42 @@ def main():
 
     vs = np.linalg.norm(np.diff(Ps, axis=0), axis=1) / (np.diff(ts) * 1e-9)
     ws = window_scale(tc, Pc, ts, Ps)
+
+    # one column per path, so the odometries and the two loop-closed results sit side by side.
+    # The paths cover different spans - slam-rs the whole log, a cuVSLAM bag cut to the motion window
+    # (raw_log_to_bag.py --motion), a SLAM replay that ends early - so end - start is also given
+    # over the span every path covers.
+    paths = {"slam-rs VIO": (ts, Ps)}
+    if Pl_lc is not None:
+        paths["slam-rs + loop closure"] = (tl_lc, Pl_lc)
+    paths["cuVSLAM VO"] = (tc, Pc)
+    if len(slam_path):
+        paths["cuVSLAM SLAM"] = ((slam_t * 1e9).astype(np.int64), slam_path)
+    c0, c1 = max(t[0] for t, _ in paths.values()), min(t[-1] for t, _ in paths.values())
+
+    def column(t_ns, P, poses=None, closures="-", track="-"):
+        sp = np.linalg.norm(np.diff(P, axis=0), axis=1) / np.maximum(np.diff(t_ns) * 1e-9, 1e-9)
+        i0, i1 = np.searchsorted(t_ns, c0), np.searchsorted(t_ns, c1, side="right") - 1
+        return [poses or f"{len(P)}", f"{(t_ns[0] - t0) * 1e-9:.1f} - {(t_ns[-1] - t0) * 1e-9:.1f} s",
+                f"{(sp > JUMP_MPS).sum()} (max {sp.max():.1f} m/s)", f"{np.linalg.norm(P[-1] - P[0]):.2f} m",
+                f"{np.linalg.norm(P[i1] - P[i0]):.2f} m", closures, track]
+    extra = {"slam-rs VIO": dict(poses=f"{len(ts)} of {len(s)} sets",
+                                 track=f"{np.median(s['track_ms']):.1f} ms (1 CPU thread, 728x544)"),
+             "slam-rs + loop closure": dict(closures=f"{n_edges} accepted edges"),
+             "cuVSLAM SLAM": dict(poses=f"{len(slam_path)} optimised",
+                                  closures=f"{n_lc_events} events ({len(lc)} closure poses)")}
+    cols = {name: column(*tp, **extra.get(name, {})) for name, tp in paths.items()}
+    rows = ["poses", "time span", f"jumps > {JUMP_MPS:g} m/s", "end - start",
+            f"end - start over the common {(c0 - t0) * 1e-9:.1f} - {(c1 - t0) * 1e-9:.1f} s",
+            "loop closures", "median track()"]
     lines = [
         f"# {a.log.name}",
         "",
-        "| | slam-rs VIO | cuVSLAM VO |",
-        "|---|---|---|",
-        f"| poses | {len(ts)} of {len(s)} sets | {len(tc)} |",
-        f"| jumps > {JUMP_MPS:g} m/s | {(vs > JUMP_MPS).sum()} (max {vs.max():.1f} m/s) | {(v > JUMP_MPS).sum()} (max {v.max():.1f} m/s) |",
-        f"| end - start | {np.linalg.norm(Ps[-1] - Ps[0]):.2f} m | {np.linalg.norm(Pc[-1] - Pc[0]):.2f} m |",
-        f"| median track() | {np.median(s['track_ms']):.1f} ms (1 CPU thread, 728x544) | - |",
+        "| | " + " | ".join(cols) + " |",
+        "|---|" + "---|" * len(cols),
+    ] + [f"| {r} | " + " | ".join(c[k] for c in cols.values()) + " |" for k, r in enumerate(rows)] + [
+        "",
+        "cuVSLAM's columns are in its own scale (camera baselines), slam-rs's in the IMU's; see the scale below.",
         "",
         f"**Scale**: over matched 1 s windows cuVSLAM moves **{np.median(ws):.3f}x** as far as slam-rs "
         f"(median of {len(ws)}, IQR {np.percentile(ws, 25):.2f}-{np.percentile(ws, 75):.2f}). "
@@ -167,12 +201,10 @@ def main():
         + (", **purple** slam-rs loop-closed path with its accepted edges." if Pl_lc is not None else "."),
     ] + ([
         "",
-        f"slam-rs loop closure from `{a.lc_dir.name}`: {n_edges} accepted edges; end - start "
-        f"{np.linalg.norm(Pl_lc[-1] - Pl_lc[0]):.2f} m (VIO {np.linalg.norm(Ps[-1] - Ps[0]):.2f} m).",
+        f"slam-rs and its loop closure from `{a.lc_dir.name}`.",
     ] if Pl_lc is not None else []) + [
         "",
-        f"cuVSLAM VO from `{a.cuvslam_bag.name}`, SLAM from `{slam_bag.name}` "
-        f"({len(slam_path)} optimised poses, {len(lc)} loop-closure sites).",
+        f"cuVSLAM VO from `{a.cuvslam_bag.name}`, SLAM from `{slam_bag.name}`.",
     ]
     print("\n".join(lines))
 
