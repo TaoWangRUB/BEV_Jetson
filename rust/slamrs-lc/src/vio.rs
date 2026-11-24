@@ -112,9 +112,16 @@ impl Vio {
 
     /// The GPU lane's host-side seam counters on this thread: (calls, ms) for kernel launches,
     /// uploads, tracker downloads and detector downloads. Zero on the CPU lane.
+    #[cfg(feature = "gpu-wgpu")]
     pub fn seam() -> [(u64, f64); 4] {
         let s = slam_rs::gpu::seam::snapshot();
         [s.launch, s.upload, s.read_track, s.read_detect].map(|m| (m.calls, m.nanos as f64 * 1e-6))
+    }
+
+    /// The CPU-only build has no GPU module in slam-rs, so there is nothing to count.
+    #[cfg(not(feature = "gpu-wgpu"))]
+    pub fn seam() -> [(u64, f64); 4] {
+        [(0, 0.0); 4]
     }
 
     pub fn frontend_ms(&self) -> f64 {
