@@ -1362,9 +1362,11 @@ physically moved - the remaining items are not doable from here.
             **Done 2026-11-24, from the raw log rather than the bag** (`scripts/vo/replay_raw.sh`
             building `scripts/vo/cuvslam_raw_replay.cpp`): the node's per-set path in-process,
             with `async_sba=false` and SLAM `sync_mode=true`. Every set is tracked (run6: 1758 of
-            1758, against 1706 from the full-log bag replay at 0.5x), two runs are byte-identical
-            in VO, SLAM poses, the optimised path and the closures, and the trajectory is 0.12 m
-            RMS from the bag replay's - inside the replays' own 0.41 m noise floor.
+            1758, against 1706 from the full-log bag replay at 0.5x) and the trajectory is 0.12 m
+            RMS from the bag replay's - inside the replays' own 0.41 m noise floor. Repeats: run6
+            byte-identical three times in VO, SLAM poses, optimised path and closures; a run5
+            replay made while the GPU was also rendering diverged from 31 s on (6 cm median, 23
+            against 21 closures), so something in the library still depends on timing.
 
 - [ ] 5.13 **Every host-side figure in this change answers "is A better than B on this data",
       never "what will the rig do".** The two need different setups and the distinction has been

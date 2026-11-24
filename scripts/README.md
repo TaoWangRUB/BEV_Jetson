@@ -116,8 +116,11 @@ consumer cannot take: on the full run6 log at 0.5×, VO only, the transport deli
 frames than the others and 156 frames aged out unmatched - 1706 poses of 1758 sets. The in-process
 reader tracks all 1758, and its trajectory lies within the replays' own noise of that replay
 (0.12 / 0.28 m RMS / max after an SE(3) fit, against 0.41 m between two identical replays; scale
-against slam-rs 0.831 vs 0.828; `compare_modes.py` reads both kinds of directory). Two runs of one
-log give the same bytes, VO and SLAM alike. On the host: VO 29 s per 88 s log, SLAM inline 150 s
+against slam-rs 0.831 vs 0.828; `compare_modes.py` reads both kinds of directory). slam-rs's outputs are byte-identical
+on every repeat. cuVSLAM's are on run6, three replays alike in VO, SLAM poses, path and closures, but
+a run5 replay made while the GPU was also rendering diverged from 31 s on (6 cm median, 23 against
+21 closures, first-to-last 1.16 against 1.13 m), so some path in the library still depends on
+timing; treat ~5 cm as its noise. On the host: VO 29 s per 88 s log, SLAM inline 150 s
 (run6) and 324 s (run5, 1099 of 1762 sets keyframes). The library needs CUDA 12
 (`libcusolver.so.11`): `/usr/local/cuda` now points at 13.2, so replay_host.sh needs
 `CUDA_HOST_MOUNT=/usr/local/cuda-12.8` too.
@@ -247,6 +250,7 @@ a launch argument the installed `install_host/` does not declare is dropped sile
 | [slamrs/build_slamrs.sh](slamrs/build_slamrs.sh) | dev / TX2 | build `slam_rs/_core.so` in the submodule without pixi; `GPU=1` adds the CubeCL/wgpu (Vulkan) frontend lane, `PYTHON=` a ≥3.12 interpreter on the TX2 |
 | [slamrs/run_slamrs.py](slamrs/run_slamrs.py) | dev | replay a raw log through `slam_rs.Vio` at half resolution; IMU stamps shifted by Δ from `imu_mpu9250.yaml`; writes one pose row per set with `track_ms` and its `fe_ms` / `est_ms` split. `--gpu` runs the frontend lane on the GPU (needs the `GPU=1` build); `--dry-run` checks everything but slam-rs |
 | [slamrs/compare_lanes.py](slamrs/compare_lanes.py) | dev | A/B two `run_slamrs.py` outputs of one log (CPU vs GPU lane, or two builds): sets tracked, position disagreement raw and rigid-aligned, path length, `track_ms` / `fe_ms` / `est_ms` medians and the speed ratio |
+| [slamrs/plot_methods.py](slamrs/plot_methods.py) | dev | the two methods as one 1920x1080 image: first-to-last for the odometry alone and with loop closure, and compute per frame set split into tracking and loop closure, per walk. Takes a `slamrs-lc replay` directory (its `replay.log` stage timers if present) and a `replay_raw.sh` SLAM directory per walk |
 | [slamrs/compare.py](slamrs/compare.py) | dev | score it against cuVSLAM's `obs_*` bag: continuity, path length, and a Sim(3) fit whose **scale** is an independent check on cuVSLAM's (IMU vs camera baselines) |
 | [slamrs/handeye.py](slamrs/handeye.py) | dev | cam1↔IMU rotation and time offset from the gyro vs cuVSLAM's rotation — a cross-check on Kalibr (rotation agrees to <1°; the offset is too coarse to use) |
 | [slamrs/run_slamrs_lc.py](slamrs/run_slamrs_lc.py) | dev | the same replay with the **loop-closing backend** beside the VIO: writes the pure-VIO csv plus `slamrs_lc.csv` (corrected frames), `keyframes_lc.csv`, `loop_edges.csv`, `hypotheses.csv` (every candidate and why it was rejected), `timings.csv`. `--keyframes-out` also exports each keyframe's frames, pose and landmarks |
@@ -370,13 +374,22 @@ scene's numbers pane:
 
 ```bash
 rust/target/release/slamrs-lc replay datasets/imglog_run6_20260907_143036 datasets/replay_out/rs_lc_run6
-scripts/vo/replay_raw.sh datasets/imglog_run6_20260907_143036 datasets/replay_out/raw_run6_precision
 scripts/vo/replay_raw.sh datasets/imglog_run6_20260907_143036 datasets/replay_out/raw_run6_slam0125_performance \
   --multicam-mode performance --slam --slam-primaries 0,1,2,5
 .venv/bin/python scripts/slamrs/rerun_compare.py datasets/imglog_run6_20260907_143036 \
-  datasets/replay_out/rs_lc_run6/slamrs_vio.csv datasets/replay_out/raw_run6_precision \
+  datasets/replay_out/rs_lc_run6/slamrs_vio.csv datasets/replay_out/raw_run6_slam0125_performance \
   --slam-bag datasets/replay_out/raw_run6_slam0125_performance \
   --lc-dir datasets/replay_out/rs_lc_run6 --save datasets/replay_out/run6_raw_vs_slamrs.rrd
+```
+
+cuVSLAM's odometry is taken from its SLAM run, so each method is one configuration: its odometry
+and its loop closure from the same replay. `plot_methods.py` draws both methods' accuracy and
+compute side by side (`datasets/replay_out/methods_run6_run5.png`):
+
+```bash
+.venv/bin/python scripts/slamrs/plot_methods.py datasets/replay_out/methods_run6_run5.png \
+  --walk "walk 1" datasets/replay_out/rs_lc_run6 datasets/replay_out/raw_run6_slam0125_performance \
+  --walk "walk 2" datasets/replay_out/rs_lc_run5 datasets/replay_out/raw_run5_slam0125_performance
 ```
 
 `--video run6.mp4 --video-speed 4` renders the same scene to an mp4 instead (Rerun cannot export
@@ -384,12 +397,23 @@ video): a headless viewer of its own, the time-varying data streamed into it in 
 screenshot per frame, so the clip is exactly what the viewer draws. 1920x1080 at 30 fps by default;
 the 88 s log at 4x takes 100 s to render.
 
-| run6 / run5, the whole log (0-88 s) | first-to-last | loop closures |
-|---|---|---|
-| slam-rs VIO | 0.33 / 0.50 m | – |
-| slam-rs + the port's backend | **0.13 / 0.13 m** | 52 / 40 edges, 20 / 12 of them over 60 s apart |
-| cuVSLAM VO, precision | 3.19 / 2.19 m | – |
-| cuVSLAM SLAM, performance `[0,1,2,5]` | 1.71 / 1.16 m | 17 / 23 events |
+| run6 / run5, the whole log (0-88 s) | first-to-last | loop closures | per frame set, tracking + loop closure |
+|---|---|---|---|
+| slam-rs VIO | 0.33 / 0.50 m | – | |
+| slam-rs + the port's backend | **0.13 / 0.13 m** | 52 / 40 edges, 20 / 12 of them over 60 s apart | 37 + 54 = 91 / 49 + 63 = 112 ms, one CPU core |
+| cuVSLAM odometry, performance | 2.59 / 2.04 m | – | |
+| cuVSLAM SLAM, performance `[0,1,2,5]` | 1.71 / 1.13 m | 17 / 21 events | 4 + 39 = 43 / 10 + 121 = 131 ms, GPU |
+
+Compute is the mean per frame set over the log, everything inline (`async_sba` off, SLAM in sync
+mode, the port's backend in the replay loop), image preprocessing left out of both (cuVSLAM's
+pinhole remap, 5-9 ms; slam-rs's 2x downscale on its prefetch thread). Each figure is one replay
+with nothing else running, but with the GPU clock unlocked: two replays of the same cuVSLAM run
+differed by up to 2x (run6 81 against 43 ms), slam-rs's by about 10 %. What holds across them is
+where the time goes. cuVSLAM's GPU tracking is 5-9x cheaper than slam-rs's VIO on one core; loop
+closure is the larger share for both - 97-98 % of the port's backend is verification (the KLT
+re-tracking), the pose-graph solve 2-3 % - and cuVSLAM's grows with its keyframes (27 % of run6's
+frames, 62 % of run5's). In precision mode cuVSLAM's odometry alone ends 3.19 / 2.19 m from its
+start.
 
 The first version of this table (9843732) took cuVSLAM from the replay_host.sh bags, and those
 were cut to the IMU motion window (`raw_log_to_bag.py --motion`; run6 7.3-81.5 s of 87.8 s):
