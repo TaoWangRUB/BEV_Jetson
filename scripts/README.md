@@ -109,7 +109,7 @@ See [docs/extrinsic_calibration.md](../docs/extrinsic_calibration.md) for the fu
 | [port/locate_frame_loss.py](port/locate_frame_loss.py) | dev/TX2 | **where** a triggered rig loses a frame (sensor vs consumer) |
 | [port/raw_log_to_bag.py](port/raw_log_to_bag.py) | dev | convert a raw image log into a **rosbag2 bag format v4** (Foxy-readable); `--motion` cuts to the IMU motion window |
 | [port/topic_rate_probe.py](port/topic_rate_probe.py) | TX2 | count what a subscriber actually receives, to separate DDS from whatever consumes it |
-| [vo/replay_raw.sh](vo/replay_raw.sh) | host | **cuVSLAM straight from a raw log** (5.10c): builds [vo/cuvslam_raw_replay.cpp](vo/cuvslam_raw_replay.cpp) against the host libcuvslam.so and runs the node's per-set path in-process - no ROS, no bag, no wall clock. Every set, byte-identical on a repeat (async SBA off, SLAM inline). Use it for offline A/Bs; replay_host.sh stays for what the node itself does |
+| [vo/replay_raw.sh](vo/replay_raw.sh) | host | **cuVSLAM straight from a raw log** (5.10c): builds [vo/cuvslam_raw_replay.cpp](vo/cuvslam_raw_replay.cpp) against the host libcuvslam.so and runs the node's per-set path in-process - no ROS, no bag, no wall clock. Every set, async SBA off and SLAM inline. `--multisensor --imu` with `CUVSLAM_LIB_DIR` pointing at the cuNLS build runs the Multisensor mode with the MPU-9250. Use it for offline A/Bs; replay_host.sh stays for what the node itself does |
 
 **In-process replay (`replay_raw.sh`).** A bag replay plays in real time, so it loses whatever the
 consumer cannot take: on the full run6 log at 0.5×, VO only, the transport delivered 49 fewer cam3
@@ -120,10 +120,51 @@ against slam-rs 0.831 vs 0.828; `compare_modes.py` reads both kinds of directory
 on every repeat. cuVSLAM's are on run6, three replays alike in VO, SLAM poses, path and closures, but
 a run5 replay made while the GPU was also rendering diverged from 31 s on (6 cm median, 23 against
 21 closures, first-to-last 1.16 against 1.13 m), so some path in the library still depends on
-timing; treat ~5 cm as its noise. On the host: VO 29 s per 88 s log, SLAM inline 150 s
+timing. Load makes it visible: a run6 precision VO replay made while a cuVSLAM build was
+compiling left the reference from set 1308 on and ended 3.08 instead of 3.19 m from its start.
+Compare runs made on an idle machine, and repeat before trusting a difference. On the host: VO 29 s per 88 s log, SLAM inline 150 s
 (run6) and 324 s (run5, 1099 of 1762 sets keyframes). The library needs CUDA 12
 (`libcusolver.so.11`): `/usr/local/cuda` now points at 13.2, so replay_host.sh needs
 `CUDA_HOST_MOUNT=/usr/local/cuda-12.8` too.
+
+**Multisensor + IMU (`--multisensor --imu`).** cuVSLAM 17's experimental mode that fuses the
+IMU with the cameras sits behind `USE_CUNLS`, which the default host library is built without. A
+second library, leaving `build_host` alone (cuNLS and the prebuilt CUDA-12 cuDSS are fetched at
+configure time; cuDSS is linked but never selected, `multisensor_pose_estimator.cpp:134` asks for
+DenseQR):
+
+```bash
+CUDA_HOST_MOUNT=/usr/local/cuda-12.8 docker compose -f docker-compose.host.yml run --rm \
+  -e USE_CUNLS=ON -e CUVSLAM_BUILD_DIR=build_host_cunls -e CMAKE_CUDA_ARCHITECTURES=86 build-cuvslam-host
+CUVSLAM_LIB_DIR=third_party/cuVSLAM/build_host_cunls/bin scripts/vo/replay_raw.sh \
+  datasets/imglog_run6_20260907_143036 datasets/replay_out/raw_run6_multisensor_imu --multisensor --imu
+```
+
+The IMU is prepared as slam-rs's driver does (`run_slamrs.py load_imu`) and placed by the inverse
+of the Kalibr `T_imu_cam1` in `config/slamrs/bev_calib_s2.json`, checked against the gyro and the
+resting accelerometer. The virtual-stereo pairs need no declaring: with `depth_camera_ids` empty
+the frustum graph is Multicamera's. Measured 2026-11-24, odometry only, every set tracked, the
+identical command repeated (run6 / run5):
+
+| | first-to-last | scale against slam-rs (1 s windows) | Track() median |
+|---|---|---|---|
+| Multicamera, precision (reference) | 3.19 / 2.19 m | 0.83 / 0.87 | 7 / 27 ms |
+| Multisensor, IMU off | 2.46, 2.16 / 2.06 m | 0.83 / 0.87 | 14-16 / 25 ms |
+| Multisensor + IMU, three runs | 1.81, 2.03, 1.31 / 2.07, 1.10, 1.15 m | 0.84-0.85 / 0.85-0.86 | 62-77 / 60-71 ms |
+| slam-rs VIO | 0.33 / 0.50 m | 1 | |
+
+The IMU brings cuVSLAM's endpoints closer and, in an ad-hoc attitude check against the gyro and
+the resting accelerometer (not yet in `scripts/`), cuts its end-of-log tilt error from 24-54 deg
+to 3-19 deg. It does not change its scale: the per-frame IMU factor is weighted lightly and holds
+velocity and biases fixed (`multisensor_pose_estimator.h:56`, `.cpp:375`, `.cpp:395-396`), so the
+metric scale still comes from the virtual-stereo baselines. It costs 4-5x the tracking time,
+because 80-97 % of sets become keyframes and the inertial bundle adjustment runs inline on almost
+all of them. And the Multisensor path is not repeatable: identical runs differ from the second
+set on, by about 1 m of first-to-last at the end (hypothesis: float `atomicAdd` in cuNLS's
+J^T J, `fast_matrix_multiplier.cu:172`). Two things to know before relying on it: on a tracking
+loss Multisensor resets its pose to the origin rather than keeping it
+(`multisensor_odometry.cpp:64-67`; no loss happened here), and both logs have 5-8 IMU gaps of
+~90 ms that it treats as dropped IMU.
 
 ### Running the Rerun viewer
 
