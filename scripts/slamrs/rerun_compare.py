@@ -213,15 +213,17 @@ def main():
         rr.save(a.save)
     cams = [f"cams/cam{i}" for i in (1, 2, 3, 4)]
     eye = rrb.EyeControls3D(kind=rrb.Eye3DKind.Orbital)
+    linked = rrb.TimeAxis(link="LinkToGlobal")
     rr.send_blueprint(rrb.Blueprint(rrb.Vertical(row_shares=[5, 2, 2], contents=[
         rrb.Horizontal(contents=[
             rrb.Spatial3DView(name="anchored at first pose - raw scales", origin="/anchored", eye_controls=eye),
             rrb.Spatial3DView(name="Sim(3)-fitted - shape only", origin="/sim3", eye_controls=eye),
             rrb.TextDocumentView(name="numbers", origin="/summary")], column_shares=[3, 3, 2]),
         rrb.Horizontal(contents=[
-            rrb.TimeSeriesView(name="height z (m), anchored", origin="/plots/z"),
-            rrb.TimeSeriesView(name="speed (m/s), anchored", origin="/plots/speed"),
-            rrb.TimeSeriesView(name="slam-rs: landmarks / track ms", origin="/plots/slamrs")]),
+            # one time window for the three plots: Rerun pans and zooms each one on its own otherwise
+            rrb.TimeSeriesView(name="height z (m), anchored", origin="/plots/z", axis_x=linked),
+            rrb.TimeSeriesView(name="speed (m/s), anchored", origin="/plots/speed", axis_x=linked),
+            rrb.TimeSeriesView(name="slam-rs: landmarks / track ms", origin="/plots/slamrs", axis_x=linked)]),
         rrb.Horizontal(contents=[rrb.Spatial2DView(name=n.split("/")[-1], origin=n) for n in cams]),
     ]), rrb.TimePanel(state="collapsed"), collapse_panels=True))
 
